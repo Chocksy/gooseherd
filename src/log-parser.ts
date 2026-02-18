@@ -42,6 +42,9 @@ export interface RunEvent {
   // phase_marker fields
   phase?: string;
 
+  // tool result (extracted from Annotated blocks for memory/cems tools)
+  result?: string;
+
   // Common
   content: string;
 }
@@ -80,6 +83,9 @@ function skipAnnotatedBlock(lines: string[], startIndex: number): number {
   let i = startIndex + 1;
   while (i < lines.length && depth > 0) {
     const line = lines[i];
+    // Safety valve: tool headers never appear inside valid Annotated blocks.
+    // If we hit one, the brace counting got confused by interleaved async output.
+    if (TOOL_HEADER_RE.test(line)) break;
     // Count braces, but skip braces inside quoted strings.
     // Rust Debug format wraps string values in "..." — braces inside
     // those strings (e.g. CSS, code snippets) must not affect depth.
@@ -99,6 +105,96 @@ function skipAnnotatedBlock(lines: string[], startIndex: number): number {
     if (depth <= 0) break;
   }
   return i;
+}
+
+// Tools whose Annotated result blocks should be extracted (not skipped)
+const RESULT_CAPTURE_TOOLS = new Set(["memory_search", "memory_add", "memory_forget", "memory_update"]);
+
+/**
+ * Extract a human-readable summary from an Annotated block for memory tools.
+ * Looks for JSON inside `text: "..."` fields and formats memory results.
+ */
+function extractAnnotatedResult(lines: string[], startIndex: number): { endIndex: number; summary: string } {
+  const collected: string[] = [];
+  let depth = 1;
+  let i = startIndex + 1;
+  while (i < lines.length && depth > 0) {
+    const line = lines[i];
+    // Safety valve: tool headers never appear inside valid Annotated blocks.
+    if (TOOL_HEADER_RE.test(line)) break;
+    collected.push(line);
+    let inQuote = false;
+    for (let ci = 0; ci < line.length; ci++) {
+      const ch = line[ci];
+      if (ch === '"' && (ci === 0 || line[ci - 1] !== "\\")) {
+        inQuote = !inQuote;
+        continue;
+      }
+      if (!inQuote) {
+        if (ch === "{") depth++;
+        if (ch === "}") depth--;
+      }
+    }
+    i++;
+    if (depth <= 0) break;
+  }
+
+  // Try to find JSON in the text field
+  const blob = collected.join("\n");
+  const jsonMatch = blob.match(/text:\s*"(\{.*?\})"/s);
+  if (!jsonMatch) return { endIndex: i, summary: "" };
+
+  try {
+    // Unescape the Rust debug string (\\n → \n, \\" → ")
+    const raw = jsonMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
+    const data = JSON.parse(raw);
+
+    if (data.results && Array.isArray(data.results)) {
+      // memory_search response
+      const count = data.count ?? data.results.length;
+      const summaryParts = [`${count} result${count !== 1 ? "s" : ""}`];
+      if (data.mode) summaryParts.push(`(${data.mode})`);
+      if (data.tokens_used) summaryParts.push(`${data.tokens_used} tokens`);
+
+      const resultLines = [summaryParts.join(" ")];
+      for (const r of data.results.slice(0, 3)) {
+        const score = typeof r.score === "number" ? ` [${Math.round(r.score * 100)}%]` : "";
+        const content = (r.content ?? "").slice(0, 150);
+        resultLines.push(`  ${score} ${content}${(r.content ?? "").length > 150 ? "..." : ""}`);
+      }
+      if (data.results.length > 3) {
+        resultLines.push(`  ... and ${data.results.length - 3} more`);
+      }
+      return { endIndex: i, summary: resultLines.join("\n") };
+    }
+
+    if (data.success !== undefined) {
+      // memory_add / memory_update / memory_forget response
+      return { endIndex: i, summary: data.success ? "stored" : "failed" };
+    }
+  } catch {
+    // JSON parse failed — return raw truncated
+  }
+
+  return { endIndex: i, summary: "" };
+}
+
+/**
+ * Find the first memory tool call event that hasn't received a result yet.
+ * Used to match orphaned Annotated blocks back to their originating tool call
+ * when Goose batches parallel calls (headers first, results later in FIFO order).
+ */
+function findFirstUnresolvedMemoryEvent(events: RunEvent[]): number | undefined {
+  for (let k = 0; k < events.length; k++) {
+    if (
+      events[k].type === "tool_call" &&
+      RESULT_CAPTURE_TOOLS.has(events[k].tool ?? "") &&
+      !events[k].result
+    ) {
+      return k;
+    }
+  }
+  return undefined;
 }
 
 // ── Main parser ──────────────────────────────────────────
@@ -146,9 +242,21 @@ export function parseRunLog(rawLog: string): RunEvent[] {
       continue;
     }
 
-    // Skip Annotated { ... } blocks (orphaned ones between tool calls)
+    // Handle orphaned Annotated { ... } blocks between tool calls.
+    // When Goose batches parallel tool calls, results arrive as separate
+    // Annotated blocks AFTER all the call headers. Try to attach memory
+    // results to the first unresolved memory tool call (FIFO order).
     if (ANNOTATED_START_RE.test(line)) {
-      i = skipAnnotatedBlock(lines, i);
+      const unresolvedIdx = findFirstUnresolvedMemoryEvent(events);
+      if (unresolvedIdx !== undefined) {
+        const extracted = extractAnnotatedResult(lines, i);
+        i = extracted.endIndex;
+        if (extracted.summary) {
+          events[unresolvedIdx].result = extracted.summary;
+        }
+      } else {
+        i = skipAnnotatedBlock(lines, i);
+      }
       continue;
     }
 
@@ -264,7 +372,10 @@ export function parseRunLog(rawLog: string): RunEvent[] {
       // Collect tool stdout until Annotated block or next structural element.
       // Once we see the Annotated block (tool result), the tool call is done —
       // any text after it is agent thinking, not tool output.
+      // For memory tools (memory_search, memory_add), extract a human-readable
+      // summary from the Annotated block instead of discarding it.
       const outputLines: string[] = [];
+      let toolResult: string | undefined;
       while (j < lines.length) {
         const nextLine = lines[j];
         if (
@@ -276,7 +387,13 @@ export function parseRunLog(rawLog: string): RunEvent[] {
           break;
         }
         if (ANNOTATED_START_RE.test(nextLine)) {
-          j = skipAnnotatedBlock(lines, j);
+          if (RESULT_CAPTURE_TOOLS.has(tool)) {
+            const extracted = extractAnnotatedResult(lines, j);
+            j = extracted.endIndex;
+            if (extracted.summary) toolResult = extracted.summary;
+          } else {
+            j = skipAnnotatedBlock(lines, j);
+          }
           // After the Annotated result block, the tool call is complete.
           // Skip trailing noise/blank lines but stop before real content.
           while (j < lines.length && isNoiseLine(lines[j])) {
@@ -296,6 +413,8 @@ export function parseRunLog(rawLog: string): RunEvent[] {
         summary = `${tool}: ${shortenPath(params.path)}`;
       } else if (params.command) {
         summary = `${tool}: ${params.command}`;
+      } else if (params.query) {
+        summary = `${tool}: "${params.query}"`;
       }
 
       const output = outputLines.join("\n").trim();
@@ -306,6 +425,7 @@ export function parseRunLog(rawLog: string): RunEvent[] {
         tool,
         extension,
         params,
+        result: toolResult,
         content: output ? `${summary}\n${output}` : summary,
       });
       i = j;

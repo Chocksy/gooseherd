@@ -879,6 +879,31 @@ function dashboardHtml(config: AppConfig): string {
       border-radius: 6px;
       padding: 6px 8px;
     }
+    .act-tool-result {
+      margin-top: 6px;
+      border-left: 3px solid var(--accent);
+      padding: 6px 8px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+      border-radius: 0 6px 6px 0;
+    }
+    .act-result-label {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .act-result-text {
+      white-space: pre-wrap;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--fg);
+      margin: 0;
+      max-height: 150px;
+      overflow-y: auto;
+    }
     .act-phase {
       background: color-mix(in srgb, var(--running) 10%, var(--panel-3));
       border: 1px solid color-mix(in srgb, var(--running) 20%, var(--border));
@@ -1628,6 +1653,7 @@ function dashboardHtml(config: AppConfig): string {
           var descText = '';
           if (ev.params && ev.params.path) descText = ev.params.path;
           else if (ev.params && ev.params.command) descText = ev.params.command;
+          else if (ev.params && ev.params.query) descText = '"' + ev.params.query + '"';
           desc.textContent = descText;
 
           var chevron = document.createElement('span');
@@ -1667,6 +1693,21 @@ function dashboardHtml(config: AppConfig): string {
             output.className = 'act-tool-output';
             output.textContent = rest;
             body.appendChild(output);
+          }
+
+          // Show memory tool results (extracted from Annotated blocks)
+          if (ev.result) {
+            var resultDiv = document.createElement('div');
+            resultDiv.className = 'act-tool-result';
+            var resultLabel = document.createElement('span');
+            resultLabel.className = 'act-result-label';
+            resultLabel.textContent = 'result';
+            resultDiv.appendChild(resultLabel);
+            var resultText = document.createElement('pre');
+            resultText.className = 'act-result-text';
+            resultText.textContent = ev.result;
+            resultDiv.appendChild(resultText);
+            body.appendChild(resultDiv);
           }
 
           header.onclick = function(targetNode) {

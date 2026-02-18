@@ -206,6 +206,22 @@ export class RunExecutor {
       `- Preserve existing style and architecture`,
       `- If tests are configured, satisfy them before finishing`,
       isFollowUp ? `- This is a follow-up run. Only address the feedback — do not refactor unrelated code.` : ``,
+      ``,
+      `## Memory (CEMS)`,
+      `You have memory tools: memory_search, memory_add. USE THEM.`,
+      ``,
+      `### Before coding:`,
+      `- Search for past mistakes, corrections, and patterns on this repo`,
+      `- Search for architectural decisions and coding conventions`,
+      `- Use SPECIFIC, DETAILED queries — not generic keywords. Examples:`,
+      `  - "What SEO improvements were rejected or corrected on epiccoders/pxls?"`,
+      `  - "What landing page patterns work well for this project?"`,
+      `  - "Previous bugs or issues with the landing pages controller"`,
+      ``,
+      `### After completing work:`,
+      `- Store what you learned: what files you changed, what approach worked`,
+      `- Store any gotchas or decisions for the next agent run`,
+      `- Include the repo name and specific file paths in your memory`,
     ].filter(Boolean).join("\n");
 
     await writeFile(path.join(repoDir, ".goosehints"), goosehintsContent, "utf8");

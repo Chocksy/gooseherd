@@ -2061,7 +2061,7 @@ export function startDashboardServer(
           const note = parsed.note?.trim().slice(0, 1000) || undefined;
           const by = parsed.by?.trim().slice(0, 120) || "dashboard";
 
-          // Route through RunManager so CEMS corrections are stored for negative feedback
+          // Route through RunManager so lifecycle hooks store corrections for negative feedback
           if (runManager?.saveFeedbackFromSlackAction) {
             const updated = await runManager.saveFeedbackFromSlackAction({
               runId: run.id,

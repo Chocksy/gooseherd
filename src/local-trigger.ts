@@ -5,6 +5,8 @@ import { RunStore } from "./store.js";
 import { RunExecutor } from "./executor.js";
 import { GitHubService } from "./github.js";
 import { logError, logInfo } from "./logger.js";
+import { CemsProvider } from "./memory/cems-provider.js";
+import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 
 function parseArgs(args: string[]): { repoSlug: string; baseBranch?: string; task: string } {
   if (args.length < 2) {
@@ -51,7 +53,11 @@ async function main(): Promise<void> {
   );
 
   const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
-  const executor = new RunExecutor(config, githubService);
+  const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
+    ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey })
+    : undefined;
+  const hooks = new RunLifecycleHooks(memoryProvider);
+  const executor = new RunExecutor(config, githubService, hooks);
 
   await store.updateRun(run.id, {
     status: "running",

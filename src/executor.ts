@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import type { AppConfig } from "./config.js";
 import type { ExecutionResult, RunRecord } from "./types.js";
 import { GitHubService, buildAuthenticatedGitUrl } from "./github.js";
-import type { CemsClient } from "./cems-client.js";
+import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 
 export type ExecutorPhase = "cloning" | "agent" | "validating" | "pushing";
 
@@ -161,7 +161,7 @@ export class RunExecutor {
   constructor(
     private readonly config: AppConfig,
     private readonly githubService?: GitHubService,
-    private readonly cemsClient?: CemsClient
+    private readonly hooks?: RunLifecycleHooks
   ) {}
 
   async execute(
@@ -189,17 +189,29 @@ export class RunExecutor {
       logFile
     });
 
-    // Search CEMS for relevant org memories (graceful degradation)
-    let cemsMemories = "";
-    if (this.cemsClient) {
-      cemsMemories = await this.cemsClient.searchMemories(
-        run.feedbackNote ?? run.task,
-        run.repoSlug
-      );
-    }
+    // Enrich prompt with org memories via lifecycle hooks
+    const hookSections = this.hooks ? await this.hooks.onPromptEnrich(run) : [];
+
+    // Write dynamic .goosehints with run context
+    const goosehintsContent = [
+      `# Gooseherd Run Context`,
+      ``,
+      `Run ID: ${run.id}`,
+      `Repository: ${run.repoSlug}`,
+      `Base branch: ${run.baseBranch}`,
+      `Requested by: ${run.requestedBy}`,
+      ``,
+      `## Instructions`,
+      `- Keep changes minimal and deterministic`,
+      `- Preserve existing style and architecture`,
+      `- If tests are configured, satisfy them before finishing`,
+      isFollowUp ? `- This is a follow-up run. Only address the feedback — do not refactor unrelated code.` : ``,
+    ].filter(Boolean).join("\n");
+
+    await writeFile(path.join(repoDir, ".goosehints"), goosehintsContent, "utf8");
 
     // Build the prompt — enriched with parent context and memories
-    const promptSections = this.buildPromptSections(run, parentContext, cemsMemories);
+    const promptSections = this.buildPromptSections(run, parentContext, hookSections);
     await writeFile(promptFile, promptSections.join("\n"), "utf8");
 
     let resolvedBaseBranch = run.baseBranch;
@@ -285,7 +297,8 @@ export class RunExecutor {
       repo_slug: run.repoSlug,
       parent_run_id: parentContext?.parentRunId ?? ""
     });
-    await runShell(agentCommand, {
+    const agentCmd = this.appendMcpExtension(agentCommand);
+    await runShell(agentCmd, {
       cwd: path.resolve("."),
       logFile,
       timeoutMs: this.config.agentTimeoutSeconds * 1000
@@ -348,12 +361,12 @@ export class RunExecutor {
         await writeFile(fixPromptFile, fixPrompt, "utf8");
 
         await onPhase("agent");
-        const fixAgentCmd = renderTemplate(
+        const fixAgentCmd = this.appendMcpExtension(renderTemplate(
           isFollowUp && this.config.agentFollowUpTemplate
             ? this.config.agentFollowUpTemplate
             : this.config.agentCommandTemplate,
           { ...templateVars, prompt_file: fixPromptFile, task_file: fixPromptFile }
-        );
+        ));
         await runShell(fixAgentCmd, {
           cwd: path.resolve("."),
           logFile,
@@ -459,10 +472,17 @@ export class RunExecutor {
     };
   }
 
+  private appendMcpExtension(cmd: string): string {
+    if (this.config.cemsMcpCommand) {
+      return `${cmd} --with-extension ${shellEscape(this.config.cemsMcpCommand)}`;
+    }
+    return cmd;
+  }
+
   private buildPromptSections(
     run: RunRecord,
     parentContext?: ParentRunContext,
-    cemsMemories?: string
+    hookSections: string[] = []
   ): string[] {
     const sections: string[] = [
       `Run ID: ${run.id}`,
@@ -471,14 +491,8 @@ export class RunExecutor {
       ""
     ];
 
-    if (cemsMemories) {
-      sections.push(
-        "## Relevant Knowledge (from org memory)",
-        cemsMemories,
-        "",
-        "---",
-        ""
-      );
+    if (hookSections.length > 0) {
+      sections.push(...hookSections);
     }
 
     if (parentContext) {

@@ -6,7 +6,7 @@ import type { Block, KnownBlock } from "@slack/types";
 import type { AppConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
 import { RunExecutor, type ParentRunContext } from "./executor.js";
-import type { CemsClient } from "./cems-client.js";
+import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunStore, mapExecutorPhaseToRunStatus } from "./store.js";
 import type { NewRunInput, RunRecord } from "./types.js";
 
@@ -80,7 +80,7 @@ export class RunManager {
     private readonly store: RunStore,
     private readonly executor: RunExecutor,
     private readonly slackClient: WebClient,
-    private readonly cemsClient?: CemsClient
+    private readonly hooks?: RunLifecycleHooks
   ) {
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
   }
@@ -181,13 +181,8 @@ export class RunManager {
       at: new Date().toISOString()
     });
 
-    // Store negative feedback with notes as corrections in CEMS
-    if (this.cemsClient && params.rating === "down" && params.note?.trim()) {
-      const correction = `Correction for ${run.repoSlug}: task "${run.task.slice(0, 100)}" — ${params.note.trim()}`;
-      this.cemsClient
-        .addMemory(correction, ["correction", "feedback"], `project:${run.repoSlug}`)
-        .catch(() => {});
-    }
+    // Store feedback via lifecycle hooks (hooks handle filtering + error swallowing internally)
+    this.hooks?.onFeedback(run, params.rating, params.note);
 
     if (updated.statusMessageTs) {
       await this.postOrUpdateRunCard(updated, {
@@ -361,13 +356,8 @@ export class RunManager {
 
       logInfo("Run completed", { runId: run.id, prUrl: result.prUrl });
 
-      // Store run completion as CEMS learning (fire-and-forget)
-      if (this.cemsClient) {
-        const summary = `Completed task on ${run.repoSlug}: ${run.task.slice(0, 200)}. Changed files: ${(result.changedFiles ?? []).join(", ")}`;
-        this.cemsClient
-          .addMemory(summary, ["run-completed"], `project:${run.repoSlug}`)
-          .catch(() => {});
-      }
+      // Store run completion via lifecycle hooks (fire-and-forget, errors swallowed internally)
+      this.hooks?.onRunComplete(run, result);
     } catch (error) {
       stopHeartbeat();
       const message = error instanceof Error ? error.message : "Unknown error";

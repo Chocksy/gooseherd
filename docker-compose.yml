@@ -66,6 +66,7 @@ services:
       - CEMS_ENABLED=${CEMS_ENABLED:-false}
       - CEMS_API_URL=${CEMS_API_URL:-}
       - CEMS_API_KEY=${CEMS_API_KEY:-}
+      - CEMS_MCP_COMMAND=${CEMS_MCP_COMMAND:-}
 
     volumes:
       - gooseherd-work:/app/.work

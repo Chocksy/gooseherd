@@ -38,7 +38,8 @@ const envSchema = z.object({
 
   CEMS_API_URL: z.string().optional(),
   CEMS_API_KEY: z.string().optional(),
-  CEMS_ENABLED: z.string().optional()
+  CEMS_ENABLED: z.string().optional(),
+  CEMS_MCP_COMMAND: z.string().optional()
 });
 
 function parseList(value?: string): string[] {
@@ -109,6 +110,7 @@ export interface AppConfig {
   cemsApiUrl?: string;
   cemsApiKey?: string;
   cemsEnabled: boolean;
+  cemsMcpCommand?: string;
 }
 
 export function loadConfig(): AppConfig {
@@ -157,6 +159,7 @@ export function loadConfig(): AppConfig {
 
     cemsApiUrl: parsed.CEMS_API_URL?.trim() || undefined,
     cemsApiKey: parsed.CEMS_API_KEY?.trim() || undefined,
-    cemsEnabled: parseBoolean(parsed.CEMS_ENABLED, false)
+    cemsEnabled: parseBoolean(parsed.CEMS_ENABLED, false),
+    cemsMcpCommand: parsed.CEMS_MCP_COMMAND?.trim() || undefined
   };
 }

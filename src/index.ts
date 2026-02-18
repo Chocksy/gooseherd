@@ -4,7 +4,8 @@ import { loadConfig } from "./config.js";
 import { RunStore } from "./store.js";
 import { GitHubService } from "./github.js";
 import { RunExecutor } from "./executor.js";
-import { CemsClient } from "./cems-client.js";
+import { CemsProvider } from "./memory/cems-provider.js";
+import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunManager } from "./run-manager.js";
 import { startSlackApp } from "./slack-app.js";
 import { startDashboardServer } from "./dashboard-server.js";
@@ -23,20 +24,21 @@ async function main(): Promise<void> {
   }
 
   const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
-  const cemsClient = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
-    ? new CemsClient({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey, enabled: true })
+  const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
+    ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey })
     : undefined;
-  if (cemsClient) {
-    logInfo("CEMS memory integration enabled", { url: config.cemsApiUrl });
+  const hooks = new RunLifecycleHooks(memoryProvider);
+  if (memoryProvider) {
+    logInfo("Memory integration enabled", { provider: memoryProvider.name, url: config.cemsApiUrl });
   }
-  const executor = new RunExecutor(config, githubService, cemsClient);
+  const executor = new RunExecutor(config, githubService, hooks);
 
   // Slack Web API client is created internally by Bolt, but RunManager needs a client.
   // We instantiate a temporary manager with a lightweight client via dynamic import below.
   const { WebClient } = await import("@slack/web-api");
   const webClient = new WebClient(config.slackBotToken);
 
-  const runManager = new RunManager(config, store, executor, webClient, cemsClient);
+  const runManager = new RunManager(config, store, executor, webClient, hooks);
   if (recoveredRuns.length > 0) {
     for (const run of recoveredRuns) {
       runManager.requeueExistingRun(run.id);

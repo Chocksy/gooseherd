@@ -1,4 +1,5 @@
-import { logError, logInfo } from "./logger.js";
+import type { MemoryProvider } from "./provider.js";
+import { logError, logInfo } from "../logger.js";
 
 interface CemsSearchResult {
   content: string;
@@ -12,16 +13,16 @@ interface CemsSearchResponse {
   memories?: CemsSearchResult[];
 }
 
-interface CemsConfig {
+interface CemsProviderConfig {
   apiUrl: string;
   apiKey: string;
-  enabled: boolean;
 }
 
-export class CemsClient {
-  private readonly config: CemsConfig;
+export class CemsProvider implements MemoryProvider {
+  readonly name = "cems";
+  private readonly config: CemsProviderConfig;
 
-  constructor(config: CemsConfig) {
+  constructor(config: CemsProviderConfig) {
     this.config = config;
   }
 
@@ -30,10 +31,6 @@ export class CemsClient {
     project?: string,
     maxTokens = 1500
   ): Promise<string> {
-    if (!this.config.enabled) {
-      return "";
-    }
-
     try {
       const body: Record<string, unknown> = {
         query,
@@ -81,21 +78,16 @@ export class CemsClient {
     }
   }
 
-  async addMemory(
+  async storeMemory(
     content: string,
     tags: string[] = [],
-    sourceRef?: string,
-    category = "gooseherd"
+    sourceRef?: string
   ): Promise<boolean> {
-    if (!this.config.enabled) {
-      return false;
-    }
-
     try {
       const body: Record<string, unknown> = {
         content,
         scope: "shared",
-        category,
+        category: "gooseherd",
         tags,
         infer: true
       };
@@ -120,7 +112,7 @@ export class CemsClient {
         return false;
       }
 
-      logInfo("CEMS memory stored", { category, tags: tags.join(",") });
+      logInfo("CEMS memory stored", { tags: tags.join(",") });
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

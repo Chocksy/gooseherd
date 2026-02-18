@@ -1,0 +1,91 @@
+# Gooseherd — Docker Compose for Coolify deployment
+#
+# Coolify notes:
+#   - ${VAR:?} = required (blocks deploy until set in Coolify UI)
+#   - ${VAR:-default} = optional with default
+#   - No `ports:` — Coolify's Traefik proxy handles external routing + SSL
+#   - No `env_file:` — Coolify injects env vars via its own mechanism
+#
+# For local development, create a .env file and run:
+#   docker compose --env-file .env up --build
+
+services:
+  gooseherd:
+    build: .
+    environment:
+      # ── Branding ──
+      - APP_NAME=${APP_NAME:-Gooseherd}
+
+      # ── Required (Slack) ──
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:?}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:?}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:?}
+      - SLACK_COMMAND_NAME=${SLACK_COMMAND_NAME:-gooseherd}
+      - SLACK_ALLOWED_CHANNELS=${SLACK_ALLOWED_CHANNELS:-}
+
+      # ── Required (GitHub) ──
+      - GITHUB_TOKEN=${GITHUB_TOKEN:?}
+      - GITHUB_DEFAULT_OWNER=${GITHUB_DEFAULT_OWNER:-}
+      - REPO_ALLOWLIST=${REPO_ALLOWLIST:-}
+
+      # ── Agent (Goose + OpenRouter) ──
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GOOSE_PROVIDER=${GOOSE_PROVIDER:-openrouter}
+      - GOOSE_MODEL=${GOOSE_MODEL:-}
+      - AGENT_COMMAND_TEMPLATE=${AGENT_COMMAND_TEMPLATE:?}
+      - AGENT_FOLLOW_UP_TEMPLATE=${AGENT_FOLLOW_UP_TEMPLATE:-}
+      - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-1200}
+
+      # ── Validation ──
+      - VALIDATION_COMMAND=${VALIDATION_COMMAND:-}
+      - LINT_FIX_COMMAND=${LINT_FIX_COMMAND:-}
+      - MAX_VALIDATION_ROUNDS=${MAX_VALIDATION_ROUNDS:-2}
+
+      # ── Runtime ──
+      - RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-1}
+      - WORK_ROOT=${WORK_ROOT:-.work}
+      - DATA_DIR=${DATA_DIR:-data}
+      - DRY_RUN=${DRY_RUN:-false}
+
+      # ── Git identity ──
+      - BRANCH_PREFIX=${BRANCH_PREFIX:-gooseherd}
+      - DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
+      - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-Gooseherd Bot}
+      - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-gooseherd-bot@local}
+
+      # ── Dashboard ──
+      - DASHBOARD_ENABLED=${DASHBOARD_ENABLED:-true}
+      - DASHBOARD_HOST=0.0.0.0
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-8787}
+
+      # ── Slack UX ──
+      - SLACK_PROGRESS_HEARTBEAT_SECONDS=${SLACK_PROGRESS_HEARTBEAT_SECONDS:-20}
+      - MAX_TASK_CHARS=${MAX_TASK_CHARS:-4000}
+
+      # ── CEMS Memory (optional) ──
+      - CEMS_ENABLED=${CEMS_ENABLED:-false}
+      - CEMS_API_URL=${CEMS_API_URL:-}
+      - CEMS_API_KEY=${CEMS_API_KEY:-}
+
+    volumes:
+      - gooseherd-work:/app/.work
+      - gooseherd-data:/app/data
+      - goose-sessions:/root/.local/share/goose   # Persist Goose sessions for --fork follow-ups
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/runs').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # ── Traefik basic auth (uncomment and set your credentials) ──
+    # Generate: htpasswd -nbB admin yourpassword
+    # Double $$ signs in YAML to escape bcrypt hashes
+    # labels:
+    #   - 'traefik.http.middlewares.gooseherd-auth.basicauth.users=admin:$$2y$$05$$HASH_HERE'
+
+volumes:
+  gooseherd-work:
+  gooseherd-data:
+  goose-sessions:

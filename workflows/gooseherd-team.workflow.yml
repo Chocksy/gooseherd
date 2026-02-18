@@ -1,0 +1,92 @@
+name: gooseherd_delivery
+version: 1
+summary: Multi-agent delivery workflow for Slack + dashboard observability in Gooseherd.
+
+agents:
+  - id: planner
+    role: Owns plan files, phase transitions, and acceptance criteria.
+  - id: slack_ux_agent
+    role: Implements Slack interaction UX, status cards, progress feedback.
+  - id: execution_agent
+    role: Implements run metadata, executor outputs, persistence contracts.
+  - id: dashboard_agent
+    role: Implements dashboard APIs/UI and operator feedback capture.
+  - id: workflow_agent
+    role: Maintains workflow definitions and operational runbooks.
+  - id: validator
+    role: Runs validation gates after each phase and blocks progression on failure.
+
+global_rules:
+  - Do not advance to next stage unless validator gate is green.
+  - Record findings and progress after every completed stage.
+  - On failure, log root cause and mutate approach before retry.
+
+stages:
+  - id: stage_0_baseline
+    owner: planner
+    deliverables:
+      - task_plan.md
+      - findings.md
+      - progress.md
+    validator:
+      - npm run check
+      - npm run build
+
+  - id: stage_1_slack_live_progress
+    owner: slack_ux_agent
+    deliverables:
+      - src/run-manager.ts
+      - src/config.ts
+    validator:
+      - npm run check
+      - npm run build
+
+  - id: stage_2_run_metadata
+    owner: execution_agent
+    deliverables:
+      - src/types.ts
+      - src/store.ts
+      - src/executor.ts
+      - src/local-trigger.ts
+    validator:
+      - npm run check
+      - npm run build
+
+  - id: stage_3_dashboard
+    owner: dashboard_agent
+    deliverables:
+      - src/dashboard-server.ts
+      - src/index.ts
+    validator:
+      - npm run check
+      - npm run build
+
+  - id: stage_4_workflow_definition
+    owner: workflow_agent
+    deliverables:
+      - workflows/gooseherd-team.workflow.yml
+      - workflows/validators.workflow.yml
+    validator:
+      - npm run check
+      - npm run build
+
+  - id: stage_5_specs_and_smoke
+    owner: validator
+    deliverables:
+      - tests/*.test.ts
+      - package.json scripts for test
+    validator:
+      - npm run check
+      - npm run build
+      - npm test
+
+  - id: stage_6_release_docs
+    owner: planner
+    deliverables:
+      - README.md updates
+      - .env.example updates
+      - progress.md summary
+    validator:
+      - npm run check
+      - npm run build
+      - npm test

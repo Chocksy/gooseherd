@@ -1,0 +1,46 @@
+name: gooseherd_validator_gates
+version: 1
+summary: Validator policy and command gates for Gooseherd delivery.
+
+validator_profile:
+  strict_mode: true
+  stop_on_failure: true
+  retry_policy:
+    max_attempts: 3
+    policy:
+      - attempt: 1
+        action: Fix direct root cause from error output.
+      - attempt: 2
+        action: Use alternate implementation approach.
+      - attempt: 3
+        action: Re-scope change and isolate unstable areas.
+
+phase_gates:
+  baseline:
+    required:
+      - npm run check
+      - npm run build
+
+  implementation:
+    required:
+      - npm run check
+      - npm run build
+
+  verification:
+    required:
+      - npm run check
+      - npm run build
+      - npm test
+
+manual_review_checklist:
+  - Slack run card shows active progress (not only queued/completed lines).
+  - Run records include phase and change metadata.
+  - Dashboard shows runs, tail logs, changed files, and PR link when present.
+  - Feedback can be saved against a run and retrieved afterward.
+  - README has setup instructions for new dashboard and progress features.
+
+artifacts:
+  - task_plan.md
+  - findings.md
+  - progress.md
+  - workflows/*.yml

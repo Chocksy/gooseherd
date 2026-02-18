@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+.work
+data/runs.json
+*.log
+docker-compose.override.yml

@@ -4,4 +4,5 @@ dist
 .work
 data/runs.json
 *.log
+!tests/fixtures/*.log
 docker-compose.override.yml

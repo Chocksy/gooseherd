@@ -1,0 +1,67 @@
+Gooseherd run test-simple
+
+$ git clone 'https://x-access-token:***@github.com/org/repo.git' '/tmp/repo'
+Cloning into '/tmp/repo'...
+
+$ git checkout 'main'
+Already on 'main'
+
+$ git checkout -b 'gooseherd/test-simple'
+Switched to a new branch 'gooseherd/test-simple'
+
+$ cd '/tmp/repo' && goose run --no-session --provider openrouter --model grok-4 -i '/tmp/task.md'
+starting session | provider: openrouter model: grok-4
+    session id: 20260219_01
+    working directory: /tmp/repo
+I'll analyze the codebase first.
+─── analyze | developer ──────────────────────────
+path: /tmp/repo
+max_depth: 2
+
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "5 files found",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+─── shell | developer ──────────────────────────
+command: find . -name "*.ts" -type f
+
+./src/index.ts
+./src/config.ts
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "./src/index.ts\n./src/config.ts",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+Let me edit the main file to add the feature.
+─── text_editor | developer ──────────────────────────
+path: /tmp/repo/src/index.ts
+command: str_replace
+old_str: const x = 1;
+new_str: const x = 2;
+
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "The file /tmp/repo/src/index.ts has been edited.",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+The change is complete.
+
+$ git add -A
+$ git commit -m 'feat: Update config'
+$ git push origin 'gooseherd/test-simple'

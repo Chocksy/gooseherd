@@ -1,0 +1,105 @@
+Gooseherd run test-memory-batch
+
+$ git clone 'https://x-access-token:***@github.com/org/repo.git' '/tmp/repo'
+--- loading .bash_profile
+🎊 All secrets loaded from cache! Go forth and code!
+Cloning into '/tmp/repo'...
+
+$ cd '/tmp/repo' && goose run --no-session --provider openrouter --model test-model -i '/tmp/task.md' --with-extension 'cems-mcp'
+--- loading .bash_profile
+🎊 All secrets loaded from cache! Go forth and code!
+starting session | provider: openrouter model: test-model
+    session id: 20260218_99
+    working directory: /tmp/repo
+
+─── memory_search | cems ──────────────────────────
+query: SEO improvements for landing pages
+project: org/repo
+
+
+─── memory_search | cems ──────────────────────────
+query: past mistakes corrections
+project: org/repo
+
+
+─── shell | developer ──────────────────────────
+command: git log --oneline -5
+
+abc1234 feat: Add feature
+def5678 fix: Bug fix
+
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "Updated (100 chars)",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "{\"success\": true, \"results\": [{\"memory_id\": \"aaa-111\", \"content\": \"Previous SEO work on landing pages\", \"score\": 0.95, \"scope\": \"shared\", \"category\": \"gooseherd\", \"source_ref\": \"project:org/repo\", \"tags\": [\"run-completed\"]}], \"count\": 1, \"mode\": \"vector\", \"tokens_used\": 42, \"queries_used\": [\"SEO improvements\"], \"total_candidates\": 1, \"filtered_count\": 1, \"intent\": null}",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "{\"success\": true, \"results\": [{\"memory_id\": \"bbb-222\", \"content\": \"Correction: avoid changing meta tags without checking GSC data first\", \"score\": 0.88, \"scope\": \"shared\", \"category\": \"gooseherd\", \"source_ref\": \"project:org/repo\", \"tags\": [\"correction\"]}], \"count\": 1, \"mode\": \"vector\", \"tokens_used\": 55, \"queries_used\": [\"past mistakes\"], \"total_candidates\": 1, \"filtered_count\": 1, \"intent\": null}",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+Now I'll implement the changes based on what I found.
+─── text_editor | developer ──────────────────────────
+path: /tmp/repo/src/index.ts
+command: view
+
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "file contents here",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+─── memory_search | cems ──────────────────────────
+query: nonexistent topic with zero results
+project: org/repo
+
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "{\"success\": true, \"results\": [], \"count\": 0, \"mode\": \"vector\", \"tokens_used\": 0, \"queries_used\": [\"nonexistent topic\"], \"total_candidates\": 0, \"filtered_count\": 0, \"intent\": null}",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+─── memory_add | cems ──────────────────────────
+content: Completed SEO improvements on org/repo. Changed index.ts.
+tags: run-completed
+source_ref: project:org/repo
+
+Annotated {
+    raw: Text(
+        RawTextContent {
+            text: "{\"success\": true, \"memory_id\": \"ccc-333\"}",
+            meta: None,
+        },
+    ),
+    annotations: None,
+}
+
+$ git add -A
+$ git commit -m 'feat: SEO improvements'
+$ git push origin 'gooseherd/test-123'

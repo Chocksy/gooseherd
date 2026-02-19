@@ -579,7 +579,7 @@ export class RunExecutor {
     lines.push(
       "",
       "---",
-      `*Automated by [${this.config.appName}](https://github.com/Chocksy/gooseherd)*`
+      `*Automated by [${this.config.appName}](https://goose-herd.com)*`
     );
 
     return lines.join("\n");

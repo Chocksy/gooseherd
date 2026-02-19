@@ -2,6 +2,11 @@
   "name": "gooseherd",
   "version": "0.1.0",
   "private": true,
+  "homepage": "https://goose-herd.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Chocksy/gooseherd.git"
+  },
   "description": "Self-hosted AI coding agent orchestrator — herds Goose agents via Slack and opens PRs",
   "type": "module",
   "scripts": {

@@ -1,6 +1,8 @@
-# Gooseherd
+# [Gooseherd](https://goose-herd.com)
 
-Gooseherd is a Slack-native coding agent controller. In this first version it:
+Self-hosted AI coding agent orchestrator — herds [Goose](https://github.com/block/goose) agents via Slack and opens PRs.
+
+In this first version it:
 
 1. Accepts commands from Slack (Socket Mode, no public webhook needed).
 2. Enqueues a run with task + repo target.

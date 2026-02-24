@@ -49,6 +49,16 @@ nodes:
     type: deterministic
     action: create_pr
 
+  # CI feedback loop — wait for CI, fix if needed (no-ops when CI_WAIT_ENABLED=false)
+  - id: wait_ci
+    type: async
+    action: wait_ci
+    on_failure:
+      action: loop
+      agent_node: fix_ci
+      max_rounds: 2
+      on_exhausted: complete_with_warning
+
   - id: notify
     type: deterministic
     action: notify

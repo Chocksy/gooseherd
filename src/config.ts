@@ -45,6 +45,7 @@ const envSchema = z.object({
   CEMS_API_KEY: z.string().optional(),
   CEMS_ENABLED: z.string().optional(),
   CEMS_MCP_COMMAND: z.string().optional(),
+  CEMS_TEAM_ID: z.string().optional(),
   MCP_EXTENSIONS: z.string().optional(),
 
   PIPELINE_FILE: z.string().optional(),
@@ -159,6 +160,7 @@ export interface AppConfig {
   cemsApiKey?: string;
   cemsEnabled: boolean;
   cemsMcpCommand?: string;
+  cemsTeamId?: string;
   mcpExtensions: string[];
 
   pipelineFile: string;
@@ -277,6 +279,7 @@ export function loadConfig(): AppConfig {
     cemsApiKey: parsed.CEMS_API_KEY?.trim() || undefined,
     cemsEnabled: parseBoolean(parsed.CEMS_ENABLED, false),
     cemsMcpCommand: parsed.CEMS_MCP_COMMAND?.trim() || undefined,
+    cemsTeamId: parsed.CEMS_TEAM_ID?.trim() || undefined,
     mcpExtensions: buildMcpExtensions(parsed.CEMS_MCP_COMMAND, parsed.MCP_EXTENSIONS),
 
     pipelineFile: parsed.PIPELINE_FILE?.trim() || "pipelines/default.yml",

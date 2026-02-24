@@ -12,6 +12,50 @@ import type { ExecutionResult, NewRunInput, RunRecord } from "./types.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+interface ClassifiedError {
+  category: string;
+  friendly: string;
+  suggestion: string;
+}
+
+const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
+  {
+    test: /failed to clone|clone.*failed|fatal:.*repository|failed to (fetch|checkout).*branch/i,
+    result: { category: "clone", friendly: "Failed to clone repository", suggestion: "Check that the repo exists and GITHUB_TOKEN has access." }
+  },
+  {
+    test: /exceeded \d+s.*terminating|\[timeout\]/i,
+    result: { category: "timeout", friendly: "Agent timed out", suggestion: "The task may be too complex. Try breaking it into smaller steps or increase AGENT_TIMEOUT_SECONDS." }
+  },
+  {
+    test: /no meaningful changes|whitespace-only|mass deletion detected/i,
+    result: { category: "no_changes", friendly: "Agent produced no useful changes", suggestion: "Try rephrasing the task with more specific instructions." }
+  },
+  {
+    test: /validation failed after \d+ retry/i,
+    result: { category: "validation", friendly: "Validation failed after retries", suggestion: "The linter or tests are failing. Run your validation command locally to debug." }
+  },
+  {
+    test: /agent exited with code|command failed with exit code/i,
+    result: { category: "agent_crash", friendly: "Agent process crashed", suggestion: "Check the run logs for details. The agent may have hit an internal error." }
+  },
+  {
+    test: /push.*rejected|failed to push|remote:.*rejected/i,
+    result: { category: "push", friendly: "Push to remote was rejected", suggestion: "The branch may have conflicts or branch protection rules. Check repository settings." }
+  },
+  {
+    test: /pr.*failed|pull request.*failed|create_pr.*failed/i,
+    result: { category: "pr", friendly: "Failed to create pull request", suggestion: "Check that GITHUB_TOKEN has permission to create PRs on this repo." }
+  },
+];
+
+export function classifyError(message: string): ClassifiedError {
+  for (const { test, result } of ERROR_PATTERNS) {
+    if (test.test(message)) return result;
+  }
+  return { category: "unknown", friendly: "Run failed", suggestion: "Check the run logs for details." };
+}
+
 function shortRunId(id: string): string {
   return id.slice(0, 8);
 }
@@ -431,9 +475,18 @@ export class RunManager {
         lines.push("---");
         lines.push(`Ready for instructions. Reply in this thread to request changes or say \`retry\` to start over.`);
       } else if (run.status === "failed") {
+        const classified = run.error ? classifyError(run.error) : undefined;
         lines.push(`*Run failed* for *${run.repoSlug}*`);
 
-        if (run.error) {
+        if (classified && classified.category !== "unknown") {
+          lines.push(`*${classified.friendly}*`);
+          if (run.error) {
+            const errorPreview = (run.error.length > 150 ? run.error.slice(0, 150) + "..." : run.error)
+              .split("\n").map((l) => `> ${l}`).join("\n");
+            lines.push(errorPreview);
+          }
+          lines.push(`_Suggestion: ${classified.suggestion}_`);
+        } else if (run.error) {
           const errorPreview = (run.error.length > 200 ? run.error.slice(0, 200) + "..." : run.error)
             .split("\n").map((l) => `> ${l}`).join("\n");
           lines.push(errorPreview);

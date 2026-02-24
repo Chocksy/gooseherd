@@ -16,6 +16,7 @@ interface CemsSearchResponse {
 interface CemsProviderConfig {
   apiUrl: string;
   apiKey: string;
+  teamId?: string;
 }
 
 export class CemsProvider implements MemoryProvider {
@@ -24,6 +25,17 @@ export class CemsProvider implements MemoryProvider {
 
   constructor(config: CemsProviderConfig) {
     this.config = config;
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.config.apiKey}`
+    };
+    if (this.config.teamId) {
+      headers["x-team-id"] = this.config.teamId;
+    }
+    return headers;
   }
 
   async searchMemories(
@@ -44,10 +56,7 @@ export class CemsProvider implements MemoryProvider {
 
       const response = await fetch(`${this.config.apiUrl}/api/memory/search`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.apiKey}`
-        },
+        headers: this.buildHeaders(),
         body: JSON.stringify(body)
       });
 
@@ -97,10 +106,7 @@ export class CemsProvider implements MemoryProvider {
 
       const response = await fetch(`${this.config.apiUrl}/api/memory/add`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.apiKey}`
-        },
+        headers: this.buildHeaders(),
         body: JSON.stringify(body)
       });
 

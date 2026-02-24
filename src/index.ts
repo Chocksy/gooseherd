@@ -11,10 +11,23 @@ import { startSlackApp } from "./slack-app.js";
 import { startDashboardServer } from "./dashboard-server.js";
 import { WorkspaceCleaner } from "./workspace-cleaner.js";
 import { ObserverDaemon } from "./observer/index.js";
-import { logError, logInfo } from "./logger.js";
+import { execSync } from "node:child_process";
+import { logError, logInfo, logWarn } from "./logger.js";
+
+function checkAgentDefault(config: { agentCommandTemplate: string }): void {
+  if (!config.agentCommandTemplate.includes("dummy-agent")) return;
+
+  try {
+    execSync("which goose", { stdio: "pipe" });
+    logWarn("Using dummy agent but goose is on PATH. Set AGENT_COMMAND_TEMPLATE to use the real agent.");
+  } catch {
+    logWarn("No AGENT_COMMAND_TEMPLATE set and goose not found on PATH. Using dummy agent — runs will not produce real code changes.");
+  }
+}
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  checkAgentDefault(config);
 
   const store = new RunStore(config.dataDir);
   await store.init();
@@ -27,7 +40,7 @@ async function main(): Promise<void> {
 
   const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
   const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
-    ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey })
+    ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey, teamId: config.cemsTeamId })
     : undefined;
   const hooks = new RunLifecycleHooks(memoryProvider);
   if (memoryProvider) {

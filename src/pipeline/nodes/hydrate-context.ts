@@ -91,6 +91,13 @@ export async function hydrateContextNode(
     if (parentContext.parentChangedFiles && parentContext.parentChangedFiles.length > 0) {
       sections.push(`Files changed in previous run: ${parentContext.parentChangedFiles.join(", ")}`, "");
     }
+
+    // Inject actual diff content from previous run's commit
+    const diffContent = await getParentDiff(repoDir, deps.logFile);
+    if (diffContent) {
+      sections.push("### Changes from previous run", "```diff", diffContent, "```", "");
+    }
+
     sections.push("---", "");
   }
 
@@ -227,4 +234,29 @@ const TASK_TYPE_INSTRUCTIONS: Record<string, string[]> = {
 
 export function getExpectedOutput(taskType: string): string[] {
   return TASK_TYPE_INSTRUCTIONS[taskType] ?? TASK_TYPE_INSTRUCTIONS["chore"]!;
+}
+
+// ── Parent diff extraction for follow-up runs ──
+
+const MAX_DIFF_CHARS = 3000;
+
+async function getParentDiff(repoDir: string, logFile: string): Promise<string | undefined> {
+  try {
+    // Check if there's a parent commit to diff against
+    const logResult = await runShellCapture("git rev-list --count HEAD", { cwd: repoDir, logFile });
+    const commitCount = Number.parseInt(logResult.stdout.trim(), 10);
+    if (logResult.code !== 0 || commitCount < 2) return undefined;
+
+    const diffResult = await runShellCapture(
+      "git diff HEAD~1..HEAD --unified=3",
+      { cwd: repoDir, logFile }
+    );
+    if (diffResult.code !== 0 || !diffResult.stdout.trim()) return undefined;
+
+    const diff = diffResult.stdout;
+    if (diff.length <= MAX_DIFF_CHARS) return diff;
+    return diff.slice(0, MAX_DIFF_CHARS) + "\n... (truncated)";
+  } catch {
+    return undefined;
+  }
 }

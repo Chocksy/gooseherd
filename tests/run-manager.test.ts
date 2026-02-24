@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { RunManager } from "../src/run-manager.js";
+import { RunManager, classifyError } from "../src/run-manager.js";
 import { RunStore } from "../src/store.js";
 import type { AppConfig } from "../src/config.js";
 import type { PipelineEngine } from "../src/pipeline/pipeline-engine.js";
@@ -546,6 +546,113 @@ test("summary limits displayed files to 10", async () => {
   const summary = postMessages[postMessages.length - 1];
   const summaryText = summary.args.text as string;
   assert.ok(summaryText.includes("+5 more"), "Should show overflow count for files > 10");
+
+  await cleanupTestStore(tmpDir);
+});
+
+// ── classifyError ─────────────────────────────────────
+
+test("classifyError matches clone failures", () => {
+  const result = classifyError("fatal: repository 'https://github.com/org/repo' not found");
+  assert.equal(result.category, "clone");
+  assert.ok(result.friendly.includes("clone"));
+
+  const result2 = classifyError("failed to clone org/repo");
+  assert.equal(result2.category, "clone");
+
+  const result3 = classifyError("Failed to fetch parent branch 'fix/typo' from origin.");
+  assert.equal(result3.category, "clone");
+
+  const result4 = classifyError("Failed to checkout parent branch 'fix/typo'.");
+  assert.equal(result4.category, "clone");
+});
+
+test("classifyError matches timeout errors", () => {
+  const result = classifyError("exceeded 300s limit — terminating agent process");
+  assert.equal(result.category, "timeout");
+  assert.ok(result.suggestion.includes("AGENT_TIMEOUT_SECONDS"));
+
+  const result2 = classifyError("Agent [timeout] after 600 seconds");
+  assert.equal(result2.category, "timeout");
+});
+
+test("classifyError matches no-changes errors", () => {
+  const result = classifyError("no meaningful changes detected after agent run");
+  assert.equal(result.category, "no_changes");
+
+  const result2 = classifyError("mass deletion detected — aborting");
+  assert.equal(result2.category, "no_changes");
+});
+
+test("classifyError matches validation failures", () => {
+  const result = classifyError("validation failed after 3 retry rounds");
+  assert.equal(result.category, "validation");
+  assert.ok(result.suggestion.includes("linter"));
+});
+
+test("classifyError matches agent crash", () => {
+  const result = classifyError("agent exited with code 1");
+  assert.equal(result.category, "agent_crash");
+
+  const result2 = classifyError("command failed with exit code 137");
+  assert.equal(result2.category, "agent_crash");
+});
+
+test("classifyError matches push rejections", () => {
+  const result = classifyError("failed to push refs to 'https://github.com/org/repo.git'");
+  assert.equal(result.category, "push");
+
+  const result2 = classifyError("remote: rejected — branch is protected");
+  assert.equal(result2.category, "push");
+});
+
+test("classifyError matches PR creation failures", () => {
+  const result = classifyError("pull request creation failed: 422 Unprocessable Entity");
+  assert.equal(result.category, "pr");
+
+  const result2 = classifyError("create_pr node failed");
+  assert.equal(result2.category, "pr");
+});
+
+test("classifyError returns unknown for unrecognized errors", () => {
+  const result = classifyError("something completely unexpected happened");
+  assert.equal(result.category, "unknown");
+  assert.equal(result.friendly, "Run failed");
+  assert.ok(result.suggestion.includes("logs"));
+});
+
+test("classifyError returns first matching pattern when multiple could match", () => {
+  // "failed to clone" matches clone pattern, even if it contains other keywords
+  const result = classifyError("failed to clone — command failed with exit code 128");
+  assert.equal(result.category, "clone", "Should match first pattern (clone) not later ones (agent_crash)");
+});
+
+// ── failure summary with classified error ─────────────
+
+test("failure summary shows classified error with suggestion for known patterns", async () => {
+  const { store, tmpDir } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const mockPipeline = makeMockPipelineEngineFailing("failed to clone org/repo: fatal: repository not found");
+  const config = makeConfig();
+
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+
+  await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "fix the bug",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000"
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
+  const summary = postMessages[postMessages.length - 1];
+  const summaryText = summary.args.text as string;
+  assert.ok(summaryText.includes("Failed to clone repository"), "Should show friendly error name");
+  assert.ok(summaryText.includes("GITHUB_TOKEN"), "Should show suggestion");
 
   await cleanupTestStore(tmpDir);
 });

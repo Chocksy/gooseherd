@@ -42,7 +42,6 @@ export async function commitNode(
   if (commitShaResult.code !== 0) {
     return { outcome: "failure", error: "Failed to determine commit SHA." };
   }
-  // Use last line — some shells emit profile noise before the actual SHA
   const commitSha = commitShaResult.stdout.trim().split("\n").pop()?.trim() ?? "";
 
   // Capture changed files

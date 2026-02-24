@@ -1,5 +1,6 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
+import type { AgentAnalysis } from "./implement.js";
 
 /**
  * Create PR node: create or update pull request via GitHub API.
@@ -21,7 +22,8 @@ export async function createPrNode(
 
   const prTitle = `${config.appSlug}: ${run.task.slice(0, 80)}`;
   const gateReport = ctx.get<Array<{ gate: string; verdict: string; reasons: string[] }>>("gateReport");
-  const prBody = buildPrBody(run, resolvedBaseBranch, config.appName, isFollowUp, gateReport);
+  const agentAnalysis = ctx.get<AgentAnalysis>("agentAnalysis");
+  const prBody = buildPrBody(run, resolvedBaseBranch, config.appName, isFollowUp, gateReport, agentAnalysis);
 
   const prResult = isFollowUp
     ? await deps.githubService.findOrCreatePullRequest({
@@ -48,12 +50,13 @@ export async function createPrNode(
   };
 }
 
-function buildPrBody(
+export function buildPrBody(
   run: { id: string; task: string; requestedBy: string; parentRunId?: string; feedbackNote?: string; chainIndex?: number },
   resolvedBaseBranch: string,
   appName: string,
   isFollowUp: boolean,
-  gateReport?: Array<{ gate: string; verdict: string; reasons: string[] }>
+  gateReport?: Array<{ gate: string; verdict: string; reasons: string[] }>,
+  agentAnalysis?: AgentAnalysis
 ): string {
   const lines = [
     "## Task",
@@ -77,6 +80,29 @@ function buildPrBody(
       `- **Previous run:** \`${run.parentRunId.slice(0, 8)}\``,
       `- **Chain depth:** ${String(run.chainIndex ?? 1)}`
     );
+  }
+
+  // Append agent analysis (change summary)
+  if (agentAnalysis) {
+    lines.push(
+      "",
+      "## Changes",
+      "",
+      `- **Files changed:** ${String(agentAnalysis.diffStats.filesCount)}`,
+      `- **Lines:** +${String(agentAnalysis.diffStats.added)} / -${String(agentAnalysis.diffStats.removed)}`
+    );
+    if (agentAnalysis.filesChanged.length > 0 && agentAnalysis.filesChanged.length <= 20) {
+      lines.push("");
+      for (const file of agentAnalysis.filesChanged) {
+        lines.push(`  - \`${file}\``);
+      }
+    }
+    if (agentAnalysis.signals.length > 0) {
+      lines.push("", "**Signals:**");
+      for (const signal of agentAnalysis.signals) {
+        lines.push(`- ${signal}`);
+      }
+    }
   }
 
   // Append quality gate report if any gates ran with warnings

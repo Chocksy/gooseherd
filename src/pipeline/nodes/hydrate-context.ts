@@ -1,7 +1,8 @@
-import { writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
+import { runShellCapture } from "../shell.js";
 
 /**
  * Hydrate context node: write .goosehints, build prompt file.
@@ -93,18 +94,137 @@ export async function hydrateContextNode(
     sections.push("---", "");
   }
 
+  // Build repo summary for codebase awareness
+  const repoSummary = await buildRepoSummary(repoDir, deps.logFile);
+  if (repoSummary) {
+    sections.push("## Repository Context", "", repoSummary, "");
+  }
+
+  const taskType = ctx.get<string>("taskType") ?? "chore";
   sections.push(
+    `Task type: ${taskType}`,
+    "",
     "Task:",
     parentContext?.feedbackNote ?? run.task,
     "",
-    "Expected output:",
-    "- Implement the requested changes.",
-    "- Keep changes minimal and deterministic.",
-    "- Preserve existing style and architecture.",
-    "- If tests are configured, satisfy them before finishing."
+    ...getExpectedOutput(taskType)
   );
 
   await writeFile(promptFile, sections.join("\n"), "utf8");
 
   return { outcome: "success" };
+}
+
+// ── Repo summary builder ──
+
+const EXCLUDED_DIRS = ["node_modules", ".git", "vendor", "dist", "build", "__pycache__", ".venv", ".next", ".turbo", "coverage"];
+const EXCLUDE_ARGS = EXCLUDED_DIRS.map(d => `-not -path '*/${d}/*'`).join(" ");
+
+const TECH_STACK_FILES: Record<string, string> = {
+  "package.json": "Node.js",
+  "Gemfile": "Ruby",
+  "requirements.txt": "Python",
+  "pyproject.toml": "Python",
+  "Cargo.toml": "Rust",
+  "go.mod": "Go",
+  "tsconfig.json": "TypeScript",
+  "docker-compose.yml": "Docker Compose",
+  "Dockerfile": "Docker",
+  ".github/workflows": "GitHub Actions CI",
+};
+
+const CONVENTION_FILES = [
+  ".eslintrc*", ".prettierrc*", "rubocop.yml", ".rubocop.yml",
+  "ruff.toml", ".editorconfig", "biome.json", ".stylelintrc*",
+];
+
+export async function buildRepoSummary(repoDir: string, logFile: string): Promise<string | undefined> {
+  try {
+    const parts: string[] = [];
+
+    // 1. Directory tree (maxdepth 2, capped at 40)
+    const treeResult = await runShellCapture(
+      `find . -maxdepth 2 -type d ${EXCLUDE_ARGS} | head -40`,
+      { cwd: repoDir, logFile }
+    );
+    if (treeResult.code === 0 && treeResult.stdout.trim()) {
+      parts.push("### Directory structure", "```", treeResult.stdout.trim(), "```");
+    }
+
+    // 2. Tech stack detection (using fs.access — avoids login-shell output pollution)
+    const detected: string[] = [];
+    for (const [file, tech] of Object.entries(TECH_STACK_FILES)) {
+      try {
+        await access(path.join(repoDir, file));
+        detected.push(tech);
+      } catch {
+        // file doesn't exist — skip
+      }
+    }
+    if (detected.length > 0) {
+      parts.push(`### Tech stack: ${[...new Set(detected)].join(", ")}`);
+    }
+
+    // 3. README excerpt (first 30 lines, capped at 500 chars)
+    try {
+      const readmeContent = await readFile(path.join(repoDir, "README.md"), "utf8");
+      const excerpt = readmeContent.split("\n").slice(0, 30).join("\n").slice(0, 500);
+      if (excerpt.trim()) {
+        parts.push("### README excerpt", excerpt.trim());
+      }
+    } catch {
+      // No README — skip
+    }
+
+    // 4. Convention files
+    const conventionResult = await runShellCapture(
+      `ls -1 ${CONVENTION_FILES.join(" ")} 2>/dev/null || true`,
+      { cwd: repoDir, logFile }
+    );
+    const conventions = conventionResult.stdout.trim();
+    if (conventions) {
+      parts.push(`### Conventions: ${conventions.split("\n").join(", ")}`);
+    }
+
+    return parts.length > 0 ? parts.join("\n") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ── Task-type prompt templates ──
+
+const TASK_TYPE_INSTRUCTIONS: Record<string, string[]> = {
+  bugfix: [
+    "Expected output:",
+    "- Identify the root cause before writing any fix.",
+    "- Make a surgical, minimal fix — do not refactor surrounding code.",
+    "- Add a regression test that would have caught this bug.",
+    "- Preserve all non-buggy behavior and existing tests.",
+  ],
+  feature: [
+    "Expected output:",
+    "- Follow the existing architecture and patterns in the codebase.",
+    "- Add tests for the new functionality.",
+    "- Keep scope tight — implement exactly what was requested, nothing more.",
+    "- Preserve existing style and conventions.",
+  ],
+  refactor: [
+    "Expected output:",
+    "- Preserve ALL existing behavior — no functional changes.",
+    "- Ensure all existing tests continue to pass.",
+    "- Update all references and call sites affected by the refactor.",
+    "- Keep changes minimal and focused on the refactoring goal.",
+  ],
+  chore: [
+    "Expected output:",
+    "- Implement the requested changes.",
+    "- Keep changes minimal and deterministic.",
+    "- Preserve existing style and architecture.",
+    "- If tests are configured, satisfy them before finishing.",
+  ],
+};
+
+export function getExpectedOutput(taskType: string): string[] {
+  return TASK_TYPE_INSTRUCTIONS[taskType] ?? TASK_TYPE_INSTRUCTIONS["chore"]!;
 }

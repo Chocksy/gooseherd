@@ -1,6 +1,6 @@
 version: 1
 name: "default"
-description: "Default pipeline — replicates current executor.ts behavior exactly"
+description: "Default pipeline — clone, implement, validate, commit, push, PR"
 
 context:
   max_validation_rounds: 2
@@ -9,6 +9,10 @@ nodes:
   - id: clone
     type: deterministic
     action: clone
+
+  - id: classify_task
+    type: deterministic
+    action: classify_task
 
   - id: hydrate
     type: deterministic

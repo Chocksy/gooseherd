@@ -10,13 +10,13 @@ nodes:
     type: deterministic
     action: clone
 
-  - id: hydrate
-    type: deterministic
-    action: hydrate_context
-
   - id: classify_task
     type: deterministic
     action: classify_task
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
 
   - id: implement
     type: agentic

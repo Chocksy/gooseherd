@@ -102,12 +102,14 @@ export async function runShell(
 
 export async function runShellCapture(
   command: string,
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; logFile: string }
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; logFile: string; timeoutMs?: number; login?: boolean }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   await appendLog(options.logFile, `\n$ ${sanitizeForLogs(command)}\n`);
 
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn("bash", ["-lc", command], {
+    let settled = false;
+    const bashFlags = options.login ? "-lc" : "-c";
+    const child = spawn("bash", [bashFlags, command], {
       cwd: options.cwd,
       env: {
         ...process.env,
@@ -117,6 +119,22 @@ export async function runShellCapture(
 
     let stdout = "";
     let stderr = "";
+
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    if (options.timeoutMs && options.timeoutMs > 0) {
+      const timeoutMs = options.timeoutMs;
+      timeoutHandle = setTimeout(() => {
+        if (settled) return;
+        appendLog(
+          options.logFile,
+          `\n[timeout] command exceeded ${String(Math.floor(timeoutMs / 1000))}s, terminating\n`
+        ).catch(() => {});
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (!settled) child.kill("SIGKILL");
+        }, 5000);
+      }, timeoutMs);
+    }
 
     child.stdout.on("data", async (chunk) => {
       const text = chunk.toString();
@@ -131,10 +149,16 @@ export async function runShellCapture(
     });
 
     child.on("exit", (code) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (settled) return;
+      settled = true;
       resolve({ code: code ?? 1, stdout, stderr });
     });
 
     child.on("error", (error) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (settled) return;
+      settled = true;
       reject(error);
     });
   });

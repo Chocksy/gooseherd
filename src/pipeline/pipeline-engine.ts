@@ -97,6 +97,11 @@ export class PipelineEngine {
     const logFile = path.join(runDir, "run.log");
     const checkpointDir = path.join(runDir, "checkpoints");
 
+    // Ensure run directory + log file exist before pipeline starts
+    // (the clone node will rm + recreate, but we need the dir for pre-node logging)
+    await mkdir(runDir, { recursive: true });
+    await appendLog(logFile, `${this.config.appName} pipeline started for ${run.id}\n`);
+
     // Initialize context bag
     const ctx = new ContextBag({
       runId: run.id,

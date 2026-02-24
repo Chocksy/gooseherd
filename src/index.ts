@@ -4,11 +4,14 @@ import { loadConfig } from "./config.js";
 import { RunStore } from "./store.js";
 import { GitHubService } from "./github.js";
 import { RunExecutor } from "./executor.js";
+import { PipelineEngine } from "./pipeline/index.js";
 import { CemsProvider } from "./memory/cems-provider.js";
 import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunManager } from "./run-manager.js";
 import { startSlackApp } from "./slack-app.js";
 import { startDashboardServer } from "./dashboard-server.js";
+import { WorkspaceCleaner } from "./workspace-cleaner.js";
+import { ObserverDaemon } from "./observer/index.js";
 import { logError, logInfo } from "./logger.js";
 
 async function main(): Promise<void> {
@@ -32,13 +35,20 @@ async function main(): Promise<void> {
     logInfo("Memory integration enabled", { provider: memoryProvider.name, url: config.cemsApiUrl });
   }
   const executor = new RunExecutor(config, githubService, hooks);
+  const pipelineEngine = config.pipelineEngineEnabled
+    ? new PipelineEngine(config, githubService, hooks)
+    : undefined;
+
+  if (pipelineEngine) {
+    logInfo("Pipeline engine enabled", { pipelineFile: config.pipelineFile });
+  }
 
   // Slack Web API client is created internally by Bolt, but RunManager needs a client.
   // We instantiate a temporary manager with a lightweight client via dynamic import below.
   const { WebClient } = await import("@slack/web-api");
   const webClient = new WebClient(config.slackBotToken);
 
-  const runManager = new RunManager(config, store, executor, webClient, hooks);
+  const runManager = new RunManager(config, store, executor, webClient, hooks, pipelineEngine);
   if (recoveredRuns.length > 0) {
     for (const run of recoveredRuns) {
       runManager.requeueExistingRun(run.id);
@@ -50,6 +60,16 @@ async function main(): Promise<void> {
     startDashboardServer(config, store, runManager);
   }
 
+  const cleaner = new WorkspaceCleaner(config, store);
+  cleaner.start();
+
+  if (config.observerEnabled) {
+    const observer = new ObserverDaemon(config, runManager, webClient);
+    await observer.start();
+    globalRefs.observer = observer;
+    logInfo("Observer system enabled");
+  }
+
   await startSlackApp(config, runManager);
 }
 
@@ -59,12 +79,21 @@ main().catch((error) => {
   process.exit(1);
 });
 
-process.on("SIGINT", () => {
-  logInfo("Shutting down (SIGINT)");
+async function shutdown(signal: string): Promise<void> {
+  logInfo(`Shutting down (${signal})`);
+  // Flush observer state before exit
+  try {
+    const { observer: obs } = globalRefs;
+    if (obs) await obs.stop();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "unknown";
+    logError("Error during observer shutdown", { error: msg });
+  }
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-  logInfo("Shutting down (SIGTERM)");
-  process.exit(0);
-});
+// Global refs for shutdown access
+const globalRefs: { observer?: ObserverDaemon } = {};
+
+process.on("SIGINT", () => { shutdown("SIGINT"); });
+process.on("SIGTERM", () => { shutdown("SIGTERM"); });

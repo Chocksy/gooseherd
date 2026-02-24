@@ -1,0 +1,69 @@
+version: 1
+name: "with-quality-gates"
+description: "Pipeline with pre-push quality gates: diff size, forbidden files, security scan"
+
+context:
+  max_validation_rounds: 2
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: classify_task
+    type: deterministic
+    action: classify_task
+
+  - id: implement
+    type: agentic
+    action: implement
+
+  - id: lint_fix
+    type: deterministic
+    action: lint_fix
+    if: "config.lintFixCommand != ''"
+
+  - id: validate
+    type: deterministic
+    action: validate
+    if: "config.validationCommand != ''"
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
+      until: "validate.exit_code == 0"
+
+  # Quality gates — run after validation, before commit
+  - id: diff_gate
+    type: conditional
+    action: diff_gate
+    on_soft_fail: warn
+
+  - id: forbidden_files
+    type: conditional
+    action: forbidden_files
+    on_soft_fail: warn
+
+  - id: security_scan
+    type: deterministic
+    action: security_scan
+
+  - id: commit
+    type: deterministic
+    action: commit
+
+  - id: push
+    type: deterministic
+    action: push
+
+  - id: create_pr
+    type: deterministic
+    action: create_pr
+
+  - id: notify
+    type: deterministic
+    action: notify

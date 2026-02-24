@@ -336,5 +336,11 @@ export function mapExecutorPhaseToRunStatus(phase: string): RunStatus {
   if (phase === "pushing") {
     return "pushing";
   }
+  if (phase === "awaiting_ci") {
+    return "awaiting_ci";
+  }
+  if (phase === "ci_fixing") {
+    return "ci_fixing";
+  }
   return "running";
 }

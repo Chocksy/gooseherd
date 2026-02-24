@@ -410,8 +410,7 @@ export class RunExecutor {
 
     await runShell("git add -A", { cwd: repoDir, logFile });
     const taskSummary = (isFollowUp ? run.feedbackNote ?? run.task : run.task).slice(0, 72);
-    const appSlug = this.config.appName.toLowerCase().replace(/\s+/g, "-");
-    const commitMsg = `${appSlug}: ${taskSummary}`;
+    const commitMsg = `${this.config.appSlug}: ${taskSummary}`;
     await runShell(`git commit -m ${shellEscape(commitMsg)}`, {
       cwd: repoDir,
       logFile
@@ -459,11 +458,11 @@ export class RunExecutor {
       logFile
     });
 
-    const prTitle = `${appSlug}: ${run.task.slice(0, 80)}`;
+    const prTitle = `${this.config.appSlug}: ${run.task.slice(0, 80)}`;
     const prBody = this.buildPrBody(run, resolvedBaseBranch, parentContext);
 
     // Follow-ups update existing PR; fresh runs create new
-    const prUrl = isFollowUp
+    const prResult = isFollowUp
       ? await this.githubService.findOrCreatePullRequest({
           repoSlug: run.repoSlug,
           title: prTitle,
@@ -484,7 +483,7 @@ export class RunExecutor {
       logsPath: logFile,
       commitSha,
       changedFiles,
-      prUrl
+      prUrl: prResult.url
     };
   }
 

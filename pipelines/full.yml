@@ -1,0 +1,93 @@
+version: 1
+name: "full"
+description: "Full pipeline with quality gates, CI feedback, scope judge, and browser verification"
+
+context:
+  max_validation_rounds: 2
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: classify_task
+    type: deterministic
+    action: classify_task
+
+  - id: implement
+    type: agentic
+    action: implement
+
+  - id: lint_fix
+    type: deterministic
+    action: lint_fix
+    if: "config.lintFixCommand != ''"
+
+  - id: validate
+    type: deterministic
+    action: validate
+    if: "config.validationCommand != ''"
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
+      until: "validate.exit_code == 0"
+
+  # Quality gates — run after validation, before commit
+  - id: diff_gate
+    type: conditional
+    action: diff_gate
+    on_soft_fail: warn
+
+  - id: forbidden_files
+    type: conditional
+    action: forbidden_files
+    on_soft_fail: warn
+
+  - id: security_scan
+    type: deterministic
+    action: security_scan
+
+  # Scope judge — LLM-as-judge compares diff vs task (opt-in)
+  - id: scope_judge
+    type: agentic
+    action: scope_judge
+    enabled: false
+    on_soft_fail: warn
+
+  - id: commit
+    type: deterministic
+    action: commit
+
+  - id: push
+    type: deterministic
+    action: push
+
+  - id: create_pr
+    type: deterministic
+    action: create_pr
+
+  # CI feedback loop — wait for CI, fix if needed
+  - id: wait_ci
+    type: async
+    action: wait_ci
+    on_failure:
+      action: loop
+      agent_node: fix_ci
+      max_rounds: 2
+      on_exhausted: complete_with_warning
+
+  # Browser verification — smoke test + accessibility (opt-in)
+  - id: browser_verify
+    type: agentic
+    action: browser_verify
+    enabled: false
+    on_soft_fail: warn
+
+  - id: notify
+    type: deterministic
+    action: notify

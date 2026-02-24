@@ -8,6 +8,25 @@ interface PullRequestParams {
   base: string;
 }
 
+export interface PullRequestResult {
+  url: string;
+  number: number;
+}
+
+export interface CICheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
+export interface CICheckAnnotation {
+  path: string;
+  start_line: number;
+  message: string;
+  annotation_level: string;
+}
+
 export function parseRepoSlug(repoSlug: string): { owner: string; repo: string } {
   const [owner, repo] = repoSlug.split("/");
   if (!owner || !repo) {
@@ -28,7 +47,7 @@ export class GitHubService {
     this.octokit = new Octokit({ auth: token });
   }
 
-  async createPullRequest(params: PullRequestParams): Promise<string> {
+  async createPullRequest(params: PullRequestParams): Promise<PullRequestResult> {
     const { owner, repo } = parseRepoSlug(params.repoSlug);
     const response = await this.octokit.pulls.create({
       owner,
@@ -39,10 +58,10 @@ export class GitHubService {
       base: params.base
     });
 
-    return response.data.html_url;
+    return { url: response.data.html_url, number: response.data.number };
   }
 
-  async findOrCreatePullRequest(params: PullRequestParams): Promise<string> {
+  async findOrCreatePullRequest(params: PullRequestParams): Promise<PullRequestResult> {
     const { owner, repo } = parseRepoSlug(params.repoSlug);
 
     // Check if a PR already exists for this head branch
@@ -63,9 +82,51 @@ export class GitHubService {
         title: params.title,
         body: params.body
       });
-      return pr.html_url;
+      return { url: pr.html_url, number: pr.number };
     }
 
     return this.createPullRequest(params);
+  }
+
+  async listCheckRuns(owner: string, repo: string, ref: string): Promise<CICheckRun[]> {
+    const response = await this.octokit.checks.listForRef({
+      owner,
+      repo,
+      ref
+    });
+    return response.data.check_runs.map(cr => ({
+      id: cr.id,
+      name: cr.name,
+      status: cr.status,
+      conclusion: cr.conclusion
+    }));
+  }
+
+  async getCheckAnnotations(owner: string, repo: string, checkRunId: number): Promise<CICheckAnnotation[]> {
+    const response = await this.octokit.checks.listAnnotations({
+      owner,
+      repo,
+      check_run_id: checkRunId
+    });
+    return response.data.map(a => ({
+      path: a.path,
+      start_line: a.start_line,
+      message: a.message ?? "",
+      annotation_level: a.annotation_level ?? "warning"
+    }));
+  }
+
+  async downloadJobLog(owner: string, repo: string, jobId: number): Promise<string> {
+    // NOTE: For native GitHub Actions, check_run IDs and job IDs coincide.
+    // For third-party CI (CircleCI, etc.), they may differ — callers should
+    // resolve the correct job ID if needed. The caller wraps this in try/catch.
+    // The download endpoint returns a redirect; octokit follows it automatically
+    const response = await this.octokit.actions.downloadJobLogsForWorkflowRun({
+      owner,
+      repo,
+      job_id: jobId
+    });
+    // Response data is the log text (octokit follows redirect)
+    return typeof response.data === "string" ? response.data : String(response.data);
   }
 }

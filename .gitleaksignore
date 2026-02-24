@@ -1,0 +1,3 @@
+# False positives: fake tokens used in security scan test fixtures
+tests/quality-gates.test.ts:slack-bot-token:226
+tests/quality-gates.test.ts:github-pat:311

@@ -12,6 +12,10 @@ In this first version it:
 6. Exposes an optional local dashboard to inspect runs, logs, changed files, and operator feedback.
 7. Auto-recovers interrupted runs on restart by re-queuing them.
 
+## Architecture
+
+See **[docs/architecture.md](docs/architecture.md)** for the full system diagram — how the pipeline engine works, what each of the 18 node handlers does, how pipelines are composed from YAML (like GitHub Actions), and how the observer auto-trigger system works.
+
 ## Why this project
 
 This is intentionally a low-infra build you can run locally or on one VM before Kubernetes/Temporal.

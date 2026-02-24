@@ -36,10 +36,51 @@ const envSchema = z.object({
 
   MAX_TASK_CHARS: z.string().optional(),
 
+  WORKSPACE_CLEANUP_ENABLED: z.string().optional(),
+  WORKSPACE_MAX_AGE_HOURS: z.string().optional(),
+  WORKSPACE_CLEANUP_INTERVAL_MINUTES: z.string().optional(),
+
   CEMS_API_URL: z.string().optional(),
   CEMS_API_KEY: z.string().optional(),
   CEMS_ENABLED: z.string().optional(),
-  CEMS_MCP_COMMAND: z.string().optional()
+  CEMS_MCP_COMMAND: z.string().optional(),
+
+  PIPELINE_ENGINE_ENABLED: z.string().optional(),
+  PIPELINE_FILE: z.string().optional(),
+
+  OBSERVER_ENABLED: z.string().optional(),
+  OBSERVER_ALERT_CHANNEL_ID: z.string().optional(),
+  OBSERVER_MAX_RUNS_PER_DAY: z.string().optional(),
+  OBSERVER_MAX_RUNS_PER_REPO_PER_DAY: z.string().optional(),
+  OBSERVER_COOLDOWN_MINUTES: z.string().optional(),
+  OBSERVER_RULES_FILE: z.string().optional(),
+  OBSERVER_REPO_MAP: z.string().optional(),
+
+  SENTRY_AUTH_TOKEN: z.string().optional(),
+  SENTRY_ORG_SLUG: z.string().optional(),
+  OBSERVER_SENTRY_POLL_INTERVAL_SECONDS: z.string().optional(),
+
+  OBSERVER_GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  OBSERVER_WEBHOOK_PORT: z.string().optional(),
+
+  ANTHROPIC_API_KEY: z.string().optional(),
+  SCOPE_JUDGE_ENABLED: z.string().optional(),
+  SCOPE_JUDGE_MODEL: z.string().optional(),
+  SCOPE_JUDGE_MIN_PASS_SCORE: z.string().optional(),
+
+  OBSERVER_SMART_TRIAGE_ENABLED: z.string().optional(),
+  OBSERVER_SMART_TRIAGE_MODEL: z.string().optional(),
+  OBSERVER_SMART_TRIAGE_TIMEOUT_MS: z.string().optional(),
+
+  BROWSER_VERIFY_ENABLED: z.string().optional(),
+  REVIEW_APP_URL_PATTERN: z.string().optional(),
+
+  CI_WAIT_ENABLED: z.string().optional(),
+  CI_POLL_INTERVAL_SECONDS: z.string().optional(),
+  CI_PATIENCE_TIMEOUT_SECONDS: z.string().optional(),
+  CI_MAX_WAIT_SECONDS: z.string().optional(),
+  CI_CHECK_FILTER: z.string().optional(),
+  CI_MAX_FIX_ROUNDS: z.string().optional()
 });
 
 function parseList(value?: string): string[] {
@@ -73,6 +114,7 @@ function parseInteger(value: string | undefined, fallback: number): number {
 
 export interface AppConfig {
   appName: string;
+  appSlug: string;
 
   slackBotToken: string;
   slackAppToken: string;
@@ -107,10 +149,67 @@ export interface AppConfig {
 
   maxTaskChars: number;
 
+  workspaceCleanupEnabled: boolean;
+  workspaceMaxAgeHours: number;
+  workspaceCleanupIntervalMinutes: number;
+
   cemsApiUrl?: string;
   cemsApiKey?: string;
   cemsEnabled: boolean;
   cemsMcpCommand?: string;
+
+  pipelineEngineEnabled: boolean;
+  pipelineFile: string;
+
+  observerEnabled: boolean;
+  observerAlertChannelId: string;
+  observerMaxRunsPerDay: number;
+  observerMaxRunsPerRepoPerDay: number;
+  observerCooldownMinutes: number;
+  observerRulesFile: string;
+  /** Sentry project → repo mapping: "proj:owner/repo,proj2:owner/repo2" */
+  observerRepoMap: Map<string, string>;
+
+  sentryAuthToken?: string;
+  sentryOrgSlug?: string;
+  observerSentryPollIntervalSeconds: number;
+
+  observerGithubWebhookSecret?: string;
+  observerWebhookPort: number;
+
+  anthropicApiKey?: string;
+  scopeJudgeEnabled: boolean;
+  scopeJudgeModel: string;
+  scopeJudgeMinPassScore: number;
+
+  observerSmartTriageEnabled: boolean;
+  observerSmartTriageModel: string;
+  observerSmartTriageTimeoutMs: number;
+
+  browserVerifyEnabled: boolean;
+  reviewAppUrlPattern?: string;
+
+  ciWaitEnabled: boolean;
+  ciPollIntervalSeconds: number;
+  ciPatienceTimeoutSeconds: number;
+  ciMaxWaitSeconds: number;
+  ciCheckFilter: string[];
+  ciMaxFixRounds: number;
+}
+
+function parseRepoMap(value?: string): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!value || value.trim() === "") {
+    return map;
+  }
+  for (const entry of value.split(",")) {
+    const trimmed = entry.trim();
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex > 0 && colonIndex < trimmed.length - 1) {
+      map.set(trimmed.slice(0, colonIndex), trimmed.slice(colonIndex + 1));
+    }
+  }
+  return map;
 }
 
 export function loadConfig(): AppConfig {
@@ -121,6 +220,7 @@ export function loadConfig(): AppConfig {
 
   return {
     appName,
+    appSlug,
 
     slackBotToken: parsed.SLACK_BOT_TOKEN,
     slackAppToken: parsed.SLACK_APP_TOKEN,
@@ -157,9 +257,50 @@ export function loadConfig(): AppConfig {
 
     maxTaskChars: parseInteger(parsed.MAX_TASK_CHARS, 4000),
 
+    workspaceCleanupEnabled: parseBoolean(parsed.WORKSPACE_CLEANUP_ENABLED, true),
+    workspaceMaxAgeHours: parseInteger(parsed.WORKSPACE_MAX_AGE_HOURS, 24),
+    workspaceCleanupIntervalMinutes: parseInteger(parsed.WORKSPACE_CLEANUP_INTERVAL_MINUTES, 30),
+
     cemsApiUrl: parsed.CEMS_API_URL?.trim() || undefined,
     cemsApiKey: parsed.CEMS_API_KEY?.trim() || undefined,
     cemsEnabled: parseBoolean(parsed.CEMS_ENABLED, false),
-    cemsMcpCommand: parsed.CEMS_MCP_COMMAND?.trim() || undefined
+    cemsMcpCommand: parsed.CEMS_MCP_COMMAND?.trim() || undefined,
+
+    pipelineEngineEnabled: parseBoolean(parsed.PIPELINE_ENGINE_ENABLED, false),
+    pipelineFile: parsed.PIPELINE_FILE?.trim() || "pipelines/default.yml",
+
+    observerEnabled: parseBoolean(parsed.OBSERVER_ENABLED, false),
+    observerAlertChannelId: parsed.OBSERVER_ALERT_CHANNEL_ID?.trim() || "",
+    observerMaxRunsPerDay: parseInteger(parsed.OBSERVER_MAX_RUNS_PER_DAY, 50),
+    observerMaxRunsPerRepoPerDay: parseInteger(parsed.OBSERVER_MAX_RUNS_PER_REPO_PER_DAY, 5),
+    observerCooldownMinutes: parseInteger(parsed.OBSERVER_COOLDOWN_MINUTES, 60),
+    observerRulesFile: parsed.OBSERVER_RULES_FILE?.trim() || "observer-rules/default.yml",
+    observerRepoMap: parseRepoMap(parsed.OBSERVER_REPO_MAP),
+
+    sentryAuthToken: parsed.SENTRY_AUTH_TOKEN?.trim() || undefined,
+    sentryOrgSlug: parsed.SENTRY_ORG_SLUG?.trim() || undefined,
+    observerSentryPollIntervalSeconds: parseInteger(parsed.OBSERVER_SENTRY_POLL_INTERVAL_SECONDS, 300),
+
+    observerGithubWebhookSecret: parsed.OBSERVER_GITHUB_WEBHOOK_SECRET?.trim() || undefined,
+    observerWebhookPort: parseInteger(parsed.OBSERVER_WEBHOOK_PORT, 9090),
+
+    anthropicApiKey: parsed.ANTHROPIC_API_KEY?.trim() || undefined,
+    scopeJudgeEnabled: parseBoolean(parsed.SCOPE_JUDGE_ENABLED, false),
+    scopeJudgeModel: parsed.SCOPE_JUDGE_MODEL?.trim() || "claude-haiku-4-5-20251001",
+    scopeJudgeMinPassScore: parseInteger(parsed.SCOPE_JUDGE_MIN_PASS_SCORE, 60),
+
+    observerSmartTriageEnabled: parseBoolean(parsed.OBSERVER_SMART_TRIAGE_ENABLED, false),
+    observerSmartTriageModel: parsed.OBSERVER_SMART_TRIAGE_MODEL?.trim() || "claude-haiku-4-5-20251001",
+    observerSmartTriageTimeoutMs: parseInteger(parsed.OBSERVER_SMART_TRIAGE_TIMEOUT_MS, 10_000),
+
+    browserVerifyEnabled: parseBoolean(parsed.BROWSER_VERIFY_ENABLED, false),
+    reviewAppUrlPattern: parsed.REVIEW_APP_URL_PATTERN?.trim() || undefined,
+
+    ciWaitEnabled: parseBoolean(parsed.CI_WAIT_ENABLED, false),
+    ciPollIntervalSeconds: parseInteger(parsed.CI_POLL_INTERVAL_SECONDS, 30),
+    ciPatienceTimeoutSeconds: parseInteger(parsed.CI_PATIENCE_TIMEOUT_SECONDS, 300),
+    ciMaxWaitSeconds: parseInteger(parsed.CI_MAX_WAIT_SECONDS, 1800),
+    ciCheckFilter: parseList(parsed.CI_CHECK_FILTER),
+    ciMaxFixRounds: parseInteger(parsed.CI_MAX_FIX_ROUNDS, 2)
   };
 }

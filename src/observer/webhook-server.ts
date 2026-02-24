@@ -1,0 +1,170 @@
+/**
+ * Webhook Receiver — separate HTTP server for external webhooks.
+ *
+ * Runs on OBSERVER_WEBHOOK_PORT, separate from the dashboard.
+ * Routes:
+ *   POST /webhooks/github  — GitHub webhook events (HMAC-verified)
+ *   GET  /health            — Health check
+ */
+
+import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { logError, logInfo } from "../logger.js";
+import { verifyGitHubSignature, parseGitHubWebhook, type GitHubWebhookHeaders } from "./sources/github-webhook-adapter.js";
+import type { TriggerEvent } from "./types.js";
+
+/** Max request body size: 1 MB */
+const MAX_BODY_BYTES = 1024 * 1024;
+
+export interface WebhookServerConfig {
+  port: number;
+  githubWebhookSecret?: string;
+}
+
+export type OnEventCallback = (event: TriggerEvent) => void;
+
+/**
+ * Start the webhook receiver HTTP server.
+ *
+ * Returns a handle with stop() for graceful shutdown.
+ */
+export function startWebhookServer(
+  config: WebhookServerConfig,
+  onEvent: OnEventCallback
+): { server: Server; stop: () => Promise<void> } {
+  const server = createServer((req, res) => {
+    handleRequest(req, res, config, onEvent).catch((err) => {
+      const msg = err instanceof Error ? err.message : "unknown";
+      logError("Webhook request error", { error: msg });
+      sendJson(res, 500, { error: "Internal server error" });
+    });
+  });
+
+  server.listen(config.port, () => {
+    logInfo("Webhook server listening", { port: config.port });
+  });
+
+  const stop = (): Promise<void> => {
+    return new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  };
+
+  return { server, stop };
+}
+
+async function handleRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: WebhookServerConfig,
+  onEvent: OnEventCallback
+): Promise<void> {
+  const url = req.url ?? "/";
+  const method = req.method ?? "GET";
+
+  // Health check
+  if (url === "/health" && method === "GET") {
+    sendJson(res, 200, { status: "ok" });
+    return;
+  }
+
+  // GitHub webhook
+  if (url === "/webhooks/github" && method === "POST") {
+    await handleGitHubWebhook(req, res, config, onEvent);
+    return;
+  }
+
+  sendJson(res, 404, { error: "Not found" });
+}
+
+async function handleGitHubWebhook(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: WebhookServerConfig,
+  onEvent: OnEventCallback
+): Promise<void> {
+  // Read body with size limit
+  const body = await readBody(req);
+  if (body === null) {
+    sendJson(res, 413, { error: "Request body too large" });
+    return;
+  }
+
+  // Verify HMAC signature (required — webhook server should not run without a secret)
+  if (!config.githubWebhookSecret) {
+    sendJson(res, 500, { error: "Webhook secret not configured" });
+    return;
+  }
+  const signature = req.headers["x-hub-signature-256"] as string | undefined;
+  if (!verifyGitHubSignature(body, signature, config.githubWebhookSecret)) {
+    sendJson(res, 401, { error: "Invalid signature" });
+    return;
+  }
+
+  // Parse payload
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  const headers: GitHubWebhookHeaders = {
+    "x-github-event": req.headers["x-github-event"] as string | undefined,
+    "x-hub-signature-256": req.headers["x-hub-signature-256"] as string | undefined,
+    "x-github-delivery": req.headers["x-github-delivery"] as string | undefined
+  };
+
+  const event = parseGitHubWebhook(headers, payload);
+
+  if (event) {
+    onEvent(event);
+    sendJson(res, 200, { accepted: true, eventId: event.id });
+  } else {
+    // Valid webhook but not an actionable event type
+    sendJson(res, 200, { accepted: false, reason: "event type not actionable" });
+  }
+}
+
+function readBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let resolved = false;
+
+    req.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        req.destroy();
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      if (!resolved) {
+        resolved = true;
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
+
+    req.on("error", (err) => {
+      if (!resolved) {
+        resolved = true;
+        reject(err);
+      }
+    });
+  });
+}
+
+function sendJson(res: ServerResponse, status: number, data: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(data));
+}

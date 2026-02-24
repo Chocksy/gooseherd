@@ -1,0 +1,50 @@
+version: 1
+name: "default"
+description: "Default pipeline — replicates current executor.ts behavior exactly"
+
+context:
+  max_validation_rounds: 2
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: implement
+    type: agentic
+    action: implement
+
+  - id: lint_fix
+    type: deterministic
+    action: lint_fix
+    if: "config.lintFixCommand != ''"
+
+  - id: validate
+    type: deterministic
+    action: validate
+    if: "config.validationCommand != ''"
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
+      until: "validate.exit_code == 0"
+
+  - id: commit
+    type: deterministic
+    action: commit
+
+  - id: push
+    type: deterministic
+    action: push
+
+  - id: create_pr
+    type: deterministic
+    action: create_pr
+
+  - id: notify
+    type: deterministic
+    action: notify

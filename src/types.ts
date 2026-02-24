@@ -3,6 +3,8 @@ export type RunStatus =
   | "running"
   | "validating"
   | "pushing"
+  | "awaiting_ci"
+  | "ci_fixing"
   | "completed"
   | "failed";
 
@@ -12,6 +14,8 @@ export type RunPhase =
   | "agent"
   | "validating"
   | "pushing"
+  | "awaiting_ci"
+  | "ci_fixing"
   | "completed"
   | "failed";
 
@@ -53,6 +57,12 @@ export interface RunRecord {
   parentBranchName?: string;
   /** The engineer's follow-up instruction */
   feedbackNote?: string;
+  /** CI fix loop attempts counter */
+  ciFixAttempts?: number;
+  /** Final CI conclusion after wait */
+  ciConclusion?: string;
+  /** PR number from GitHub */
+  prNumber?: number;
 }
 
 export interface NewRunInput {

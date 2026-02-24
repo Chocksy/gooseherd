@@ -99,6 +99,8 @@ test("listRuns returns newest first and feedback is saved", async (t) => {
 test("mapExecutorPhaseToRunStatus handles phase mapping", () => {
   assert.equal(mapExecutorPhaseToRunStatus("validating"), "validating");
   assert.equal(mapExecutorPhaseToRunStatus("pushing"), "pushing");
+  assert.equal(mapExecutorPhaseToRunStatus("awaiting_ci"), "awaiting_ci");
+  assert.equal(mapExecutorPhaseToRunStatus("ci_fixing"), "ci_fixing");
   assert.equal(mapExecutorPhaseToRunStatus("agent"), "running");
   assert.equal(mapExecutorPhaseToRunStatus("cloning"), "running");
 });

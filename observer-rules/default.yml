@@ -1,0 +1,87 @@
+# Observer Trigger Rules
+#
+# Each rule matches incoming TriggerEvents by source + conditions.
+# When an event matches, the observer composes a run and enqueues it
+# (subject to safety pipeline checks: dedup, rate limits, budget, cooldown).
+#
+# Fields:
+#   id                  - unique rule identifier
+#   source              - sentry_alert | github_webhook | slack_observer
+#   conditions          - array of {field, operator, value} checks (all must match)
+#   pipeline            - optional pipeline YAML to use (default: project default)
+#   requiresApproval    - if true, posts approval buttons before enqueuing
+#   notificationChannel - override Slack channel for notifications
+#   cooldownMinutes     - minutes between runs for same dedup key (default: 60)
+#   maxRunsPerHour      - max runs per hour for this rule (default: 5)
+#   repoSlug            - override repo slug
+#   task                - override task description
+#   baseBranch          - override base branch
+#
+# Condition operators:
+#   equals   - exact string match
+#   contains - substring match
+#   matches  - regex match
+#   exists   - field is present and non-null
+#
+# Field paths use dot notation: rawPayload.level, rawPayload.data.event.title
+
+trigger_rules:
+  # ── Sentry: critical/fatal errors → auto-fix immediately ──
+  - id: sentry-critical
+    source: sentry_alert
+    conditions:
+      - field: rawPayload.level
+        operator: equals
+        value: fatal
+    requiresApproval: false
+    cooldownMinutes: 30
+    maxRunsPerHour: 3
+
+  # ── Sentry: regular errors → require approval ──
+  - id: sentry-error
+    source: sentry_alert
+    conditions:
+      - field: rawPayload.level
+        operator: equals
+        value: error
+    requiresApproval: true
+    cooldownMinutes: 60
+    maxRunsPerHour: 5
+
+  # ── GitHub: CI failure on main branch → auto-fix ──
+  - id: github-ci-main
+    source: github_webhook
+    conditions:
+      - field: rawPayload.eventType
+        operator: equals
+        value: check_suite
+      - field: rawPayload.branch
+        operator: equals
+        value: main
+    requiresApproval: false
+    cooldownMinutes: 15
+    maxRunsPerHour: 3
+
+  # ── GitHub: PR review with changes requested → require approval ──
+  - id: github-review-changes
+    source: github_webhook
+    conditions:
+      - field: rawPayload.eventType
+        operator: equals
+        value: pull_request_review
+      - field: rawPayload.state
+        operator: equals
+        value: changes_requested
+    requiresApproval: true
+    cooldownMinutes: 30
+    maxRunsPerHour: 5
+
+  # ── Slack: alert from any recognized bot → require approval ──
+  - id: slack-alert-bot
+    source: slack_observer
+    conditions:
+      - field: rawPayload.botId
+        operator: exists
+    requiresApproval: true
+    cooldownMinutes: 60
+    maxRunsPerHour: 3

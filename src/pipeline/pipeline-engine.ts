@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import type {
   PipelineConfig,
   NodeConfig,
@@ -174,7 +174,8 @@ export class PipelineEngine {
     pipeline: PipelineConfig,
     ctx: ContextBag,
     deps: NodeDeps,
-    startIndex: number
+    startIndex: number,
+    pipelineSwitched = false
   ): Promise<PipelineResult> {
     const steps: PipelineStepResult[] = [];
     const warnings: string[] = [];
@@ -275,6 +276,24 @@ export class PipelineEngine {
       // Checkpoint after each successful node
       if (result.outcome === "success") {
         await ctx.checkpoint(node.id);
+
+        // Check for per-repo pipeline override (set by clone → applyRepoConfig)
+        if (!pipelineSwitched) {
+          const override = ctx.get<string>("repoConfigPipeline");
+          if (override) {
+            const newPipeline = await this.tryLoadPipelineOverride(override, deps.logFile);
+            if (newPipeline) {
+              const currentIdx = newPipeline.nodes.findIndex(n => n.id === node.id);
+              if (currentIdx >= 0) {
+                const tailResult = await this.executePipeline(newPipeline, ctx, deps, currentIdx + 1, true);
+                steps.push(...tailResult.steps);
+                warnings.push(...tailResult.warnings);
+                return { outcome: tailResult.outcome, steps, warnings };
+              }
+              await appendLog(deps.logFile, `[pipeline] override '${override}' does not contain node '${node.id}', ignoring\n`);
+            }
+          }
+        }
       }
     }
 
@@ -387,6 +406,33 @@ export class PipelineEngine {
       }],
       warnings
     };
+  }
+
+  private async tryLoadPipelineOverride(name: string, logFile: string): Promise<PipelineConfig | undefined> {
+    // Validate: alphanumeric, hyphens, underscores only
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      await appendLog(logFile, `[pipeline] invalid override name '${name}', must be alphanumeric/hyphens/underscores\n`);
+      return undefined;
+    }
+
+    const yamlPath = path.resolve("pipelines", `${name}.yml`);
+    try {
+      await access(yamlPath);
+    } catch {
+      await appendLog(logFile, `[pipeline] override pipeline not found: ${yamlPath}\n`);
+      return undefined;
+    }
+
+    try {
+      const pipeline = await loadPipeline(yamlPath);
+      logInfo("Pipeline override loaded", { name, nodes: pipeline.nodes.length });
+      await appendLog(logFile, `[pipeline] switched to override pipeline '${name}' (${String(pipeline.nodes.length)} nodes)\n`);
+      return pipeline;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown";
+      await appendLog(logFile, `[pipeline] failed to load override pipeline '${name}': ${msg}\n`);
+      return undefined;
+    }
   }
 
   private getHandler(action: string): NodeHandler {

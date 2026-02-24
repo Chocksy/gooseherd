@@ -18,7 +18,7 @@ function isChannelAllowed(channelId: string, channelAllowlist: string[]): boolea
   return channelAllowlist.includes(channelId);
 }
 
-function stripMentions(text: string): string {
+export function stripMentions(text: string): string {
   return text.replace(/<@[^>]+>/g, "").trim();
 }
 
@@ -38,7 +38,7 @@ const CASUAL_PATTERNS =
 const APPROVAL_PATTERNS =
   /^(lgtm|looks good|approved|approve|ship it|ship|merge it|merge|good to go|all good)[\s!.?]*$/i;
 
-function classifyThreadMessage(
+export function classifyThreadMessage(
   text: string
 ): "casual" | "approval" | "retry" | "follow_up" {
   const cleaned = stripMentions(text).trim();
@@ -51,7 +51,7 @@ function classifyThreadMessage(
   if (APPROVAL_PATTERNS.test(cleaned)) {
     return "approval";
   }
-  if (/^(retry|rerun|run again|try again)\b/i.test(cleaned)) {
+  if (/^(retry|rerun|run again|try again)[\s!.?]*$/i.test(cleaned)) {
     return "retry";
   }
   // Short messages without action verbs are likely casual
@@ -61,7 +61,7 @@ function classifyThreadMessage(
   return "follow_up";
 }
 
-function parseFollowUpMessage(text: string): { task: string; baseBranch?: string; retry: boolean } {
+export function parseFollowUpMessage(text: string): { task: string; baseBranch?: string; retry: boolean } {
   const cleaned = stripMentions(text);
   if (!cleaned) {
     return { task: "", retry: false };
@@ -100,6 +100,14 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
     signingSecret: config.slackSigningSecret,
     socketMode: true
   });
+
+  const usernameOpt = config.slackCommandName ? { username: config.slackCommandName } : {};
+
+  /** Wrapper around say() that always includes username override */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function sayAs(say: (...args: any[]) => Promise<unknown>, msg: Record<string, unknown>): Promise<unknown> {
+    return say({ ...msg, ...usernameOpt });
+  }
 
   app.action("run_feedback_up", async ({ ack, body, client }) => {
     await ack();
@@ -165,6 +173,75 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
     });
   });
 
+  app.action("observer_approve", async ({ ack, body, client }) => {
+    await ack();
+    const action = (body as { actions?: Array<{ value?: string }> }).actions?.[0];
+    const userId = (body as { user?: { id?: string } }).user?.id;
+    const containerChannelId = (body as { container?: { channel_id?: string } }).container?.channel_id;
+
+    if (!action?.value || !userId || !containerChannelId) {
+      return;
+    }
+
+    let payload: { repoSlug: string; task: string; baseBranch: string; channelId: string; threadTs: string };
+    try {
+      payload = JSON.parse(action.value) as typeof payload;
+    } catch {
+      await client.chat.postEphemeral({
+        channel: containerChannelId,
+        user: userId,
+        text: "Invalid approval payload."
+      });
+      return;
+    }
+
+    const run = await runManager.enqueueRun({
+      repoSlug: payload.repoSlug,
+      task: payload.task,
+      baseBranch: payload.baseBranch,
+      requestedBy: userId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs
+    });
+
+    await client.chat.postMessage({
+      channel: payload.channelId,
+      thread_ts: payload.threadTs,
+      text: `Approved by <@${userId}>. Queued run for *${run.repoSlug}* (${shortRunId(run.id)}).`,
+      ...usernameOpt
+    });
+
+    logInfo("Observer approval accepted", { runId: run.id, approvedBy: userId });
+  });
+
+  app.action("observer_reject", async ({ ack, body, client }) => {
+    await ack();
+    const userId = (body as { user?: { id?: string } }).user?.id;
+    const containerChannelId = (body as { container?: { channel_id?: string } }).container?.channel_id;
+    const containerThreadTs = (body as { container?: { thread_ts?: string } }).container?.thread_ts;
+
+    if (!userId || !containerChannelId) {
+      return;
+    }
+
+    if (containerThreadTs) {
+      await client.chat.postMessage({
+        channel: containerChannelId,
+        thread_ts: containerThreadTs,
+        text: `Rejected by <@${userId}>.`,
+        ...usernameOpt
+      });
+    }
+
+    await client.chat.postEphemeral({
+      channel: containerChannelId,
+      user: userId,
+      text: "Observer trigger rejected."
+    });
+
+    logInfo("Observer approval rejected", { rejectedBy: userId });
+  });
+
   app.action("run_retry", async ({ ack, body, client }) => {
     await ack();
     const action = (body as { actions?: Array<{ value?: string }> }).actions?.[0];
@@ -193,7 +270,8 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
         `Queued retry for *${retried.repoSlug}*`,
         `Branch: \`${retried.branchName}\``,
         `Use \`${botCommand(config, "status")}\` for latest thread status, or \`${botCommand(config, "tail")}\` for logs.`
-      ].join("\n")
+      ].join("\n"),
+      ...usernameOpt
     });
 
     await client.chat.postEphemeral({
@@ -207,7 +285,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
     const replyThreadTs = event.thread_ts ?? event.ts;
 
     if (!isChannelAllowed(event.channel, config.slackAllowedChannels)) {
-      await say({
+      await sayAs(say, {
         text: `This channel is not allowed for ${config.slackCommandName} runs.`,
         thread_ts: replyThreadTs
       });
@@ -217,11 +295,12 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
     const command = parseCommand(event.text);
 
     if (command.type === "help") {
-      await say({
+      await sayAs(say, {
         thread_ts: replyThreadTs,
         text: [
           `${config.appName} commands:`,
-          `- \`${botCommand(config, "run owner/repo[@base-branch] | your task")}\``,
+          `- \`${botCommand(config, "owner/repo your task here")}\` (natural format)`,
+          `- \`${botCommand(config, "run owner/repo[@base-branch] | your task")}\` (explicit format)`,
           `- \`${botCommand(config, "status")}\` (latest in thread/channel)`,
           `- \`${botCommand(config, "status <run-id-or-prefix>")}\``,
           `- \`${botCommand(config, "tail")}\` (latest logs in thread/channel)`,
@@ -255,7 +334,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
               userId: event.user,
               note: stripMentions(event.text).trim()
             });
-            await say({
+            await sayAs(say, {
               thread_ts: replyThreadTs,
               text: `Noted! Saved positive feedback for *${latestRun.repoSlug}* run ${shortRunId(latestRun.id)}.`
             });
@@ -266,7 +345,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
           if (messageType === "retry") {
             const run = await runManager.retryRun(latestRun.id, event.user);
             if (run) {
-              await say({
+              await sayAs(say, {
                 thread_ts: replyThreadTs,
                 text: [
                   `Queued retry for *${run.repoSlug}*`,
@@ -283,7 +362,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
           const feedbackNote = followUp.task || stripMentions(event.text).trim();
 
           if (feedbackNote.length > config.maxTaskChars) {
-            await say({
+            await sayAs(say, {
               thread_ts: replyThreadTs,
               text: `Task is too long. Maximum ${String(config.maxTaskChars)} characters.`
             });
@@ -292,7 +371,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
 
           const run = await runManager.continueRun(latestRun.id, feedbackNote, event.user);
           if (run) {
-            await say({
+            await sayAs(say, {
               thread_ts: replyThreadTs,
               text: [
                 `Queued follow-up for *${run.repoSlug}* (continuing from ${shortRunId(latestRun.id)})`,
@@ -305,25 +384,25 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
         }
       }
 
-      await say({ thread_ts: replyThreadTs, text: `Invalid command: ${command.reason}` });
+      await sayAs(say, { thread_ts: replyThreadTs, text: `Invalid command: ${command.reason}` });
       return;
     }
 
     if (command.type === "status") {
       const status = await runManager.formatRunStatus(command.runId, event.channel, event.thread_ts);
-      await say({ thread_ts: replyThreadTs, text: status });
+      await sayAs(say, { thread_ts: replyThreadTs, text: status });
       return;
     }
 
     if (command.type === "tail") {
       const tail = await runManager.tailRunLogs(command.runId, event.channel, event.thread_ts, 40);
-      await say({ thread_ts: replyThreadTs, text: tail });
+      await sayAs(say, { thread_ts: replyThreadTs, text: tail });
       return;
     }
 
     const payload = command.payload;
     if (!isRepoAllowed(payload.repoSlug, config.repoAllowlist)) {
-      await say({
+      await sayAs(say, {
         thread_ts: replyThreadTs,
         text: `Repo not allowed: ${payload.repoSlug}`
       });
@@ -331,7 +410,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
     }
 
     if (payload.task.length > config.maxTaskChars) {
-      await say({
+      await sayAs(say, {
         thread_ts: replyThreadTs,
         text: `Task is too long. Maximum ${String(config.maxTaskChars)} characters.`
       });
@@ -339,7 +418,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
     }
 
     if (!event.user) {
-      await say({
+      await sayAs(say, {
         thread_ts: replyThreadTs,
         text: "Unable to identify requesting user for this event."
       });
@@ -355,7 +434,7 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager): 
       threadTs: replyThreadTs
     });
 
-    await say({
+    await sayAs(say, {
       thread_ts: replyThreadTs,
       text: [
         `Queued run for *${run.repoSlug}*`,

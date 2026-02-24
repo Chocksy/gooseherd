@@ -8,7 +8,7 @@ import { logError, logInfo } from "./logger.js";
 import type { PipelineEngine } from "./pipeline/pipeline-engine.js";
 import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunStore, mapPhaseToRunStatus } from "./store.js";
-import type { NewRunInput, RunRecord } from "./types.js";
+import type { ExecutionResult, NewRunInput, RunRecord } from "./types.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -68,6 +68,22 @@ function formatElapsed(startedAt?: string): string | undefined {
   return `${String(minutes)}m ${String(seconds)}s`;
 }
 
+/** Format the exact duration between two ISO timestamps (for summaries). */
+function formatDuration(startedAt: string, finishedAt: string): string | undefined {
+  const startedMs = Date.parse(startedAt);
+  const finishedMs = Date.parse(finishedAt);
+  if (Number.isNaN(startedMs) || Number.isNaN(finishedMs)) {
+    return undefined;
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((finishedMs - startedMs) / 1000));
+  if (elapsedSeconds < 60) {
+    return `${String(elapsedSeconds)}s`;
+  }
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return `${String(minutes)}m ${String(seconds)}s`;
+}
+
 function isRetryableStatus(status: RunRecord["status"]): boolean {
   return status === "failed" || status === "completed";
 }
@@ -107,7 +123,7 @@ export class RunManager {
 
   async retryRun(originalRunId: string, requestedBy: string): Promise<RunRecord | undefined> {
     const original = await this.store.findRunByIdentifier(originalRunId);
-    if (!original) {
+    if (!original || !isRetryableStatus(original.status)) {
       return undefined;
     }
 
@@ -321,7 +337,10 @@ export class RunManager {
         await upsertRunCard();
       };
 
-      const result = await this.pipelineEngine.execute(run, phaseCallback, this.config.pipelineFile);
+      const pipelineFile = run.pipelineHint && /^[a-zA-Z0-9_-]+$/.test(run.pipelineHint)
+        ? `pipelines/${run.pipelineHint}.yml`
+        : this.config.pipelineFile;
+      const result = await this.pipelineEngine.execute(run, phaseCallback, pipelineFile);
       stopHeartbeat();
 
       run = await this.store.updateRun(stableRunId, {
@@ -346,6 +365,9 @@ export class RunManager {
 
       logInfo("Run completed", { runId: run.id, prUrl: result.prUrl });
 
+      // Post a conversational summary in the thread
+      await this.postRunSummary(run, result);
+
       // Store run completion via lifecycle hooks (fire-and-forget, errors swallowed internally)
       this.hooks?.onRunComplete(run, result);
     } catch (error) {
@@ -363,7 +385,83 @@ export class RunManager {
       await upsertRunCard(
         `Run failed: ${message}\nUse \`${this.botCommand("status")}\` to inspect latest thread run, or \`${this.botCommand("tail")}\` for logs.`
       );
+
+      // Post a failure summary in the thread
+      await this.postRunSummary(failed);
+
       logError("Run failed", { runId: failed.id, error: message });
+    }
+  }
+
+  private async postRunSummary(run: RunRecord, result?: ExecutionResult): Promise<void> {
+    try {
+      const lines: string[] = [];
+
+      if (run.status === "completed") {
+        lines.push(`*Run complete* for *${run.repoSlug}*`);
+
+        if (run.task) {
+          const taskPreview = (run.task.length > 120 ? run.task.slice(0, 120) + "..." : run.task)
+            .split("\n").map((l) => `> ${l}`).join("\n");
+          lines.push(taskPreview);
+        }
+
+        if (result?.changedFiles && result.changedFiles.length > 0) {
+          const fileList = result.changedFiles.slice(0, 10).map((f) => `\`${f}\``).join(", ");
+          const extra = result.changedFiles.length > 10 ? ` (+${String(result.changedFiles.length - 10)} more)` : "";
+          lines.push(`*Files changed:* ${fileList}${extra}`);
+        }
+
+        if (run.startedAt && run.finishedAt) {
+          const duration = formatDuration(run.startedAt, run.finishedAt);
+          if (duration) {
+            lines.push(`*Duration:* ${duration}`);
+          }
+        }
+
+        if (run.commitSha) {
+          lines.push(`*Commit:* \`${run.commitSha.slice(0, 8)}\``);
+        }
+
+        if (run.prUrl) {
+          lines.push(`*PR:* ${run.prUrl}`);
+        }
+
+        lines.push("");
+        lines.push("---");
+        lines.push(`Ready for instructions. Reply in this thread to request changes or say \`retry\` to start over.`);
+      } else if (run.status === "failed") {
+        lines.push(`*Run failed* for *${run.repoSlug}*`);
+
+        if (run.error) {
+          const errorPreview = (run.error.length > 200 ? run.error.slice(0, 200) + "..." : run.error)
+            .split("\n").map((l) => `> ${l}`).join("\n");
+          lines.push(errorPreview);
+        }
+
+        if (run.startedAt && run.finishedAt) {
+          const duration = formatDuration(run.startedAt, run.finishedAt);
+          if (duration) {
+            lines.push(`*Duration:* ${duration}`);
+          }
+        }
+
+        lines.push("");
+        lines.push("---");
+        lines.push(`Ready for instructions. Reply with \`retry\` to try again, or describe what to change.`);
+      } else {
+        return;
+      }
+
+      await this.slackClient.chat.postMessage({
+        channel: run.channelId,
+        thread_ts: run.threadTs,
+        text: lines.join("\n"),
+        ...(this.config.slackCommandName ? { username: this.config.slackCommandName } : {})
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logError("Failed to post run summary", { runId: run.id, error: message });
     }
   }
 
@@ -392,7 +490,8 @@ export class RunManager {
       channel: run.channelId,
       thread_ts: run.threadTs,
       text,
-      blocks
+      blocks,
+      ...(this.config.slackCommandName ? { username: this.config.slackCommandName } : {})
     });
     return response.ts;
   }
@@ -508,7 +607,7 @@ export class RunManager {
       actionBlock.elements?.push({
         type: "button",
         text: { type: "plain_text", text: "Open Dashboard", emoji: true },
-        url: `http://${this.config.dashboardHost}:${String(this.config.dashboardPort)}`,
+        url: this.config.dashboardPublicUrl ?? `http://${this.config.dashboardHost}:${String(this.config.dashboardPort)}`,
         value: run.id
       });
     }

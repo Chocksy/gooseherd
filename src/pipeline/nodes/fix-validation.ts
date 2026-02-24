@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShell, shellEscape, renderTemplate, appendLog } from "../shell.js";
+import { runShell, shellEscape, renderTemplate, appendLog, buildMcpFlags } from "../shell.js";
 import { parseErrors } from "../error-parser.js";
 
 /**
@@ -56,8 +56,9 @@ export async function fixValidationNode(
   });
 
   let cmd = agentCommand;
-  if (config.cemsMcpCommand) {
-    cmd = `${cmd} --with-extension ${shellEscape(config.cemsMcpCommand)}`;
+  const mcpFlags = buildMcpFlags(config.mcpExtensions);
+  if (mcpFlags) {
+    cmd = `${cmd} ${mcpFlags}`;
   }
 
   await runShell(cmd, {

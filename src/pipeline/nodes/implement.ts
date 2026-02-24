@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShellCapture, shellEscape, renderTemplate } from "../shell.js";
+import { runShellCapture, shellEscape, renderTemplate, buildMcpFlags } from "../shell.js";
 
 export interface AgentAnalysis {
   verdict: "clean" | "suspect" | "empty";
@@ -41,10 +41,11 @@ export async function implementNode(
     parent_run_id: run.parentRunId ?? ""
   });
 
-  // Append MCP extension if configured
+  // Append MCP extensions if configured
   let cmd = agentCommand;
-  if (config.cemsMcpCommand) {
-    cmd = `${cmd} --with-extension ${shellEscape(config.cemsMcpCommand)}`;
+  const mcpFlags = buildMcpFlags(config.mcpExtensions);
+  if (mcpFlags) {
+    cmd = `${cmd} ${mcpFlags}`;
   }
 
   const result = await runShellCapture(cmd, {

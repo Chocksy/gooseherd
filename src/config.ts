@@ -33,6 +33,7 @@ const envSchema = z.object({
   DASHBOARD_ENABLED: z.string().optional(),
   DASHBOARD_HOST: z.string().optional(),
   DASHBOARD_PORT: z.string().optional(),
+  DASHBOARD_PUBLIC_URL: z.string().optional(),
 
   MAX_TASK_CHARS: z.string().optional(),
 
@@ -44,6 +45,7 @@ const envSchema = z.object({
   CEMS_API_KEY: z.string().optional(),
   CEMS_ENABLED: z.string().optional(),
   CEMS_MCP_COMMAND: z.string().optional(),
+  MCP_EXTENSIONS: z.string().optional(),
 
   PIPELINE_FILE: z.string().optional(),
 
@@ -145,6 +147,7 @@ export interface AppConfig {
   dashboardEnabled: boolean;
   dashboardHost: string;
   dashboardPort: number;
+  dashboardPublicUrl?: string;
 
   maxTaskChars: number;
 
@@ -156,6 +159,7 @@ export interface AppConfig {
   cemsApiKey?: string;
   cemsEnabled: boolean;
   cemsMcpCommand?: string;
+  mcpExtensions: string[];
 
   pipelineFile: string;
 
@@ -210,6 +214,15 @@ function parseRepoMap(value?: string): Map<string, string> {
   return map;
 }
 
+function buildMcpExtensions(cemsMcpCommand?: string, mcpExtensions?: string): string[] {
+  const extensions = parseList(mcpExtensions);
+  const legacy = cemsMcpCommand?.trim();
+  if (legacy && !extensions.includes(legacy)) {
+    extensions.unshift(legacy);
+  }
+  return extensions;
+}
+
 export function loadConfig(): AppConfig {
   const parsed = envSchema.parse(process.env);
 
@@ -233,7 +246,7 @@ export function loadConfig(): AppConfig {
     runnerConcurrency: parseInteger(parsed.RUNNER_CONCURRENCY, 1),
     workRoot: parsed.WORK_ROOT ?? ".work",
     dataDir: parsed.DATA_DIR ?? "data",
-    dryRun: parseBoolean(parsed.DRY_RUN, true),
+    dryRun: parseBoolean(parsed.DRY_RUN, false),
 
     branchPrefix: parsed.BRANCH_PREFIX ?? appSlug,
     defaultBaseBranch: parsed.DEFAULT_BASE_BRANCH ?? "main",
@@ -252,6 +265,7 @@ export function loadConfig(): AppConfig {
     dashboardEnabled: parseBoolean(parsed.DASHBOARD_ENABLED, true),
     dashboardHost: parsed.DASHBOARD_HOST?.trim() || "127.0.0.1",
     dashboardPort: parseInteger(parsed.DASHBOARD_PORT, 8787),
+    dashboardPublicUrl: parsed.DASHBOARD_PUBLIC_URL?.trim() || undefined,
 
     maxTaskChars: parseInteger(parsed.MAX_TASK_CHARS, 4000),
 
@@ -263,6 +277,7 @@ export function loadConfig(): AppConfig {
     cemsApiKey: parsed.CEMS_API_KEY?.trim() || undefined,
     cemsEnabled: parseBoolean(parsed.CEMS_ENABLED, false),
     cemsMcpCommand: parsed.CEMS_MCP_COMMAND?.trim() || undefined,
+    mcpExtensions: buildMcpExtensions(parsed.CEMS_MCP_COMMAND, parsed.MCP_EXTENSIONS),
 
     pipelineFile: parsed.PIPELINE_FILE?.trim() || "pipelines/default.yml",
 

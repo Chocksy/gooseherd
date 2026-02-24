@@ -211,6 +211,9 @@ export class ObserverDaemon {
         if (triageDecision.priority) {
           event.priority = triageDecision.priority;
         }
+        if (triageDecision.pipeline) {
+          event.pipelineHint = triageDecision.pipeline;
+        }
       }
     }
 
@@ -252,9 +255,6 @@ export class ObserverDaemon {
       const runInput = await composeRunInput(event, rule, this.config, this.webClient);
 
       // 4. Approval gate (if rule requires it)
-      // TODO: Wire observer_approve/observer_reject Slack action handlers in slack-app.ts.
-      // Currently approval buttons render but have no backend handler — clicking them is a no-op.
-      // For v1, approval-required rules will post the request but never auto-enqueue.
       if (rule.requiresApproval) {
         logInfo("Observer: event requires approval, posting for review", {
           eventId: event.id,

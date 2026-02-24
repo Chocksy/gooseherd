@@ -35,7 +35,8 @@ export async function composeRunInput(
     baseBranch,
     requestedBy: `observer:${event.source}`,
     channelId,
-    threadTs
+    threadTs,
+    pipelineHint: event.pipelineHint ?? rule.pipeline
   };
 }
 

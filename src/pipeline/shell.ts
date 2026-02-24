@@ -13,6 +13,13 @@ export function renderTemplate(template: string, values: Record<string, string>)
   return output;
 }
 
+export function buildMcpFlags(extensions: string[]): string {
+  return extensions
+    .filter(ext => ext.trim())
+    .map(ext => `--with-extension ${shellEscape(ext)}`)
+    .join(" ");
+}
+
 export async function appendLog(logFile: string, content: string): Promise<void> {
   await writeFile(logFile, content, { flag: "a" });
 }

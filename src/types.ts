@@ -57,6 +57,8 @@ export interface RunRecord {
   parentBranchName?: string;
   /** The engineer's follow-up instruction */
   feedbackNote?: string;
+  /** Pipeline override hint from smart triage or trigger rule */
+  pipelineHint?: string;
   /** CI fix loop attempts counter */
   ciFixAttempts?: number;
   /** Final CI conclusion after wait */
@@ -76,6 +78,8 @@ export interface NewRunInput {
   parentRunId?: string;
   /** The engineer's follow-up instruction */
   feedbackNote?: string;
+  /** Pipeline override hint from smart triage or trigger rule */
+  pipelineHint?: string;
 }
 
 export interface ExecutionResult {

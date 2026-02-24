@@ -62,7 +62,8 @@ export class RunStore {
         rootRunId,
         chainIndex,
         parentBranchName: existingBranchName,
-        feedbackNote: input.feedbackNote
+        feedbackNote: input.feedbackNote,
+        pipelineHint: input.pipelineHint
       };
 
       state.runs.push(record);

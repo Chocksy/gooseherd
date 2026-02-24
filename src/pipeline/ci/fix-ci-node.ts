@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShell, runShellCapture, shellEscape, renderTemplate, appendLog } from "../shell.js";
+import { runShell, runShellCapture, shellEscape, renderTemplate, appendLog, buildMcpFlags } from "../shell.js";
 import { buildCIFixPrompt, type CIAnnotation } from "./ci-monitor.js";
 
 /**
@@ -58,8 +58,9 @@ export async function fixCiNode(
   });
 
   let cmd = agentCommand;
-  if (config.cemsMcpCommand) {
-    cmd = `${cmd} --with-extension ${shellEscape(config.cemsMcpCommand)}`;
+  const mcpFlags = buildMcpFlags(config.mcpExtensions);
+  if (mcpFlags) {
+    cmd = `${cmd} ${mcpFlags}`;
   }
 
   await runShell(cmd, {

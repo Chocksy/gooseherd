@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { shellEscape, renderTemplate, sanitizeForLogs, runShellCapture } from "../src/pipeline/shell.js";
+import { shellEscape, renderTemplate, sanitizeForLogs, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
 
 // ── shellEscape ──
 
@@ -154,4 +154,24 @@ test("runShellCapture: no timeout when timeoutMs is undefined", async (t) => {
   const result = await runShellCapture("echo fast", { logFile });
   assert.equal(result.code, 0);
   assert.match(result.stdout, /fast/);
+});
+
+// ── buildMcpFlags ──
+
+test("buildMcpFlags: returns empty string for empty array", () => {
+  assert.equal(buildMcpFlags([]), "");
+});
+
+test("buildMcpFlags: single extension", () => {
+  assert.equal(buildMcpFlags(["npx @cems/mcp"]), "--with-extension 'npx @cems/mcp'");
+});
+
+test("buildMcpFlags: multiple extensions", () => {
+  const result = buildMcpFlags(["npx @cems/mcp", "npx @other/ext"]);
+  assert.equal(result, "--with-extension 'npx @cems/mcp' --with-extension 'npx @other/ext'");
+});
+
+test("buildMcpFlags: filters empty strings", () => {
+  const result = buildMcpFlags(["npx @cems/mcp", "", "  ", "npx @other/ext"]);
+  assert.equal(result, "--with-extension 'npx @cems/mcp' --with-extension 'npx @other/ext'");
 });

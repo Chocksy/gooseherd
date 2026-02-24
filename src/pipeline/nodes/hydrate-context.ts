@@ -5,7 +5,6 @@ import type { ContextBag } from "../context-bag.js";
 
 /**
  * Hydrate context node: write .goosehints, build prompt file.
- * Equivalent to executor.ts lines 193-231, 498-548.
  */
 export async function hydrateContextNode(
   _nodeConfig: NodeConfig,

@@ -4,7 +4,6 @@ import { runShell, runShellCapture, shellEscape, appendLog } from "../shell.js";
 
 /**
  * Commit node: assert changes, git add + commit, capture SHA + changed files.
- * Equivalent to executor.ts lines 402-439.
  */
 export async function commitNode(
   _nodeConfig: NodeConfig,

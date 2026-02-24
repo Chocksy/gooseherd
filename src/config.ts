@@ -45,7 +45,6 @@ const envSchema = z.object({
   CEMS_ENABLED: z.string().optional(),
   CEMS_MCP_COMMAND: z.string().optional(),
 
-  PIPELINE_ENGINE_ENABLED: z.string().optional(),
   PIPELINE_FILE: z.string().optional(),
 
   OBSERVER_ENABLED: z.string().optional(),
@@ -158,7 +157,6 @@ export interface AppConfig {
   cemsEnabled: boolean;
   cemsMcpCommand?: string;
 
-  pipelineEngineEnabled: boolean;
   pipelineFile: string;
 
   observerEnabled: boolean;
@@ -266,7 +264,6 @@ export function loadConfig(): AppConfig {
     cemsEnabled: parseBoolean(parsed.CEMS_ENABLED, false),
     cemsMcpCommand: parsed.CEMS_MCP_COMMAND?.trim() || undefined,
 
-    pipelineEngineEnabled: parseBoolean(parsed.PIPELINE_ENGINE_ENABLED, false),
     pipelineFile: parsed.PIPELINE_FILE?.trim() || "pipelines/default.yml",
 
     observerEnabled: parseBoolean(parsed.OBSERVER_ENABLED, false),

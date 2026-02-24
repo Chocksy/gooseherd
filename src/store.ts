@@ -329,7 +329,7 @@ function shortRunId(id: string): string {
   return id.slice(0, 8);
 }
 
-export function mapExecutorPhaseToRunStatus(phase: string): RunStatus {
+export function mapPhaseToRunStatus(phase: string): RunStatus {
   if (phase === "validating") {
     return "validating";
   }

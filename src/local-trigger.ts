@@ -1,9 +1,9 @@
 import dotenv from "dotenv";
 dotenv.config({ override: true });
 import { loadConfig } from "./config.js";
-import { RunStore } from "./store.js";
-import { RunExecutor } from "./executor.js";
+import { RunStore, mapPhaseToRunStatus } from "./store.js";
 import { GitHubService } from "./github.js";
+import { PipelineEngine } from "./pipeline/index.js";
 import { logError, logInfo } from "./logger.js";
 import { CemsProvider } from "./memory/cems-provider.js";
 import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey })
     : undefined;
   const hooks = new RunLifecycleHooks(memoryProvider);
-  const executor = new RunExecutor(config, githubService, hooks);
+  const pipelineEngine = new PipelineEngine(config, githubService, hooks);
 
   await store.updateRun(run.id, {
     status: "running",
@@ -69,14 +69,15 @@ async function main(): Promise<void> {
     runId: run.id,
     repoSlug: run.repoSlug,
     baseBranch: run.baseBranch,
-    dryRun: config.dryRun
+    dryRun: config.dryRun,
+    pipeline: config.pipelineFile
   });
 
   try {
-    const result = await executor.execute(run, async (phase) => {
-      const status = phase === "validating" ? "validating" : phase === "pushing" ? "pushing" : "running";
+    const result = await pipelineEngine.execute(run, async (phase) => {
+      const status = mapPhaseToRunStatus(phase);
       await store.updateRun(run.id, { status, phase });
-    });
+    }, config.pipelineFile);
 
     await store.updateRun(run.id, {
       status: "completed",

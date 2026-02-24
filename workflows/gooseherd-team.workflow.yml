@@ -8,7 +8,7 @@ agents:
   - id: slack_ux_agent
     role: Implements Slack interaction UX, status cards, progress feedback.
   - id: execution_agent
-    role: Implements run metadata, executor outputs, persistence contracts.
+    role: Implements run metadata, pipeline outputs, persistence contracts.
   - id: dashboard_agent
     role: Implements dashboard APIs/UI and operator feedback capture.
   - id: workflow_agent
@@ -46,7 +46,7 @@ stages:
     deliverables:
       - src/types.ts
       - src/store.ts
-      - src/executor.ts
+      - src/pipeline/pipeline-engine.ts
       - src/local-trigger.ts
     validator:
       - npm run check

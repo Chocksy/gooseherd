@@ -8,7 +8,6 @@ import { loadRepoConfig, applyRepoConfig } from "../repo-config.js";
 
 /**
  * Clone node: clone repo, checkout branch (or create new), set git config.
- * Equivalent to executor.ts lines 172-301.
  */
 export async function cloneNode(
   _nodeConfig: NodeConfig,

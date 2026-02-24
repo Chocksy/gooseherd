@@ -5,7 +5,6 @@ import { runShell, shellEscape, renderTemplate } from "../shell.js";
 
 /**
  * Implement node: run the coding agent with MCP extension.
- * Equivalent to executor.ts lines 303-321.
  */
 export async function implementNode(
   _nodeConfig: NodeConfig,

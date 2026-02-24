@@ -8,7 +8,6 @@ import { parseErrors } from "../error-parser.js";
 /**
  * Fix validation node: re-run agent with structured error context.
  * This is the "agent_node" called by the engine's loop handler when validate fails.
- * Equivalent to executor.ts lines 364-396.
  */
 export async function fixValidationNode(
   _nodeConfig: NodeConfig,

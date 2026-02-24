@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { mapExecutorPhaseToRunStatus, RunStore } from "../src/store.js";
+import { mapPhaseToRunStatus, RunStore } from "../src/store.js";
 
 async function createStore(prefix = "gooseherd-test-"): Promise<{ store: RunStore; dir: string }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -96,13 +96,13 @@ test("listRuns returns newest first and feedback is saved", async (t) => {
   assert.equal(feedbackRun.feedback?.note, "good run");
 });
 
-test("mapExecutorPhaseToRunStatus handles phase mapping", () => {
-  assert.equal(mapExecutorPhaseToRunStatus("validating"), "validating");
-  assert.equal(mapExecutorPhaseToRunStatus("pushing"), "pushing");
-  assert.equal(mapExecutorPhaseToRunStatus("awaiting_ci"), "awaiting_ci");
-  assert.equal(mapExecutorPhaseToRunStatus("ci_fixing"), "ci_fixing");
-  assert.equal(mapExecutorPhaseToRunStatus("agent"), "running");
-  assert.equal(mapExecutorPhaseToRunStatus("cloning"), "running");
+test("mapPhaseToRunStatus handles phase mapping", () => {
+  assert.equal(mapPhaseToRunStatus("validating"), "validating");
+  assert.equal(mapPhaseToRunStatus("pushing"), "pushing");
+  assert.equal(mapPhaseToRunStatus("awaiting_ci"), "awaiting_ci");
+  assert.equal(mapPhaseToRunStatus("ci_fixing"), "ci_fixing");
+  assert.equal(mapPhaseToRunStatus("agent"), "running");
+  assert.equal(mapPhaseToRunStatus("cloning"), "running");
 });
 
 test("recoverInProgressRuns requeues interrupted runs", async (t) => {

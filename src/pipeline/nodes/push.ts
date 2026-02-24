@@ -4,7 +4,6 @@ import { runShell, shellEscape } from "../shell.js";
 
 /**
  * Push node: git push to origin.
- * Equivalent to executor.ts lines 450-460.
  */
 export async function pushNode(
   _nodeConfig: NodeConfig,

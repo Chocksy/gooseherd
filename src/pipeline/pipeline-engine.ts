@@ -67,7 +67,7 @@ const NODE_HANDLERS: Record<string, NodeHandler> = {
   browser_verify: browserVerifyNode
 };
 
-export type ExecutorPhase = "cloning" | "agent" | "validating" | "pushing" | "awaiting_ci" | "ci_fixing";
+export type PipelinePhase = "cloning" | "agent" | "validating" | "pushing" | "awaiting_ci" | "ci_fixing";
 
 /**
  * Pipeline engine: loads YAML pipeline, executes nodes in order,
@@ -81,11 +81,11 @@ export class PipelineEngine {
   ) {}
 
   /**
-   * Execute a pipeline for a run. Drop-in replacement for RunExecutor.execute().
+   * Execute a pipeline for a run.
    */
   async execute(
     run: RunRecord,
-    onPhase: (phase: ExecutorPhase) => Promise<void>,
+    onPhase: (phase: PipelinePhase) => Promise<void>,
     pipelineFile?: string
   ): Promise<ExecutionResult> {
     const yamlPath = pipelineFile ?? path.resolve("pipelines/default.yml");
@@ -123,7 +123,7 @@ export class PipelineEngine {
       logFile,
       workRoot: this.config.workRoot,
       onPhase: async (phase: string) => {
-        await onPhase(phase as ExecutorPhase);
+        await onPhase(phase as PipelinePhase);
       }
     };
 
@@ -324,7 +324,7 @@ export class PipelineEngine {
         continue;
       }
 
-      // Run lint fix after agent fix (matches executor: lint only runs after agent changes)
+      // Run lint fix after agent fix (lint only runs after agent changes)
       // Skip for fix_ci which already commits+pushes internally
       if (loopConfig.agent_node !== "fix_ci") {
         const lintHandler = NODE_HANDLERS["lint_fix"];
@@ -359,7 +359,7 @@ export class PipelineEngine {
       }
     }
 
-    // Loop exhausted — include last validation output for debugging (matches executor behavior)
+    // Loop exhausted — include last validation output for debugging
     const lastOutputSnippet = lastRawOutput.slice(-500);
     const exhaustionError = lastOutputSnippet
       ? `Validation failed after ${String(maxRounds)} retry round(s). Last output:\n${lastOutputSnippet}`

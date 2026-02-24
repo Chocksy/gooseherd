@@ -5,7 +5,6 @@ import { runShellCapture, renderTemplate, appendLog } from "../shell.js";
 
 /**
  * Validate node: run validation command, return structured result.
- * Equivalent to executor.ts lines 344-399 (single validation round).
  *
  * The loop/retry logic is handled by the pipeline engine's on_failure handler,
  * not inside this node. This node just runs once and reports success/failure.

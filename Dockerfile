@@ -14,7 +14,7 @@ RUN npm run build
 FROM node:22-bookworm-slim
 
 # System deps:
-#   git            – executor git operations (clone, push, etc.)
+#   git            – pipeline git operations (clone, push, etc.)
 #   curl           – download goose binary
 #   bzip2          – decompress goose .tar.bz2 archive
 #   ca-certificates – HTTPS for git + API calls

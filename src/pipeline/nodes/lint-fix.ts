@@ -5,7 +5,6 @@ import { runShellCapture, renderTemplate, appendLog } from "../shell.js";
 
 /**
  * Lint fix node: run auto-fix lint command.
- * Equivalent to executor.ts lines 335-342.
  */
 export async function lintFixNode(
   _nodeConfig: NodeConfig,

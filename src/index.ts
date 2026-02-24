@@ -3,7 +3,6 @@ dotenv.config({ override: true });
 import { loadConfig } from "./config.js";
 import { RunStore } from "./store.js";
 import { GitHubService } from "./github.js";
-import { RunExecutor } from "./executor.js";
 import { PipelineEngine } from "./pipeline/index.js";
 import { CemsProvider } from "./memory/cems-provider.js";
 import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
@@ -34,21 +33,15 @@ async function main(): Promise<void> {
   if (memoryProvider) {
     logInfo("Memory integration enabled", { provider: memoryProvider.name, url: config.cemsApiUrl });
   }
-  const executor = new RunExecutor(config, githubService, hooks);
-  const pipelineEngine = config.pipelineEngineEnabled
-    ? new PipelineEngine(config, githubService, hooks)
-    : undefined;
-
-  if (pipelineEngine) {
-    logInfo("Pipeline engine enabled", { pipelineFile: config.pipelineFile });
-  }
+  const pipelineEngine = new PipelineEngine(config, githubService, hooks);
+  logInfo("Pipeline engine ready", { pipelineFile: config.pipelineFile });
 
   // Slack Web API client is created internally by Bolt, but RunManager needs a client.
   // We instantiate a temporary manager with a lightweight client via dynamic import below.
   const { WebClient } = await import("@slack/web-api");
   const webClient = new WebClient(config.slackBotToken);
 
-  const runManager = new RunManager(config, store, executor, webClient, hooks, pipelineEngine);
+  const runManager = new RunManager(config, store, pipelineEngine, webClient, hooks);
   if (recoveredRuns.length > 0) {
     for (const run of recoveredRuns) {
       runManager.requeueExistingRun(run.id);

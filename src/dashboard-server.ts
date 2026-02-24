@@ -1731,7 +1731,7 @@ function dashboardHtml(config: AppConfig): string {
           phaseIcon.className = 'material-symbols-rounded';
           phaseIcon.textContent = ev.phase === 'cloning' ? 'download' : ev.phase === 'agent' ? 'smart_toy' : ev.phase === 'committing' ? 'save' : ev.phase === 'pushing' ? 'cloud_upload' : 'flag';
           node.appendChild(phaseIcon);
-          // Show clean phase labels instead of raw executor commands
+          // Show clean phase labels instead of raw pipeline commands
           var phaseLabels = {
             cloning: 'Cloning repository',
             agent: 'Agent started',

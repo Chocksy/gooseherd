@@ -5,10 +5,9 @@ import path from "node:path";
 import type { Block, KnownBlock } from "@slack/types";
 import type { AppConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
-import { RunExecutor, type ParentRunContext } from "./executor.js";
 import type { PipelineEngine } from "./pipeline/pipeline-engine.js";
 import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
-import { RunStore, mapExecutorPhaseToRunStatus } from "./store.js";
+import { RunStore, mapPhaseToRunStatus } from "./store.js";
 import type { NewRunInput, RunRecord } from "./types.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -79,10 +78,9 @@ export class RunManager {
   constructor(
     private readonly config: AppConfig,
     private readonly store: RunStore,
-    private readonly executor: RunExecutor,
+    private readonly pipelineEngine: PipelineEngine,
     private readonly slackClient: WebClient,
-    private readonly hooks?: RunLifecycleHooks,
-    private readonly pipelineEngine?: PipelineEngine
+    private readonly hooks?: RunLifecycleHooks
   ) {
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
   }
@@ -316,32 +314,14 @@ export class RunManager {
 
       const phaseCallback = async (phase: string): Promise<void> => {
         currentPhase = phase;
-        const nextStatus = mapExecutorPhaseToRunStatus(phase);
+        const nextStatus = mapPhaseToRunStatus(phase);
         const runPhase = phase as import("./types.js").RunPhase;
         const updated = await this.store.updateRun(stableRunId, { status: nextStatus, phase: runPhase });
         run = updated;
         await upsertRunCard();
       };
 
-      let result;
-      if (this.pipelineEngine) {
-        // Pipeline engine path
-        result = await this.pipelineEngine.execute(run, phaseCallback, this.config.pipelineFile);
-      } else {
-        // Legacy executor path
-        let parentContext: ParentRunContext | undefined;
-        if (run.parentRunId && run.parentBranchName) {
-          const parentRun = await this.store.getRun(run.parentRunId);
-          parentContext = {
-            parentRunId: run.parentRunId,
-            parentBranchName: run.parentBranchName,
-            parentChangedFiles: parentRun?.changedFiles,
-            parentCommitSha: parentRun?.commitSha,
-            feedbackNote: run.feedbackNote
-          };
-        }
-        result = await this.executor.execute(run, phaseCallback, parentContext);
-      }
+      const result = await this.pipelineEngine.execute(run, phaseCallback, this.config.pipelineFile);
       stopHeartbeat();
 
       run = await this.store.updateRun(stableRunId, {

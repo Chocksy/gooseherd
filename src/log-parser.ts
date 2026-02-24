@@ -8,7 +8,7 @@
  *   Annotated { ... }             (tool result in Rust debug format)
  *   <free text>                   (agent thinking)
  *
- * Gooseherd executor emits:
+ * Gooseherd pipeline emits:
  *   $ command                     (shell commands)
  *   <AppName> run <uuid>          (run header)
  *   starting session | provider:  (session start)

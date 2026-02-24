@@ -3,7 +3,6 @@ import type { ContextBag } from "../context-bag.js";
 
 /**
  * Create PR node: create or update pull request via GitHub API.
- * Equivalent to executor.ts lines 462-488, 550-586.
  */
 export async function createPrNode(
   _nodeConfig: NodeConfig,

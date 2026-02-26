@@ -2,7 +2,7 @@
  * Scope Judge node — LLM-as-judge reviews diff vs original task.
  *
  * Opt-in (disabled by default, enabled via SCOPE_JUDGE_ENABLED or node config).
- * Uses Anthropic API directly via the thin LLM caller.
+ * Uses OpenRouter API via the thin LLM caller.
  * Calibrated to prefer PASS (~25% expected veto rate).
  *
  * Escalation: if confidence < threshold, re-runs with a more capable model.
@@ -39,8 +39,8 @@ export async function scopeJudgeNode(
   }
 
   // Require API key
-  if (!config.anthropicApiKey) {
-    await appendLog(logFile, "\n[gate:scope_judge] skipped (no ANTHROPIC_API_KEY)\n");
+  if (!config.openrouterApiKey) {
+    await appendLog(logFile, "\n[gate:scope_judge] skipped (no OPENROUTER_API_KEY)\n");
     return { outcome: "skipped" };
   }
 
@@ -61,7 +61,7 @@ export async function scopeJudgeNode(
 
   // Build LLM request
   const llmConfig: LLMCallerConfig = {
-    apiKey: config.anthropicApiKey,
+    apiKey: config.openrouterApiKey,
     defaultModel: config.scopeJudgeModel,
     defaultTimeoutMs: 15_000
   };
@@ -70,21 +70,25 @@ export async function scopeJudgeNode(
   const model = (nc?.["model"] as string) ?? config.scopeJudgeModel;
   const minPassScore = (nc?.["min_pass_score"] as number) ?? config.scopeJudgeMinPassScore;
   const escalateBelow = (nc?.["escalate_below_confidence"] as number) ?? 0.7;
-  const escalationModel = (nc?.["escalation_model"] as string) ?? "claude-sonnet-4-6";
+  const escalationModel = (nc?.["escalation_model"] as string) ?? "anthropic/claude-sonnet-4-6";
 
   const systemPrompt = buildScopeJudgeSystemPrompt();
   const userMessage = buildScopeJudgeUserMessage(task, diffResult.stdout, changedFiles);
 
   // First pass
   let result: ScopeJudgeResult;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
   try {
-    const { parsed } = await callLLMForJSON<Record<string, unknown>>(llmConfig, {
+    const { parsed, raw } = await callLLMForJSON<Record<string, unknown>>(llmConfig, {
       system: systemPrompt,
       userMessage,
       model,
       maxTokens: 512
     });
     result = parseScopeJudgeResponse(parsed);
+    totalInputTokens += raw.inputTokens;
+    totalOutputTokens += raw.outputTokens;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown";
     logError("scope_judge: LLM call failed, fail-open", { error: msg });
@@ -102,7 +106,7 @@ export async function scopeJudgeNode(
     await appendLog(logFile, `\n[gate:scope_judge] escalating (confidence ${String(result.confidence)} < ${String(escalateBelow)})\n`);
 
     try {
-      const { parsed } = await callLLMForJSON<Record<string, unknown>>(llmConfig, {
+      const { parsed, raw } = await callLLMForJSON<Record<string, unknown>>(llmConfig, {
         system: systemPrompt,
         userMessage,
         model: escalationModel,
@@ -110,12 +114,19 @@ export async function scopeJudgeNode(
         timeoutMs: 30_000 // longer timeout for bigger model
       });
       result = parseScopeJudgeResponse(parsed);
+      totalInputTokens += raw.inputTokens;
+      totalOutputTokens += raw.outputTokens;
     } catch (err) {
       // Keep original result on escalation failure
       const msg = err instanceof Error ? err.message : "unknown";
       logInfo("scope_judge: escalation failed, using initial result", { error: msg });
     }
   }
+
+  ctx.set("_tokenUsage_scope_judge", {
+    input: totalInputTokens,
+    output: totalOutputTokens
+  });
 
   // Apply decision
   const reasons = result.violations.map(v => `${v.file}: ${v.message}`);

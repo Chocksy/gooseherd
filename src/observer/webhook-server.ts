@@ -4,12 +4,14 @@
  * Runs on OBSERVER_WEBHOOK_PORT, separate from the dashboard.
  * Routes:
  *   POST /webhooks/github  — GitHub webhook events (HMAC-verified)
+ *   POST /webhooks/sentry  — Sentry webhook events (HMAC-verified)
  *   GET  /health            — Health check
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { logError, logInfo } from "../logger.js";
 import { verifyGitHubSignature, parseGitHubWebhook, type GitHubWebhookHeaders } from "./sources/github-webhook-adapter.js";
+import { verifySentrySignature, parseSentryWebhook, type SentryWebhookHeaders } from "./sources/sentry-webhook-adapter.js";
 import type { TriggerEvent } from "./types.js";
 
 /** Max request body size: 1 MB */
@@ -18,6 +20,9 @@ const MAX_BODY_BYTES = 1024 * 1024;
 export interface WebhookServerConfig {
   port: number;
   githubWebhookSecret?: string;
+  sentryWebhookSecret?: string;
+  /** Slack channel for Sentry alert notifications */
+  sentryAlertChannelId?: string;
 }
 
 export type OnEventCallback = (event: TriggerEvent) => void;
@@ -76,6 +81,12 @@ async function handleRequest(
     return;
   }
 
+  // Sentry webhook
+  if (url === "/webhooks/sentry" && method === "POST") {
+    await handleSentryWebhook(req, res, config, onEvent);
+    return;
+  }
+
   sendJson(res, 404, { error: "Not found" });
 }
 
@@ -125,6 +136,53 @@ async function handleGitHubWebhook(
     sendJson(res, 200, { accepted: true, eventId: event.id });
   } else {
     // Valid webhook but not an actionable event type
+    sendJson(res, 200, { accepted: false, reason: "event type not actionable" });
+  }
+}
+
+async function handleSentryWebhook(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: WebhookServerConfig,
+  onEvent: OnEventCallback
+): Promise<void> {
+  const body = await readBody(req);
+  if (body === null) {
+    sendJson(res, 413, { error: "Request body too large" });
+    return;
+  }
+
+  if (!config.sentryWebhookSecret) {
+    sendJson(res, 500, { error: "Sentry webhook secret not configured" });
+    return;
+  }
+
+  const signature = req.headers["sentry-hook-signature"] as string | undefined;
+  if (!verifySentrySignature(body, signature, config.sentryWebhookSecret)) {
+    sendJson(res, 401, { error: "Invalid signature" });
+    return;
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  const headers: SentryWebhookHeaders = {
+    "sentry-hook-resource": req.headers["sentry-hook-resource"] as string | undefined,
+    "sentry-hook-timestamp": req.headers["sentry-hook-timestamp"] as string | undefined,
+    "sentry-hook-signature": req.headers["sentry-hook-signature"] as string | undefined
+  };
+
+  const event = parseSentryWebhook(headers, payload, config.sentryAlertChannelId ?? "");
+
+  if (event) {
+    onEvent(event);
+    sendJson(res, 200, { accepted: true, eventId: event.id });
+  } else {
     sendJson(res, 200, { accepted: false, reason: "event type not actionable" });
   }
 }

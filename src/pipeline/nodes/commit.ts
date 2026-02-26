@@ -16,16 +16,13 @@ export async function commitNode(
   const repoDir = ctx.getRequired<string>("repoDir");
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
 
-  // Assert changes exist
-  try {
-    await runShell("git diff --quiet HEAD", { cwd: repoDir, logFile });
-    // If this succeeds (exit 0), there are NO changes → error
+  // Assert changes exist (tracked modifications + untracked new files)
+  const statusResult = await runShellCapture("git status --porcelain", { cwd: repoDir, logFile });
+  if (statusResult.code === 0 && statusResult.stdout.trim() === "") {
     return {
       outcome: "failure",
       error: "Agent produced no file changes. Ensure AGENT_COMMAND_TEMPLATE writes modifications before commit."
     };
-  } catch {
-    // exit code != 0 means there ARE changes → good
   }
 
   // Stage all changes

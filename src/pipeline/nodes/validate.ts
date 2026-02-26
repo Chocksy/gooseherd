@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShellCapture, renderTemplate, appendLog } from "../shell.js";
+import { runShellCapture, renderTemplate, appendLog, mapToContainerPath } from "../shell.js";
 
 /**
  * Validate node: run validation command, return structured result.
@@ -27,11 +27,11 @@ export async function validateNode(
   await deps.onPhase("validating");
 
   const templateVars = {
-    repo_dir: repoDir,
+    repo_dir: mapToContainerPath(repoDir),
     run_id: run.id,
     repo_slug: run.repoSlug,
-    prompt_file: promptFile,
-    task_file: promptFile,
+    prompt_file: mapToContainerPath(promptFile),
+    task_file: mapToContainerPath(promptFile),
     parent_run_id: run.parentRunId ?? ""
   };
 

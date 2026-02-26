@@ -149,7 +149,7 @@ Nodes can declare `on_failure` to create automatic retry loops — the engine re
 └─────────┘               └────────┘           └─────────┘
 ```
 
-## The 18 Node Handlers
+## The 20 Node Handlers
 
 Every node maps to a handler function. Here's what each one does:
 
@@ -157,9 +157,11 @@ Every node maps to a handler function. Here's what each one does:
 
 | Node | What it does |
 |------|-------------|
-| `clone` | Clones the repo, creates a working branch, loads `.gooseherd.yml` per-repo config |
+| `clone` | Clones the repo, creates a working branch, loads `.gooseherd.yml` per-repo config. Reports clone progress to Slack via `onDetail`. |
 | `hydrate_context` | Fills the context bag with task, repo info, branch, config values |
+| `plan_task` | LLM plans the implementation approach before the agent runs. Tracks token usage. |
 | `implement` | Runs the AI agent (Goose) with the task prompt. The agent writes code. |
+| `local_test` | Runs a local test command (if configured) before validation. Quick smoke test. |
 | `lint_fix` | Runs the configured lint/format command (e.g. `rubocop -A`, `prettier --write`) |
 | `validate` | Runs the validation command (e.g. `rspec`, `npm test`). Retries via fix_validation loop. |
 | `fix_validation` | AI agent reads test failures and fixes the code. Then validate re-runs. |
@@ -328,28 +330,39 @@ The key difference: in GitHub Actions the "actions" build/test your code. In Goo
 ```
 src/
 ├── index.ts                  # Startup: wires everything together
-├── config.ts                 # All env vars → AppConfig
+├── config.ts                 # All env vars → AppConfig (Zod schema)
+├── types.ts                  # RunRecord, RunStatus, TokenUsage, etc.
 ├── run-manager.ts            # Queue, concurrency, lifecycle
 ├── command-parser.ts         # Slack command parsing (natural + explicit formats)
-├── slack-app.ts              # Slack bot (@mention handler)
-├── github.ts                 # GitHub API service
+├── slack-app.ts              # Slack bot (@mention, App Home, help blocks)
+├── github.ts                 # GitHub API service (factory pattern, PAT + GitHub App auth)
 ├── store.ts                  # File-based run state persistence
 ├── log-parser.ts             # Goose log → structured events for dashboard
-├── dashboard-server.ts       # Web dashboard + activity stream
+├── logger.ts                 # Structured logging utility
+├── dashboard-server.ts       # Web dashboard + auth + activity stream
 ├── workspace-cleaner.ts      # Auto-cleanup old workspaces
+├── local-trigger.ts          # CLI tool for triggering runs locally
+│
+├── hooks/
+│   └── run-lifecycle.ts      # Run lifecycle hooks (post-run cleanup, etc.)
 │
 ├── pipeline/
-│   ├── pipeline-engine.ts    # YAML loader → node walker → checkpointing
+│   ├── index.ts              # Pipeline barrel export
+│   ├── pipeline-engine.ts    # YAML loader → node walker → checkpointing + event logging
 │   ├── pipeline-loader.ts    # YAML validation + action registry
-│   ├── context-bag.ts        # Typed key-value store between nodes
+│   ├── context-bag.ts        # Typed key-value store between nodes (with keys() iterator)
 │   ├── expression-evaluator.ts # if: "config.X != ''" evaluation
-│   ├── shell.ts              # Safe shell exec + shellEscape
-│   ├── types.ts              # NodeConfig, NodeHandler, NodeResult, etc.
+│   ├── shell.ts              # Safe shell exec + shellEscape + runShellWithProgress
+│   ├── types.ts              # NodeConfig, NodeHandler, NodeResult, NodeDeps, PipelineEvent
+│   ├── event-logger.ts       # JSONL event logger for pipeline runs
+│   ├── error-parser.ts       # Error message extraction from logs
 │   │
-│   ├── nodes/                # Core delivery nodes
-│   │   ├── clone.ts
+│   ├── nodes/                # Core delivery nodes (12 handlers)
+│   │   ├── clone.ts          # Git clone with progress reporting
 │   │   ├── hydrate-context.ts
+│   │   ├── plan-task.ts      # LLM task planning with token tracking
 │   │   ├── implement.ts
+│   │   ├── local-test.ts     # Local test runner (pre-validation smoke test)
 │   │   ├── lint-fix.ts
 │   │   ├── validate.ts
 │   │   ├── fix-validation.ts
@@ -358,15 +371,20 @@ src/
 │   │   ├── create-pr.ts
 │   │   └── notify.ts
 │   │
-│   ├── quality-gates/        # Pre-push verification
+│   ├── quality-gates/        # Pre-push verification (8 files, 6 gates)
 │   │   ├── classify-task-node.ts
+│   │   ├── task-classifier.ts     # Pure classification logic
 │   │   ├── diff-gate-node.ts
+│   │   ├── diff-gate.ts           # Pure diff size logic
 │   │   ├── forbidden-files-node.ts
+│   │   ├── forbidden-files.ts     # Pure forbidden files logic
 │   │   ├── security-scan-node.ts
-│   │   ├── scope-judge.ts          # Pure logic
-│   │   ├── scope-judge-node.ts     # Node handler wrapper
-│   │   ├── browser-verify.ts       # Pure logic
-│   │   └── browser-verify-node.ts  # Node handler wrapper
+│   │   ├── security-scan.ts       # Pure security scan logic
+│   │   ├── scope-judge.ts         # Pure scope judge logic
+│   │   ├── scope-judge-node.ts    # Node handler (with token tracking)
+│   │   ├── gate-report.ts         # Gate report formatting
+│   │   ├── browser-verify.ts      # Pure browser verify logic
+│   │   └── browser-verify-node.ts # Node handler wrapper
 │   │
 │   ├── ci/                   # Post-push CI feedback
 │   │   ├── ci-monitor.ts     # Pure logic (aggregate, filter, prompt)
@@ -376,6 +394,7 @@ src/
 │   └── repo-config.ts        # Per-repo .gooseherd.yml loader
 │
 ├── observer/                 # Auto-trigger system
+│   ├── index.ts              # Observer barrel export
 │   ├── daemon.ts             # Main daemon loop
 │   ├── types.ts              # TriggerEvent, TriggerRule, SafetyDecision
 │   ├── safety.ts             # Dedup, rate limit, budget, cooldown
@@ -386,14 +405,17 @@ src/
 │   ├── webhook-server.ts     # Separate HTTP server for webhooks
 │   └── sources/
 │       ├── sentry-poller.ts
+│       ├── sentry-webhook-adapter.ts
 │       ├── github-webhook-adapter.ts
+│       ├── github-poller.ts
 │       └── slack-channel-adapter.ts
 │
 ├── llm/
 │   └── caller.ts             # Thin HTTP caller for Anthropic API
 │
 └── memory/
-    └── cems-provider.ts      # Optional memory integration
+    ├── provider.ts           # Memory provider interface
+    └── cems-provider.ts      # CEMS memory integration
 
 pipelines/
 ├── default.yml               # Bare minimum (9 nodes)
@@ -404,26 +426,95 @@ pipelines/
 observer-rules/
 └── default.yml               # Trigger rule definitions
 
+scripts/
+├── setup.ts                  # Interactive setup wizard (npm run setup)
+├── validate-env.ts           # Environment validation (npm run validate)
+└── dummy-agent.sh            # Mock agent for testing
+
 tests/
-├── pipeline.test.ts          # Pipeline engine + loader tests
-├── quality-gates.test.ts     # Gate logic tests
-├── ci-monitor.test.ts        # CI feedback pure function tests
-├── observer.test.ts          # Observer/trigger system tests
+├── pipeline-engine.test.ts   # Pipeline engine core tests
+├── pipeline-nodes.test.ts    # Node handler tests (plan-task, local-test, etc.)
+├── quality-gates.test.ts     # Gate logic tests (classifier, diff, forbidden, security)
+├── ci-feedback.test.ts       # CI feedback pure function tests
+├── observer.test.ts          # Observer/trigger system tests (safety, rules, adapters)
+├── sentry-webhook.test.ts    # Sentry webhook adapter tests
 ├── phase5.test.ts            # Scope judge, triage, browser verify, repo config
-├── command-parser.test.ts    # Slack command parser (19 tests, all formats)
-└── snapshot.test.ts          # Log inspector snapshot tests
+├── phase12.test.ts           # Dashboard auth, token usage, help blocks, events, progress
+├── phase13.test.ts           # Setup wizard, GitHub App auth, team tagging
+├── command-parser.test.ts    # Slack command parser (19 tests)
+├── store.test.ts             # RunStore persistence tests
+├── config.test.ts            # Config loading + validation tests
+├── run-manager.test.ts       # RunManager lifecycle + heartbeat tests
+├── slack-thread.test.ts      # Slack thread/follow-up tests
+├── implement.test.ts         # Implement node tests
+├── create-pr.test.ts         # PR creation node tests
+├── hydrate-context.test.ts   # Context hydration tests
+├── shell.test.ts             # Shell execution + progress tests
+├── log-parser.test.ts        # Log parser tests
+├── log-parser-snapshots.test.ts # Log parser snapshot tests
+└── e2e-pipeline.test.ts      # E2E pipeline integration tests
 ```
 
 ## Test Coverage
 
-220 tests across 7 test suites:
+466 tests across 21 test suites:
 
 | Suite | Tests | What it covers |
 |-------|-------|---------------|
-| pipeline.test.ts | 30 | Engine, loader, context bag, expressions, error parser |
-| quality-gates.test.ts | 44 | Classifier, diff gate, forbidden files, security scan |
-| ci-monitor.test.ts | 22 | CI aggregation, filtering, prompts, abort logic |
-| observer.test.ts | 55 | Safety pipeline, trigger rules, adapters, daemon |
+| observer.test.ts | 65 | Safety pipeline, trigger rules, adapters, daemon |
 | phase5.test.ts | 49 | Scope judge, smart triage, browser verify, repo config |
+| quality-gates.test.ts | 44 | Classifier, diff gate, forbidden files, security scan |
+| phase13.test.ts | 53 | Setup wizard, GitHub App auth, team tagging |
+| phase12.test.ts | 26 | Dashboard auth, token usage, help blocks, events, clone progress |
+| run-manager.test.ts | 25 | Queue, concurrency, heartbeat, lifecycle |
+| shell.test.ts | 25 | Shell execution, capture, progress callbacks |
+| slack-thread.test.ts | 24 | Thread follow-ups, chain resolution, retry |
+| ci-feedback.test.ts | 23 | CI aggregation, filtering, prompts, abort logic |
 | command-parser.test.ts | 19 | Natural/explicit format parsing, mentions, branches |
-| snapshot.test.ts | 1 | Log inspector output format |
+| hydrate-context.test.ts | 19 | Context bag population, config injection |
+| sentry-webhook.test.ts | 17 | Sentry webhook adapter, signature verification |
+| log-parser-snapshots.test.ts | 15 | Log parser output format snapshots |
+| pipeline-nodes.test.ts | 14 | Plan-task, local-test, notify, screenshot nodes |
+| implement.test.ts | 13 | Agent execution, prompt templating, timeout |
+| create-pr.test.ts | 12 | PR creation, gate reports, diff artifacts |
+| log-parser.test.ts | 11 | Goose log → structured events |
+| config.test.ts | 4 | Config loading, defaults, validation |
+| store.test.ts | 4 | RunStore persistence, locking, queries |
+| pipeline-engine.test.ts | 2 | Engine core, node walking, checkpointing |
+| e2e-pipeline.test.ts | 2 | End-to-end pipeline integration |
+
+## Dashboard Authentication
+
+The dashboard supports optional token-based authentication via `DASHBOARD_TOKEN`. When set:
+
+- **API routes** (`/api/*`): require `Authorization: Bearer <token>` header or a valid session cookie
+- **HTML pages** (`/`, `/runs/*`): require a `gooseherd-session` cookie (set via login page)
+- **Always open**: `/healthz` and `/login` bypass auth
+- **No token configured**: all routes are open (backward compat for localhost dev)
+
+Session cookies use SHA-256 hash of the token, HttpOnly, SameSite=Strict. Token comparison uses timing-safe equality.
+
+## Token Usage Tracking
+
+LLM-calling nodes (plan_task, scope_judge) store token counts in the context bag under `_tokenUsage_<nodeId>` keys. After the pipeline completes, `aggregateTokenUsage()` sums all entries into a `TokenUsage` object stored on the `RunRecord`.
+
+The dashboard displays token usage (quality gate input/output tokens) in the run detail panel.
+
+## Pipeline Event Logger
+
+Every pipeline run emits structured events to `<runDir>/events.jsonl`:
+
+- `node_start` — before each node executes
+- `node_end` — after each node (with outcome and duration)
+- `phase_change` — when the run phase transitions
+- `error` — on failures
+
+The dashboard reads these via `GET /api/runs/:id/pipeline-events` and renders a visual timeline.
+
+## Clone Progress Reporting
+
+The clone node uses `git clone --progress` and parses stderr for progress lines (`Receiving objects: 45%`). Progress is reported to Slack via the `onDetail` callback (throttled to max once per 5 seconds) to update the run card in real time.
+
+## Slack App Home Tab
+
+The App Home tab (enabled in the manifest) displays help content when users open the bot's home tab. `buildHelpBlocks(config)` generates Slack Block Kit content with command reference, follow-up instructions, and quick-start examples.

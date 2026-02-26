@@ -15,24 +15,29 @@ import { buildDedupKey, getDedupTtl, runSafetyChecks } from "./safety.js";
 import { composeRunInput } from "./run-composer.js";
 import { startWebhookServer, type OnEventCallback } from "./webhook-server.js";
 import { pollSentry, type SentryPollerConfig } from "./sources/sentry-poller.js";
+import { pollGitHub, type GitHubPollerConfig } from "./sources/github-poller.js";
 import { triageEvent } from "./smart-triage.js";
 import type { LLMCallerConfig } from "../llm/caller.js";
-import type { TriggerEvent, TriggerRule } from "./types.js";
+import type { TriggerEvent, TriggerRule, ObserverEventRecord, ObserverStateSnapshot } from "./types.js";
 
 const MAX_PENDING_EVENTS = 1000;
+const MAX_EVENT_HISTORY = 200;
 
 export class ObserverDaemon {
   private readonly stateStore: ObserverStateStore;
   private rules: TriggerRule[] = [];
   private sentryPoller: NodeJS.Timeout | undefined;
+  private githubPoller: NodeJS.Timeout | undefined;
   private webhookStop: (() => Promise<void>) | undefined;
   private readonly pendingWebhookEvents: TriggerEvent[] = [];
+  private readonly eventHistory: ObserverEventRecord[] = [];
   private processingInterval: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly config: AppConfig,
     private readonly runManager: RunManager,
-    private readonly webClient: WebClient
+    private readonly webClient: WebClient,
+    private readonly tokenGetter?: () => Promise<string>
   ) {
     this.stateStore = new ObserverStateStore(config.dataDir);
   }
@@ -40,6 +45,12 @@ export class ObserverDaemon {
   async start(): Promise<void> {
     // Load persisted state
     await this.stateStore.load();
+
+    // Register learning loop callback — when a run finishes, update dedup + outcomes
+    this.runManager.onRunTerminal((runId, status) => {
+      this.stateStore.markDedupCompleted(runId, status);
+      logInfo("Observer: learning loop recorded outcome", { runId, status });
+    });
 
     // Load trigger rules
     this.rules = await loadTriggerRules(this.config.observerRulesFile);
@@ -73,20 +84,45 @@ export class ObserverDaemon {
       });
     }
 
-    // Start webhook server (if secret configured)
-    if (this.config.observerGithubWebhookSecret) {
+    // Start GitHub Actions poller (if configured)
+    if (this.tokenGetter && this.config.observerGithubWatchedRepos.length > 0) {
+      // Initial poll
+      await this.runGitHubPollWithFreshToken();
+
+      // Recurring poll — resolves a fresh token on each cycle
+      this.githubPoller = setInterval(() => {
+        this.runGitHubPollWithFreshToken().catch((err) => {
+          const msg = err instanceof Error ? err.message : "unknown";
+          logError("Observer: GitHub poll error", { error: msg });
+        });
+      }, this.config.observerGithubPollIntervalSeconds * 1000);
+      this.githubPoller.unref?.();
+
+      logInfo("Observer: GitHub Actions poller started", {
+        intervalSeconds: this.config.observerGithubPollIntervalSeconds,
+        repos: this.config.observerGithubWatchedRepos
+      });
+    }
+
+    // Start webhook server (if any webhook secret configured)
+    const hasGitHubWebhook = Boolean(this.config.observerGithubWebhookSecret);
+    const hasSentryWebhook = Boolean(this.config.observerSentryWebhookSecret);
+    if (hasGitHubWebhook || hasSentryWebhook) {
       const onEvent: OnEventCallback = (event) => {
         this.enqueueEvent(event);
       };
 
       const handle = startWebhookServer({
         port: this.config.observerWebhookPort,
-        githubWebhookSecret: this.config.observerGithubWebhookSecret
+        githubWebhookSecret: this.config.observerGithubWebhookSecret,
+        sentryWebhookSecret: this.config.observerSentryWebhookSecret,
+        sentryAlertChannelId: this.config.observerAlertChannelId
       }, onEvent);
 
       this.webhookStop = handle.stop;
 
-      logInfo("Observer: webhook server started", { port: this.config.observerWebhookPort });
+      const sources = [hasGitHubWebhook && "github", hasSentryWebhook && "sentry"].filter(Boolean);
+      logInfo("Observer: webhook server started", { port: this.config.observerWebhookPort, sources });
     }
 
     // Processing loop — drains pending events every 5 seconds
@@ -107,6 +143,11 @@ export class ObserverDaemon {
       this.sentryPoller = undefined;
     }
 
+    if (this.githubPoller) {
+      clearInterval(this.githubPoller);
+      this.githubPoller = undefined;
+    }
+
     if (this.processingInterval) {
       clearInterval(this.processingInterval);
       this.processingInterval = undefined;
@@ -124,6 +165,52 @@ export class ObserverDaemon {
   }
 
   /**
+   * Hot-reload: stop pollers/webhook server and restart with new config.
+   * Preserves state store (dedup, counters, outcomes) across reload.
+   */
+  async reload(newConfig: AppConfig): Promise<void> {
+    logInfo("Observer: reloading configuration");
+
+    // Stop existing pollers and webhook server (preserves state store in memory)
+    if (this.sentryPoller) {
+      clearInterval(this.sentryPoller);
+      this.sentryPoller = undefined;
+    }
+    if (this.githubPoller) {
+      clearInterval(this.githubPoller);
+      this.githubPoller = undefined;
+    }
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval);
+      this.processingInterval = undefined;
+    }
+    if (this.webhookStop) {
+      await this.webhookStop();
+      this.webhookStop = undefined;
+    }
+
+    // Flush current state before switching config
+    await this.stateStore.flush();
+
+    // Update config reference — TypeScript doesn't allow reassigning readonly,
+    // so we use Object.assign to replace the contents
+    Object.assign(this, { config: newConfig });
+
+    // Re-start with new config (start() is idempotent for state loading)
+    await this.start();
+
+    logInfo("Observer: reload complete");
+  }
+
+  /**
+   * Reload trigger rules from disk without restarting pollers.
+   */
+  async reloadRules(): Promise<void> {
+    this.rules = await loadTriggerRules(this.config.observerRulesFile);
+    logInfo("Observer: trigger rules reloaded", { count: this.rules.length });
+  }
+
+  /**
    * Enqueue an event from an external source (e.g., Slack channel adapter).
    * Drops events when queue is full to prevent OOM under flood conditions.
    */
@@ -135,6 +222,30 @@ export class ObserverDaemon {
     this.pendingWebhookEvents.push(event);
   }
 
+  // ── Dashboard query methods ──
+
+  /** Get state snapshot for dashboard display. */
+  getStateSnapshot(): ObserverStateSnapshot {
+    return this.stateStore.getSnapshot();
+  }
+
+  /** Get recent processed events (newest first). */
+  getRecentEvents(limit = 50): ObserverEventRecord[] {
+    return this.eventHistory.slice(-limit).reverse();
+  }
+
+  /** Get loaded trigger rules. */
+  getRules(): TriggerRule[] {
+    return [...this.rules];
+  }
+
+  private recordEvent(record: ObserverEventRecord): void {
+    this.eventHistory.push(record);
+    if (this.eventHistory.length > MAX_EVENT_HISTORY) {
+      this.eventHistory.splice(0, this.eventHistory.length - MAX_EVENT_HISTORY);
+    }
+  }
+
   private async runSentryPoll(sentryConfig: SentryPollerConfig): Promise<void> {
     const events = await pollSentry(sentryConfig, this.stateStore);
     for (const event of events) {
@@ -144,6 +255,28 @@ export class ObserverDaemon {
       logInfo("Observer: Sentry poll produced events", { count: events.length });
     }
     // Flush state after poll (cursor updates)
+    await this.stateStore.flush();
+  }
+
+  private async runGitHubPollWithFreshToken(): Promise<void> {
+    const token = await this.tokenGetter!();
+    const ghConfig: GitHubPollerConfig = {
+      githubToken: token,
+      watchedRepos: this.config.observerGithubWatchedRepos,
+      pollIntervalSeconds: this.config.observerGithubPollIntervalSeconds,
+      alertChannelId: this.config.observerAlertChannelId
+    };
+    await this.runGitHubPoll(ghConfig);
+  }
+
+  private async runGitHubPoll(ghConfig: GitHubPollerConfig): Promise<void> {
+    const events = await pollGitHub(ghConfig, this.stateStore);
+    for (const event of events) {
+      this.enqueueEvent(event);
+    }
+    if (events.length > 0) {
+      logInfo("Observer: GitHub poll produced events", { count: events.length });
+    }
     await this.stateStore.flush();
   }
 
@@ -161,17 +294,23 @@ export class ObserverDaemon {
   }
 
   private async processEvent(event: TriggerEvent): Promise<void> {
+    const now = new Date().toISOString();
+
     // 1. Match against trigger rules
     const rule = matchTriggerRule(event, this.rules);
     if (!rule) {
       logInfo("Observer: no matching rule for event", { eventId: event.id, source: event.source });
+      this.recordEvent({
+        eventId: event.id, source: event.source, timestamp: event.timestamp,
+        repoSlug: event.repoSlug, outcome: "no_match", reason: "No matching rule", processedAt: now
+      });
       return;
     }
 
     // 1b. Smart triage (optional LLM-based event classification)
-    if (this.config.observerSmartTriageEnabled && this.config.anthropicApiKey) {
+    if (this.config.observerSmartTriageEnabled && this.config.openrouterApiKey) {
       const llmConfig: LLMCallerConfig = {
-        apiKey: this.config.anthropicApiKey,
+        apiKey: this.config.openrouterApiKey,
         defaultModel: this.config.observerSmartTriageModel,
         defaultTimeoutMs: this.config.observerSmartTriageTimeoutMs
       };
@@ -247,6 +386,11 @@ export class ObserverDaemon {
         eventId: event.id,
         reason: decision.reason
       });
+      this.recordEvent({
+        eventId: event.id, source: event.source, timestamp: event.timestamp,
+        repoSlug: event.repoSlug, matchedRuleId: rule.id,
+        outcome: "denied", reason: decision.reason, processedAt: now
+      });
       return;
     }
 
@@ -267,18 +411,29 @@ export class ObserverDaemon {
         if (repoSlug) {
           this.stateStore.incrementDailyCount(repoSlug);
         }
+        this.recordEvent({
+          eventId: event.id, source: event.source, timestamp: event.timestamp,
+          repoSlug: event.repoSlug, matchedRuleId: rule.id,
+          outcome: "approval_required", reason: "Rule requires approval", processedAt: now
+        });
         return;
       }
 
       // 5. Enqueue the run
       const record = await this.runManager.enqueueRun(runInput);
 
-      // Update state
-      this.stateStore.setDedup(dedupKey, getDedupTtl(event.source), record.id);
+      // Update state (include ruleId for learning loop outcome tracking)
+      this.stateStore.setDedup(dedupKey, getDedupTtl(event.source), record.id, rule.id);
       this.stateStore.addRateLimitEvent(event.source, Date.now());
       if (repoSlug) {
         this.stateStore.incrementDailyCount(repoSlug);
       }
+
+      this.recordEvent({
+        eventId: event.id, source: event.source, timestamp: event.timestamp,
+        repoSlug: event.repoSlug, matchedRuleId: rule.id,
+        outcome: "triggered", reason: "Run enqueued", runId: record.id, processedAt: now
+      });
 
       logInfo("Observer: run enqueued", {
         eventId: event.id,

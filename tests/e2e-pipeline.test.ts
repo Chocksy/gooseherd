@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { loadConfig, type AppConfig } from "../src/config.js";
 import { PipelineEngine } from "../src/pipeline/pipeline-engine.js";
 import { GitHubService } from "../src/github.js";
+import { resolveGitHubAuthMode } from "../src/config.js";
 import type { RunRecord, ExecutionResult, PipelinePhase } from "../src/types.js";
 
 // Load .env for real tokens
@@ -53,9 +54,10 @@ function makeTestConfig(workRoot: string, dataDir: string): AppConfig {
 // ── E2E: Full Default Pipeline ──────────────────────
 
 test("E2E: full default pipeline with epiccoders/pxls (dummy agent, dry-run)", async (t) => {
-  // Skip if no GITHUB_TOKEN
-  if (!process.env.GITHUB_TOKEN) {
-    t.skip("GITHUB_TOKEN not set — skipping E2E test");
+  // Skip if no GitHub auth configured (PAT or App)
+  const authMode = resolveGitHubAuthMode(loadConfig());
+  if (authMode === "none") {
+    t.skip("No GitHub auth configured (set GITHUB_TOKEN or GitHub App credentials) — skipping E2E test");
     return;
   }
 
@@ -65,7 +67,7 @@ test("E2E: full default pipeline with epiccoders/pxls (dummy agent, dry-run)", a
 
   try {
     const config = makeTestConfig(workRoot, dataDir);
-    const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
+    const githubService = GitHubService.create(config);
     const engine = new PipelineEngine(config, githubService);
     const run = makeTestRun();
 
@@ -130,8 +132,10 @@ test("E2E: full default pipeline with epiccoders/pxls (dummy agent, dry-run)", a
 // ── E2E: Prompt contains task-type-specific instructions ──
 
 test("E2E: hydrate-context injects task-type-aware instructions", async (t) => {
-  if (!process.env.GITHUB_TOKEN) {
-    t.skip("GITHUB_TOKEN not set — skipping E2E test");
+  // Skip if no GitHub auth configured (PAT or App)
+  const authMode2 = resolveGitHubAuthMode(loadConfig());
+  if (authMode2 === "none") {
+    t.skip("No GitHub auth configured (set GITHUB_TOKEN or GitHub App credentials) — skipping E2E test");
     return;
   }
 
@@ -141,7 +145,7 @@ test("E2E: hydrate-context injects task-type-aware instructions", async (t) => {
 
   try {
     const config = makeTestConfig(workRoot, dataDir);
-    const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
+    const githubService = GitHubService.create(config);
     const engine = new PipelineEngine(config, githubService);
 
     // Use a bugfix-style task to test classifier

@@ -23,7 +23,16 @@ export async function createPrNode(
   const prTitle = `${config.appSlug}: ${run.task.slice(0, 80)}`;
   const gateReport = ctx.get<Array<{ gate: string; verdict: string; reasons: string[] }>>("gateReport");
   const agentAnalysis = ctx.get<AgentAnalysis>("agentAnalysis");
-  const prBody = buildPrBody(run, resolvedBaseBranch, config.appName, isFollowUp, gateReport, agentAnalysis);
+  const commitSha = ctx.get<string>("commitSha");
+  const changedFiles = ctx.get<string[]>("changedFiles");
+  const screenshotUrl = config.dashboardPublicUrl
+    ? `${config.dashboardPublicUrl}/api/runs/${run.id}/artifacts/screenshot.png`
+    : undefined;
+
+  const prBody = buildPrBody(
+    run, resolvedBaseBranch, config.appName, isFollowUp,
+    gateReport, agentAnalysis, commitSha, changedFiles, screenshotUrl
+  );
 
   const prResult = isFollowUp
     ? await deps.githubService.findOrCreatePullRequest({
@@ -56,75 +65,115 @@ export function buildPrBody(
   appName: string,
   isFollowUp: boolean,
   gateReport?: Array<{ gate: string; verdict: string; reasons: string[] }>,
-  agentAnalysis?: AgentAnalysis
+  agentAnalysis?: AgentAnalysis,
+  commitSha?: string,
+  changedFiles?: string[],
+  screenshotUrl?: string
 ): string {
-  const lines = [
-    "## Task",
-    "",
-    run.task,
-    "",
-    "## Details",
-    "",
-    `- **Base branch:** \`${resolvedBaseBranch}\``,
-    `- **Requested by:** ${run.requestedBy}`,
-    `- **Run:** \`${run.id.slice(0, 8)}\``,
-  ];
+  const lines: string[] = [];
 
+  // ── Task description ──
+  lines.push("## Task", "", run.task, "");
+
+  // ── Follow-up context ──
   if (isFollowUp && run.parentRunId) {
     lines.push(
-      "",
       "## Follow-up",
       "",
       `> ${run.feedbackNote ?? "retry"}`,
       "",
       `- **Previous run:** \`${run.parentRunId.slice(0, 8)}\``,
-      `- **Chain depth:** ${String(run.chainIndex ?? 1)}`
+      `- **Chain depth:** ${String(run.chainIndex ?? 1)}`,
+      ""
     );
   }
 
-  // Append agent analysis (change summary)
+  // ── What changed ──
+  lines.push("## What changed", "");
+
   if (agentAnalysis) {
     lines.push(
-      "",
-      "## Changes",
-      "",
-      `- **Files changed:** ${String(agentAnalysis.diffStats.filesCount)}`,
-      `- **Lines:** +${String(agentAnalysis.diffStats.added)} / -${String(agentAnalysis.diffStats.removed)}`
+      `**${String(agentAnalysis.diffStats.filesCount)}** files changed — ` +
+      `**+${String(agentAnalysis.diffStats.added)}** / **-${String(agentAnalysis.diffStats.removed)}** lines`,
+      ""
     );
-    if (agentAnalysis.filesChanged.length > 0 && agentAnalysis.filesChanged.length <= 20) {
-      lines.push("");
-      for (const file of agentAnalysis.filesChanged) {
-        lines.push(`  - \`${file}\``);
-      }
-    }
-    if (agentAnalysis.signals.length > 0) {
-      lines.push("", "**Signals:**");
-      for (const signal of agentAnalysis.signals) {
-        lines.push(`- ${signal}`);
-      }
-    }
   }
 
-  // Append quality gate report if any gates ran with warnings
+  const filesToShow = changedFiles ?? agentAnalysis?.filesChanged ?? [];
+  if (filesToShow.length > 0 && filesToShow.length <= 30) {
+    lines.push("| File |", "|------|");
+    for (const file of filesToShow) {
+      lines.push(`| \`${file}\` |`);
+    }
+    lines.push("");
+  } else if (filesToShow.length > 30) {
+    lines.push(`<details><summary>${String(filesToShow.length)} files changed (click to expand)</summary>`, "");
+    for (const file of filesToShow) {
+      lines.push(`- \`${file}\``);
+    }
+    lines.push("", "</details>", "");
+  }
+
+  if (agentAnalysis?.signals && agentAnalysis.signals.length > 0) {
+    lines.push("**Signals detected:**", "");
+    for (const signal of agentAnalysis.signals) {
+      lines.push(`- ${signal}`);
+    }
+    lines.push("");
+  }
+
+  // ── Quality gates (always show all, not just warnings) ──
   if (gateReport && gateReport.length > 0) {
-    const warnings = gateReport.filter(g => g.verdict !== "pass" && g.reasons.length > 0);
-    if (warnings.length > 0) {
-      lines.push("", "## Quality Gates", "");
-      for (const entry of gateReport) {
-        const icon = entry.verdict === "pass" ? "\u2705" : entry.verdict === "soft_fail" ? "\u26A0\uFE0F" : "\u274C";
-        lines.push(`- ${icon} **${entry.gate}**: ${entry.verdict}`);
+    lines.push("## Verification", "");
+    for (const entry of gateReport) {
+      const icon = entry.verdict === "pass" ? "\u2705" : entry.verdict === "soft_fail" ? "\u26A0\uFE0F" : "\u274C";
+      lines.push(`${icon} **${formatGateName(entry.gate)}** — ${entry.verdict}`);
+      if (entry.reasons.length > 0) {
         for (const reason of entry.reasons) {
           lines.push(`  - ${reason}`);
         }
       }
     }
+    lines.push("");
   }
 
+  // ── Screenshot ──
+  if (screenshotUrl) {
+    lines.push(
+      "## Screenshot",
+      "",
+      `![Screenshot](${screenshotUrl})`,
+      ""
+    );
+  }
+
+  // ── Run metadata ──
+  lines.push("## Details", "");
   lines.push(
-    "",
+    `| | |`,
+    `|---|---|`,
+    `| **Base branch** | \`${resolvedBaseBranch}\` |`,
+    `| **Requested by** | ${run.requestedBy} |`,
+    `| **Run ID** | \`${run.id.slice(0, 8)}\` |`
+  );
+  if (commitSha) {
+    lines.push(`| **Commit** | \`${commitSha.slice(0, 12)}\` |`);
+  }
+  if (agentAnalysis) {
+    lines.push(`| **Verdict** | ${agentAnalysis.verdict} |`);
+  }
+  lines.push("");
+
+  // ── Footer ──
+  lines.push(
     "---",
     `*Automated by [${appName}](https://goose-herd.com)*`
   );
 
   return lines.join("\n");
+}
+
+/** Format gate machine names for display: security_scan → Security Scan */
+function formatGateName(gate: string): string {
+  return gate.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 }

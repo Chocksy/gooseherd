@@ -107,8 +107,43 @@ export interface DedupEntry {
   ttlMs: number;
   /** Run ID if a run was created for this dedup key */
   runId?: string;
+  /** Trigger rule that matched this event */
+  ruleId?: string;
   /** Timestamp when the run completed (for cooldown) */
   completedAt?: number;
+}
+
+/** Per-rule outcome stats for the learning loop. */
+export interface RuleOutcomeStats {
+  success: number;
+  failure: number;
+  lastOutcome: string;
+  lastAt: string;
+}
+
+// ── Observer state snapshot (for dashboard) ──
+
+export interface ObserverStateSnapshot {
+  dedupCount: number;
+  activeDedups: number;
+  dailyCount: number;
+  dailyPerRepo: Record<string, number>;
+  counterDay: string;
+  ruleOutcomes: Record<string, RuleOutcomeStats>;
+  rateLimitSources: Record<string, number>;
+}
+
+/** Processed event record for the dashboard event feed. */
+export interface ObserverEventRecord {
+  eventId: string;
+  source: TriggerSource;
+  timestamp: string;
+  repoSlug?: string;
+  matchedRuleId?: string;
+  outcome: "triggered" | "denied" | "no_match" | "approval_required";
+  reason: string;
+  runId?: string;
+  processedAt: string;
 }
 
 // ── Observer state (persisted to disk) ──
@@ -121,4 +156,8 @@ export interface ObserverState {
   counterDay: string;
   /** Last poll timestamp per Sentry project */
   sentryLastPoll: Record<string, string>;
+  /** Last checked workflow run ID per GitHub repo */
+  githubLastRunId: Record<string, number>;
+  /** Per-rule outcome tracking for the learning loop */
+  ruleOutcomes: Record<string, RuleOutcomeStats>;
 }

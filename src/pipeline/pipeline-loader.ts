@@ -10,7 +10,7 @@ const VALID_ACTIONS = new Set([
   "classify_task", "plan_task", "local_test",
   "diff_gate", "forbidden_files", "security_scan",
   "wait_ci", "fix_ci",
-  "scope_judge", "browser_verify"
+  "scope_judge", "deploy_preview", "browser_verify"
 ]);
 
 const VALID_TYPES = new Set(["deterministic", "agentic", "conditional", "async"]);

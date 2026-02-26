@@ -1,7 +1,6 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { scanDiffForSecrets, parseGitleaksReport } from "./security-scan.js";
-import { readFile as fsReadFile } from "node:fs/promises";
 import { runShellCapture, appendLog } from "../shell.js";
 import { appendGateReport } from "./gate-report.js";
 
@@ -51,11 +50,11 @@ export async function securityScanNode(
     }
 
     if (gitleaksResult.code === 1) {
-      // Leaks found — read the report file via fs instead of shell
+      // Leaks found — read the report file via shell so it works in sandbox mode too
       try {
-        const reportContent = await fsReadFile(reportPath, "utf8");
-        if (reportContent.trim()) {
-          const scanResult = parseGitleaksReport(reportContent);
+        const catResult = await runShellCapture(`cat ${reportPath}`, { cwd: repoDir, logFile });
+        if (catResult.code === 0 && catResult.stdout.trim()) {
+          const scanResult = parseGitleaksReport(catResult.stdout);
           if (scanResult.verdict === "hard_fail") {
             const reasons = scanResult.findings.map(f => `${f.file}:${String(f.line)} [${f.rule}] ${f.match}`);
             await appendLog(logFile, `\n[gate:security_scan] gitleaks: ${String(scanResult.findings.length)} secret(s) found\n`);

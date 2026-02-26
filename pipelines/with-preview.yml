@@ -1,0 +1,91 @@
+version: 1
+name: "with-preview"
+description: "Default pipeline + deploy preview + visual verification with screenshots"
+
+context:
+  max_validation_rounds: 2
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: classify_task
+    type: deterministic
+    action: classify_task
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: implement
+    type: agentic
+    action: implement
+
+  - id: lint_fix
+    type: deterministic
+    action: lint_fix
+    if: "config.lintFixCommand != ''"
+
+  - id: validate
+    type: deterministic
+    action: validate
+    if: "config.validationCommand != ''"
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
+      until: "validate.exit_code == 0"
+
+  - id: local_test
+    type: deterministic
+    action: local_test
+    if: "config.localTestCommand != ''"
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
+      until: "local_test.exit_code == 0"
+
+  - id: commit
+    type: deterministic
+    action: commit
+
+  - id: push
+    type: deterministic
+    action: push
+
+  - id: create_pr
+    type: deterministic
+    action: create_pr
+
+  # Deploy and screenshot the preview
+  - id: deploy_preview
+    type: deterministic
+    action: deploy_preview
+    on_soft_fail: warn
+    config:
+      strategy: url_pattern
+      url_pattern: "https://{{prNumber}}.stg.epicpxls.com"
+      readiness_timeout_seconds: 300
+      readiness_poll_interval_seconds: 15
+
+  - id: browser_verify
+    type: deterministic
+    action: browser_verify
+    enabled: true
+    on_soft_fail: warn
+
+  # CI feedback loop
+  - id: wait_ci
+    type: async
+    action: wait_ci
+    on_failure:
+      action: loop
+      agent_node: fix_ci
+      max_rounds: 2
+      on_exhausted: complete_with_warning
+
+  - id: notify
+    type: deterministic
+    action: notify

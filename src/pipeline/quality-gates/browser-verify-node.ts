@@ -11,7 +11,7 @@
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShellCapture, appendLog, shellEscape } from "../shell.js";
+import { runShellCapture, appendLog, shellEscape, mapToContainerPath } from "../shell.js";
 import { appendGateReport } from "./gate-report.js";
 import { logInfo } from "../../logger.js";
 import {
@@ -101,9 +101,9 @@ export async function browserVerifyNode(
     await appendLog(logFile, "[gate:browser_verify] pa11y not available, skipping accessibility check\n");
   }
 
-  // 3. Screenshot capture via Playwright (opt-in)
+  // 3. Screenshot capture via Playwright (opt-in) — capture even on error pages
   let screenshotPath: string | undefined;
-  if (config.screenshotEnabled && smokeCheck.passed) {
+  if (config.screenshotEnabled && statusCode > 0) {
     screenshotPath = await captureScreenshot(
       reviewAppUrl,
       path.join(deps.workRoot, deps.run.id),
@@ -144,16 +144,19 @@ async function captureScreenshot(
   runDir: string,
   logFile: string
 ): Promise<string | undefined> {
-  const screenshotFile = path.join(runDir, "screenshot.png");
+  const screenshotFile = path.resolve(runDir, "screenshot.png");
+  // Map to container path when running in sandbox (no-op otherwise)
+  const scriptScreenshotPath = mapToContainerPath(screenshotFile);
 
-  // Use a one-shot Playwright script via npx — no dependency required
   const script = [
     "const { chromium } = require('playwright');",
     "(async () => {",
-    "  const browser = await chromium.launch();",
+    "  const opts = { args: ['--no-sandbox', '--disable-gpu'] };",
+    "  if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) opts.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;",
+    "  const browser = await chromium.launch(opts);",
     "  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });",
     `  await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle', timeout: 30000 });`,
-    `  await page.screenshot({ path: ${JSON.stringify(screenshotFile)}, fullPage: false });`,
+    `  await page.screenshot({ path: ${JSON.stringify(scriptScreenshotPath)}, fullPage: false });`,
     "  await browser.close();",
     "})();"
   ].join("\n");
@@ -164,6 +167,7 @@ async function captureScreenshot(
   );
 
   if (result.code === 0) {
+    // Return host path so dashboard can serve the file
     return screenshotFile;
   }
 

@@ -63,7 +63,8 @@ export class RunStore {
         chainIndex,
         parentBranchName: existingBranchName,
         feedbackNote: input.feedbackNote,
-        pipelineHint: input.pipelineHint
+        pipelineHint: input.pipelineHint,
+        teamId: input.teamId
       };
 
       state.runs.push(record);
@@ -77,10 +78,15 @@ export class RunStore {
     return state.runs.find((run) => run.id === id);
   }
 
-  async listRuns(limit = 100): Promise<RunRecord[]> {
+  async listRuns(filter: { limit?: number; teamId?: string } | number = 100): Promise<RunRecord[]> {
     const state = await this.readState();
-    const bounded = Math.max(1, Math.min(limit, 500));
-    return state.runs.slice(-bounded).reverse();
+    const opts = typeof filter === "number" ? { limit: filter } : filter;
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+    let runs = state.runs;
+    if (opts.teamId) {
+      runs = runs.filter((r) => r.teamId === opts.teamId);
+    }
+    return runs.slice(-limit).reverse();
   }
 
   async getLatestRunForThread(channelId: string, threadTs: string): Promise<RunRecord | undefined> {
@@ -160,6 +166,7 @@ export class RunStore {
         | "chainIndex"
         | "parentBranchName"
         | "feedbackNote"
+        | "tokenUsage"
       >
     >
   ): Promise<RunRecord> {

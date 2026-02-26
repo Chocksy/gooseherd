@@ -12,7 +12,10 @@ import { startDashboardServer } from "./dashboard-server.js";
 import { WorkspaceCleaner } from "./workspace-cleaner.js";
 import { ObserverDaemon } from "./observer/index.js";
 import { execSync } from "node:child_process";
+import { watch, type FSWatcher } from "node:fs";
 import { logError, logInfo, logWarn } from "./logger.js";
+import { ContainerManager } from "./sandbox/container-manager.js";
+import { setSandboxManager } from "./pipeline/shell.js";
 
 function checkAgentDefault(config: { agentCommandTemplate: string }): void {
   if (!config.agentCommandTemplate.includes("dummy-agent")) return;
@@ -38,7 +41,7 @@ async function main(): Promise<void> {
     logInfo("Recovered stale in-progress runs", { count: recoveredRuns.length });
   }
 
-  const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
+  const githubService = GitHubService.create(config);
   const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
     ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey, teamId: config.cemsTeamId })
     : undefined;
@@ -46,7 +49,28 @@ async function main(): Promise<void> {
   if (memoryProvider) {
     logInfo("Memory integration enabled", { provider: memoryProvider.name, url: config.cemsApiUrl });
   }
-  const pipelineEngine = new PipelineEngine(config, githubService, hooks);
+  // Sandbox container manager (Docker-out-of-Docker)
+  let containerManager: ContainerManager | undefined;
+  if (config.sandboxEnabled) {
+    if (!config.sandboxHostWorkPath) {
+      logError("SANDBOX_HOST_WORK_PATH is required when SANDBOX_ENABLED=true");
+      process.exit(1);
+    }
+    containerManager = new ContainerManager();
+    const dockerOk = await containerManager.ping();
+    if (!dockerOk) {
+      logError("Docker daemon not reachable. SANDBOX_ENABLED=true requires Docker socket at /var/run/docker.sock");
+      process.exit(1);
+    }
+    const orphans = await containerManager.cleanupOrphans();
+    if (orphans > 0) {
+      logInfo("Cleaned up orphaned sandbox containers", { count: orphans });
+    }
+    setSandboxManager(containerManager, config.workRoot);
+    logInfo("Sandbox mode enabled", { image: config.sandboxImage, hostWorkPath: config.sandboxHostWorkPath });
+  }
+
+  const pipelineEngine = new PipelineEngine(config, githubService, hooks, containerManager);
   logInfo("Pipeline engine ready", { pipelineFile: config.pipelineFile });
 
   // Slack Web API client is created internally by Bolt, but RunManager needs a client.
@@ -56,24 +80,51 @@ async function main(): Promise<void> {
 
   const runManager = new RunManager(config, store, pipelineEngine, webClient, hooks);
   if (recoveredRuns.length > 0) {
-    for (const run of recoveredRuns) {
+    const runsToRequeue = recoveredRuns.filter((run) => run.channelId !== "local");
+    for (const run of runsToRequeue) {
       runManager.requeueExistingRun(run.id);
     }
-    logInfo("Auto-requeued recovered runs", { count: recoveredRuns.length });
-  }
-
-  if (config.dashboardEnabled) {
-    startDashboardServer(config, store, runManager);
+    if (runsToRequeue.length > 0) {
+      logInfo("Auto-requeued recovered runs", { count: runsToRequeue.length });
+    }
+    const skippedLocal = recoveredRuns.length - runsToRequeue.length;
+    if (skippedLocal > 0) {
+      logInfo("Skipped auto-requeue for local-trigger runs", { count: skippedLocal });
+    }
   }
 
   const cleaner = new WorkspaceCleaner(config, store);
   cleaner.start();
 
   if (config.observerEnabled) {
-    const observer = new ObserverDaemon(config, runManager, webClient);
+    const tokenGetter = githubService ? () => githubService.getToken() : undefined;
+    const observer = new ObserverDaemon(config, runManager, webClient, tokenGetter);
     await observer.start();
     globalRefs.observer = observer;
     logInfo("Observer system enabled");
+
+    // Watch trigger rules file for changes (hot-reload without restart)
+    try {
+      let debounce: NodeJS.Timeout | undefined;
+      globalRefs.rulesWatcher = watch(config.observerRulesFile, () => {
+        // Debounce rapid writes (editors often write multiple times)
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          logInfo("Trigger rules file changed — reloading");
+          observer.reloadRules().catch((err) => {
+            const msg = err instanceof Error ? err.message : "unknown";
+            logError("Failed to reload trigger rules", { error: msg });
+          });
+        }, 500);
+      });
+      logInfo("Watching trigger rules for hot-reload", { file: config.observerRulesFile });
+    } catch {
+      logWarn("Could not watch trigger rules file (file may not exist yet)", { file: config.observerRulesFile });
+    }
+  }
+
+  if (config.dashboardEnabled) {
+    startDashboardServer(config, store, runManager, globalRefs.observer);
   }
 
   await startSlackApp(config, runManager, globalRefs.observer);
@@ -98,8 +149,27 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-// Global refs for shutdown access
-const globalRefs: { observer?: ObserverDaemon } = {};
+// Global refs for shutdown access and hot-reload
+const globalRefs: { observer?: ObserverDaemon; rulesWatcher?: FSWatcher } = {};
 
 process.on("SIGINT", () => { shutdown("SIGINT"); });
 process.on("SIGTERM", () => { shutdown("SIGTERM"); });
+
+// SIGHUP → config hot-reload
+process.on("SIGHUP", () => {
+  logInfo("SIGHUP received — reloading configuration");
+  try {
+    dotenv.config({ override: true });
+    const newConfig = loadConfig();
+    if (globalRefs.observer) {
+      globalRefs.observer.reload(newConfig).catch((err) => {
+        const msg = err instanceof Error ? err.message : "unknown";
+        logError("Config hot-reload failed for observer", { error: msg });
+      });
+    }
+    logInfo("Configuration reloaded successfully");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "unknown";
+    logError("Config hot-reload failed", { error: msg });
+  }
+});

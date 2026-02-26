@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShell, shellEscape, renderTemplate, appendLog, buildMcpFlags } from "../shell.js";
+import { runShell, shellEscape, renderTemplate, appendLog, buildMcpFlags, mapToContainerPath } from "../shell.js";
 import { parseErrors } from "../error-parser.js";
 
 /**
@@ -47,9 +47,9 @@ export async function fixValidationNode(
     : config.agentCommandTemplate;
 
   const agentCommand = renderTemplate(template, {
-    repo_dir: repoDir,
-    prompt_file: fixPromptFile,
-    task_file: fixPromptFile,
+    repo_dir: mapToContainerPath(repoDir),
+    prompt_file: mapToContainerPath(fixPromptFile),
+    task_file: mapToContainerPath(fixPromptFile),
     run_id: run.id,
     repo_slug: run.repoSlug,
     parent_run_id: run.parentRunId ?? ""

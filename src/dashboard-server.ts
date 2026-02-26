@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFile, access as fsAccess } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
@@ -8,6 +9,14 @@ import { RunStore } from "./store.js";
 import type { RunManager } from "./run-manager.js";
 import type { RunFeedback, RunRecord } from "./types.js";
 import { parseRunLog, getEventStats } from "./log-parser.js";
+import type { ObserverEventRecord, ObserverStateSnapshot, TriggerRule } from "./observer/types.js";
+
+/** Lean interface — dashboard only reads observer state, never mutates it. */
+export interface DashboardObserver {
+  getStateSnapshot(): ObserverStateSnapshot;
+  getRecentEvents(limit?: number): ObserverEventRecord[];
+  getRules(): TriggerRule[];
+}
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.statusCode = status;
@@ -44,6 +53,160 @@ async function readLogTail(logPath: string, lineCount: number): Promise<string> 
   const content = await readFile(logPath, "utf8");
   const lines = content.split("\n");
   return lines.slice(-Math.max(1, lineCount)).join("\n");
+}
+
+// ── Authentication helpers ──
+
+/** Hash a token for session cookies (SHA-256, hex). */
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Parse cookies from request header. */
+function parseCookies(req: IncomingMessage): Record<string, string> {
+  const header = req.headers["cookie"] ?? "";
+  const cookies: Record<string, string> = {};
+  for (const pair of header.split(";")) {
+    const eqIndex = pair.indexOf("=");
+    if (eqIndex > 0) {
+      const key = pair.slice(0, eqIndex).trim();
+      const value = pair.slice(eqIndex + 1).trim();
+      cookies[key] = decodeURIComponent(value);
+    }
+  }
+  return cookies;
+}
+
+/** Timing-safe token comparison. */
+function safeTokenCompare(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, "utf8");
+  const bBuf = Buffer.from(b, "utf8");
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
+}
+
+/**
+ * Check if a request is authenticated.
+ * Returns true if auth passes, false if the response has been handled (401/redirect).
+ */
+export function checkAuth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  dashboardToken: string | undefined,
+  pathname: string
+): boolean {
+  // No token configured → no auth required (backward compat for localhost dev)
+  if (!dashboardToken) return true;
+
+  // Health check always passes
+  if (pathname === "/healthz") return true;
+
+  // Login routes always pass
+  if (pathname === "/login") return true;
+
+  // Check Bearer token for API routes
+  if (pathname.startsWith("/api/")) {
+    const authHeader = req.headers["authorization"] ?? "";
+    if (authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice(7);
+      if (safeTokenCompare(token, dashboardToken)) return true;
+    }
+
+    // Also accept session cookie for API routes (dashboard JS calls)
+    const cookies = parseCookies(req);
+    const sessionHash = cookies["gooseherd-session"];
+    if (sessionHash && safeTokenCompare(sessionHash, hashToken(dashboardToken))) {
+      return true;
+    }
+
+    sendJson(res, 401, { error: "Unauthorized" });
+    return false;
+  }
+
+  // HTML pages: check session cookie
+  const cookies = parseCookies(req);
+  const sessionHash = cookies["gooseherd-session"];
+  if (sessionHash && safeTokenCompare(sessionHash, hashToken(dashboardToken))) {
+    return true;
+  }
+
+  // Redirect to login page
+  res.statusCode = 302;
+  res.setHeader("location", "/login");
+  res.end();
+  return false;
+}
+
+/** Render the login page. */
+function loginPageHtml(config: AppConfig, error?: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${config.appName} — Login</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      background: #060a14;
+      color: #e2e8f0;
+    }
+    .login-card {
+      background: #0f172a;
+      border: 1px solid #22314f;
+      border-radius: 16px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 14px 36px rgba(1,6,18,0.55);
+    }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    p { color: #94a3b8; font-size: 13px; margin: 0 0 24px; }
+    .error { color: #ef4444; font-size: 13px; margin-bottom: 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 14px;
+      border: 1px solid #22314f;
+      border-radius: 8px;
+      background: #0a1325;
+      color: #e2e8f0;
+      outline: none;
+    }
+    input[type="password"]:focus { border-color: #60a5fa; }
+    button {
+      margin-top: 16px;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      background: #2563eb;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <form class="login-card" method="POST" action="/login">
+    <h1>${config.appName}</h1>
+    <p>Enter your dashboard token to continue.</p>
+    ${error ? `<div class="error">${error}</div>` : ""}
+    <label for="token">Token</label>
+    <input type="password" id="token" name="token" autofocus required />
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>`;
 }
 
 async function captureCommand(command: string, cwd: string): Promise<{ code: number; stdout: string }> {
@@ -1168,6 +1331,18 @@ function dashboardHtml(config: AppConfig): string {
           <div class="card-title" style="margin-bottom: 8px;">Changed files</div>
           <div class="file-list" id="files">-</div>
         </div>
+        <div class="card" id="screenshot-card" style="display: none;">
+          <div class="card-title" style="margin-bottom: 8px;">Screenshot</div>
+          <div id="screenshot-container" style="text-align: center;">
+            <a id="screenshot-link" href="#" target="_blank" rel="noreferrer noopener">
+              <img id="screenshot-img" src="" alt="Run screenshot" style="max-width: 100%; border-radius: 6px; border: 1px solid var(--border); cursor: zoom-in;" />
+            </a>
+          </div>
+        </div>
+        <div class="card" id="pipeline-timeline-card" style="display: none;">
+          <div class="card-title" style="margin-bottom: 8px;">Pipeline timeline</div>
+          <div id="pipeline-timeline" class="mono" style="max-height: 200px; font-size: 11px;"></div>
+        </div>
         <div class="card">
           <div class="toolbar">
             <div class="card-title">Agent activity</div>
@@ -1182,6 +1357,33 @@ function dashboardHtml(config: AppConfig): string {
               Auto-scroll
             </label>
             <span id="act-count" class="meta"></span>
+          </div>
+        </div>
+        <div class="card" id="observer-card" style="display: none;">
+          <div class="toolbar">
+            <div>
+              <div class="card-title">Observer</div>
+              <div class="card-subtitle" id="observer-subtitle">Watching for triggers</div>
+            </div>
+            <div class="summary-actions">
+              <span class="meta" id="observer-budget"></span>
+            </div>
+          </div>
+          <div id="observer-content">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+              <div id="observer-rules-panel" style="border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel-3);">
+                <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;">Rules</div>
+                <div id="observer-rules" class="meta">Loading...</div>
+              </div>
+              <div id="observer-stats-panel" style="border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel-3);">
+                <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;">Budget</div>
+                <div id="observer-stats" class="meta">Loading...</div>
+              </div>
+            </div>
+            <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;">Recent events</div>
+            <div id="observer-events" class="activity-stream" style="max-height: 300px;">
+              <div class="act-info">No events yet.</div>
+            </div>
           </div>
         </div>
         <div class="card" id="chat-card" style="display: none;">
@@ -1225,6 +1427,11 @@ function dashboardHtml(config: AppConfig): string {
       openPr: document.getElementById('open-pr'),
       openCommit: document.getElementById('open-commit'),
       files: document.getElementById('files'),
+      screenshotCard: document.getElementById('screenshot-card'),
+      screenshotImg: document.getElementById('screenshot-img'),
+      screenshotLink: document.getElementById('screenshot-link'),
+      pipelineTimelineCard: document.getElementById('pipeline-timeline-card'),
+      pipelineTimeline: document.getElementById('pipeline-timeline'),
       activityStream: document.getElementById('activity-stream'),
       actStats: document.getElementById('act-stats'),
       actCount: document.getElementById('act-count'),
@@ -1402,6 +1609,7 @@ function dashboardHtml(config: AppConfig): string {
       if (!run) {
         el.summary.className = 'summary-empty';
         el.summary.textContent = 'No run selected.';
+        el.screenshotCard.style.display = 'none';
         el.summarySubtitle.textContent = 'Select a run from the left panel.';
         setLinkState(el.openBranch, null);
         setLinkState(el.openPr, null);
@@ -1506,6 +1714,22 @@ function dashboardHtml(config: AppConfig): string {
       }
       el.summary.appendChild(timing);
 
+      // Token usage row
+      if (run.tokenUsage) {
+        var tokenRow = document.createElement('div');
+        tokenRow.className = 'summary-meta-row';
+        var gateTokens = (run.tokenUsage.qualityGateInputTokens || 0) + (run.tokenUsage.qualityGateOutputTokens || 0);
+        if (gateTokens > 0) {
+          addChip('token', 'Gates: ' + gateTokens.toLocaleString() + ' tokens', 'Input: ' + (run.tokenUsage.qualityGateInputTokens || 0).toLocaleString() + ', Output: ' + (run.tokenUsage.qualityGateOutputTokens || 0).toLocaleString());
+        }
+        var agentIn = run.tokenUsage.agentInputTokens || 0;
+        var agentOut = run.tokenUsage.agentOutputTokens || 0;
+        if (agentIn + agentOut > 0) {
+          addChip('smart_toy', 'Agent: ' + (agentIn + agentOut).toLocaleString() + ' tokens', 'Input: ' + agentIn.toLocaleString() + ', Output: ' + agentOut.toLocaleString());
+        }
+        el.summary.appendChild(tokenRow);
+      }
+
       // Feedback
       if (run.feedback) {
         var fbRow = document.createElement('div');
@@ -1524,6 +1748,23 @@ function dashboardHtml(config: AppConfig): string {
         error.textContent = run.error;
         el.summary.appendChild(error);
       }
+    }
+
+    function loadScreenshot(runId) {
+      if (!runId) {
+        el.screenshotCard.style.display = 'none';
+        return;
+      }
+      var url = '/api/runs/' + encodeURIComponent(runId) + '/artifacts/screenshot.png';
+      // Load the image directly — use onload/onerror to show/hide the card
+      el.screenshotImg.onload = function() {
+        el.screenshotLink.href = url;
+        el.screenshotCard.style.display = '';
+      };
+      el.screenshotImg.onerror = function() {
+        el.screenshotCard.style.display = 'none';
+      };
+      el.screenshotImg.src = url;
     }
 
     function renderFiles(files, detailed) {
@@ -1708,6 +1949,31 @@ function dashboardHtml(config: AppConfig): string {
         search: 'search',
       };
       return icons[toolName] || 'build';
+    }
+
+    function renderPipelineTimeline(events) {
+      if (!events || events.length === 0) {
+        el.pipelineTimelineCard.style.display = 'none';
+        return;
+      }
+      el.pipelineTimelineCard.style.display = '';
+      var lines = [];
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var ts = ev.timestamp ? ev.timestamp.split('T')[1].split('.')[0] : '';
+        if (ev.type === 'node_start') {
+          lines.push(ts + '  \u25B6 ' + (ev.nodeId || ''));
+        } else if (ev.type === 'node_end') {
+          var dur = ev.durationMs ? ' (' + (ev.durationMs / 1000).toFixed(1) + 's)' : '';
+          var icon = ev.outcome === 'success' ? '\u2705' : ev.outcome === 'skipped' ? '\u23ED' : '\u274C';
+          lines.push(ts + '  ' + icon + ' ' + (ev.nodeId || '') + dur + (ev.error ? ' — ' + ev.error.slice(0, 80) : ''));
+        } else if (ev.type === 'phase_change') {
+          lines.push(ts + '  \u{1F504} phase → ' + (ev.phase || ''));
+        } else if (ev.type === 'error') {
+          lines.push(ts + '  \u274C ' + (ev.error || ''));
+        }
+      }
+      el.pipelineTimeline.textContent = lines.join('\\n');
     }
 
     function renderActivityStream(events, stats) {
@@ -1949,10 +2215,11 @@ function dashboardHtml(config: AppConfig): string {
         el.feedbackToast.classList.remove('visible');
         return;
       }
-      const [runData, changesData, eventsData] = await Promise.all([
+      const [runData, changesData, eventsData, pipelineEventsData] = await Promise.all([
         fetchJson('/api/runs/' + encodeURIComponent(state.selectedId)),
         fetchJson('/api/runs/' + encodeURIComponent(state.selectedId) + '/changes'),
         fetchJson('/api/runs/' + encodeURIComponent(state.selectedId) + '/events').catch(function() { return { events: [], stats: null }; }),
+        fetchJson('/api/runs/' + encodeURIComponent(state.selectedId) + '/pipeline-events').catch(function() { return { events: [] }; }),
       ]);
 
       const run = runData.run;
@@ -1964,6 +2231,10 @@ function dashboardHtml(config: AppConfig): string {
       renderFiles(files, detailed);
 
       renderActivityStream(eventsData.events || [], eventsData.stats || null);
+      renderPipelineTimeline(pipelineEventsData.events || []);
+
+      // Load screenshot if available
+      loadScreenshot(state.selectedId);
 
       // Show feedback toast for completed/failed runs without existing feedback
       var showToast = run && (run.status === 'completed' || run.status === 'failed') && !run.feedback;
@@ -2009,7 +2280,10 @@ function dashboardHtml(config: AppConfig): string {
     el.feedbackDown.onclick = () => saveFeedback('down').catch(console.error);
     el.retryRun.onclick = () => retrySelected().catch(console.error);
     el.settingsBtn.onclick = () => alert('Settings panel is not implemented yet.');
-    el.logoutBtn.onclick = () => alert('Logout will be available when authentication is added.');
+    el.logoutBtn.onclick = () => {
+      document.cookie = 'gooseherd-session=; Max-Age=0; Path=/; SameSite=Strict';
+      window.location.href = '/login';
+    };
 
     // Chat / follow-up logic
     async function loadChatHistory() {
@@ -2102,9 +2376,125 @@ function dashboardHtml(config: AppConfig): string {
       }
     });
 
+    // ── Observer panel ──
+
+    var observerEl = {
+      card: document.getElementById('observer-card'),
+      subtitle: document.getElementById('observer-subtitle'),
+      budget: document.getElementById('observer-budget'),
+      rules: document.getElementById('observer-rules'),
+      stats: document.getElementById('observer-stats'),
+      events: document.getElementById('observer-events'),
+    };
+
+    function outcomeIcon(outcome) {
+      if (outcome === 'triggered') return '\\u2705';
+      if (outcome === 'denied') return '\\u26d4';
+      if (outcome === 'no_match') return '\\u2796';
+      if (outcome === 'approval_required') return '\\u23f3';
+      return '\\u2753';
+    }
+
+    function renderObserverRules(rules, ruleOutcomes) {
+      if (!rules || rules.length === 0) {
+        observerEl.rules.textContent = 'No rules loaded.';
+        return;
+      }
+      observerEl.rules.innerHTML = '';
+      for (var i = 0; i < rules.length; i++) {
+        var r = rules[i];
+        var stats = (ruleOutcomes || {})[r.id];
+        var row = document.createElement('div');
+        row.style.cssText = 'padding: 4px 0; border-bottom: 1px dashed color-mix(in srgb, var(--border) 60%, transparent); font-size: 12px;';
+        var approvalBadge = r.requiresApproval ? ' <span style="color: var(--warn); font-size: 10px;">[approval]</span>' : '';
+        var statsLabel = stats ? ' <span style="font-size: 10px; color: var(--muted);">\\u2705' + stats.success + ' \\u274c' + stats.failure + '</span>' : '';
+        row.innerHTML = '<span style="font-weight: 600; font-family: var(--font-mono);">' + r.id + '</span>' + approvalBadge + statsLabel +
+          '<br><span style="color: var(--muted); font-size: 11px;">' + r.source + (r.repoSlug ? ' \\u00b7 ' + r.repoSlug : '') +
+          ' \\u00b7 ' + r.conditions.length + ' condition' + (r.conditions.length !== 1 ? 's' : '') + '</span>';
+        observerEl.rules.appendChild(row);
+      }
+    }
+
+    function renderObserverStats(stateData) {
+      if (!stateData || !stateData.enabled) {
+        observerEl.stats.textContent = 'Observer not enabled.';
+        return;
+      }
+      var lines = [];
+      lines.push('Daily runs: <strong>' + stateData.dailyCount + '</strong> (' + stateData.counterDay + ')');
+
+      var repoEntries = Object.entries(stateData.dailyPerRepo || {});
+      if (repoEntries.length > 0) {
+        for (var ri = 0; ri < repoEntries.length; ri++) {
+          lines.push('\\u00a0\\u00a0' + repoEntries[ri][0] + ': ' + repoEntries[ri][1]);
+        }
+      }
+
+      lines.push('Active dedup keys: ' + stateData.activeDedups + ' / ' + stateData.dedupCount + ' total');
+
+      var rlEntries = Object.entries(stateData.rateLimitSources || {});
+      if (rlEntries.length > 0) {
+        lines.push('Rate limit events:');
+        for (var si = 0; si < rlEntries.length; si++) {
+          lines.push('\\u00a0\\u00a0' + rlEntries[si][0] + ': ' + rlEntries[si][1] + '/hr');
+        }
+      }
+
+      observerEl.stats.innerHTML = lines.join('<br>');
+    }
+
+    function renderObserverEvents(events) {
+      if (!events || events.length === 0) {
+        observerEl.events.innerHTML = '<div class="act-info">No events processed yet.</div>';
+        return;
+      }
+      observerEl.events.innerHTML = '';
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var node = document.createElement('div');
+        node.className = 'act-event act-info';
+        node.style.cssText = 'padding: 6px 10px; font-size: 12px; line-height: 1.5; border-bottom: 1px dashed color-mix(in srgb, var(--border) 60%, transparent);';
+        var icon = outcomeIcon(ev.outcome);
+        var ruleLabel = ev.matchedRuleId ? ' \\u00b7 rule: <span style="font-family: var(--font-mono);">' + ev.matchedRuleId + '</span>' : '';
+        var runLabel = ev.runId ? ' \\u00b7 <span style="font-family: var(--font-mono);">' + ev.runId.slice(0, 8) + '</span>' : '';
+        node.innerHTML = icon + ' <strong>' + ev.source + '</strong>' +
+          (ev.repoSlug ? ' \\u00b7 ' + ev.repoSlug : '') +
+          ruleLabel + runLabel +
+          '<br><span style="color: var(--muted); font-size: 11px;">' + ev.reason + ' \\u00b7 ' + timeAgo(ev.processedAt) + '</span>';
+        observerEl.events.appendChild(node);
+      }
+    }
+
+    async function refreshObserver() {
+      try {
+        var [stateData, eventsData, rulesData] = await Promise.all([
+          fetchJson('/api/observer/state'),
+          fetchJson('/api/observer/events?limit=50'),
+          fetchJson('/api/observer/rules'),
+        ]);
+
+        if (!stateData.enabled) {
+          observerEl.card.style.display = 'none';
+          return;
+        }
+
+        observerEl.card.style.display = '';
+        observerEl.subtitle.textContent = 'Day: ' + stateData.counterDay + ' \\u00b7 ' + (rulesData.rules || []).length + ' rules loaded';
+        observerEl.budget.textContent = stateData.dailyCount + ' runs today';
+
+        renderObserverRules(rulesData.rules || [], stateData.ruleOutcomes || {});
+        renderObserverStats(stateData);
+        renderObserverEvents(eventsData.events || []);
+      } catch (e) {
+        // Observer not available — hide panel
+        observerEl.card.style.display = 'none';
+      }
+    }
+
     async function refreshAll() {
       await loadRuns();
       await refreshSelected();
+      await refreshObserver();
     }
 
     initTheme();
@@ -2120,26 +2510,66 @@ function dashboardHtml(config: AppConfig): string {
 export function startDashboardServer(
   config: AppConfig,
   store: RunStore,
-  runManager?: Pick<RunManager, "retryRun" | "continueRun" | "getRunChain" | "saveFeedbackFromSlackAction">
+  runManager?: Pick<RunManager, "retryRun" | "continueRun" | "getRunChain" | "saveFeedbackFromSlackAction">,
+  observer?: DashboardObserver
 ): void {
   const server = createServer(async (req, res) => {
     try {
       const requestUrl = new URL(req.url ?? "/", `http://${config.dashboardHost}:${String(config.dashboardPort)}`);
       const pathname = requestUrl.pathname;
 
-      if (req.method === "GET" && pathname === "/") {
-        sendText(res, 200, dashboardHtml(config), "text/html");
-        return;
-      }
+      // Auth check — must come before route dispatch
+      if (!checkAuth(req, res, config.dashboardToken, pathname)) return;
 
       if (req.method === "GET" && pathname === "/healthz") {
         sendJson(res, 200, { ok: true });
         return;
       }
 
+      // Login page (GET)
+      if (req.method === "GET" && pathname === "/login") {
+        if (!config.dashboardToken) {
+          res.statusCode = 302;
+          res.setHeader("location", "/");
+          res.end();
+          return;
+        }
+        sendText(res, 200, loginPageHtml(config), "text/html");
+        return;
+      }
+
+      // Login handler (POST)
+      if (req.method === "POST" && pathname === "/login") {
+        if (!config.dashboardToken) {
+          res.statusCode = 302;
+          res.setHeader("location", "/");
+          res.end();
+          return;
+        }
+        const body = await readBody(req);
+        const params = new URLSearchParams(body);
+        const token = params.get("token") ?? "";
+        if (safeTokenCompare(token, config.dashboardToken)) {
+          const sessionValue = hashToken(config.dashboardToken);
+          res.statusCode = 302;
+          res.setHeader("set-cookie", `gooseherd-session=${sessionValue}; HttpOnly; SameSite=Strict; Path=/`);
+          res.setHeader("location", "/");
+          res.end();
+          return;
+        }
+        sendText(res, 200, loginPageHtml(config, "Invalid token"), "text/html");
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/") {
+        sendText(res, 200, dashboardHtml(config), "text/html");
+        return;
+      }
+
       if (req.method === "GET" && pathname === "/api/runs") {
         const limit = parseLimit(requestUrl.searchParams.get("limit"));
-        const runs = await store.listRuns(limit);
+        const teamId = requestUrl.searchParams.get("team") ?? undefined;
+        const runs = await store.listRuns({ limit, teamId });
         sendJson(res, 200, { runs });
         return;
       }
@@ -2187,6 +2617,76 @@ export function startDashboardServer(
           } catch {
             sendJson(res, 200, { runId: run.id, events: [], stats: { totalEvents: 0, toolCalls: 0, thinkingBlocks: 0, shellCommands: 0, tools: {} } });
           }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "pipeline-events" && req.method === "GET") {
+          const eventsPath = path.resolve(config.workRoot, run.id, "events.jsonl");
+          try {
+            const raw = await readFile(eventsPath, "utf8");
+            const events = raw.trim().split("\n").filter(Boolean).map(line => {
+              try { return JSON.parse(line); } catch { return null; }
+            }).filter(Boolean);
+            sendJson(res, 200, { runId: run.id, events });
+          } catch {
+            sendJson(res, 200, { runId: run.id, events: [] });
+          }
+          return;
+        }
+
+        // GET /api/runs/:id/artifacts/:filename — serve run artifacts (screenshots, etc.)
+        if (parts.length === 5 && parts[3] === "artifacts" && req.method === "GET") {
+          const filename = parts[4]!;
+
+          // Path traversal protection
+          if (filename.includes("/") || filename.includes("\\") || filename.includes("..") || filename.startsWith(".")) {
+            sendJson(res, 400, { error: "Invalid filename" });
+            return;
+          }
+
+          // Allowlist of safe extensions
+          const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".json", ".txt", ".log", ".zip", ".html"]);
+          const ext = path.extname(filename).toLowerCase();
+          if (!ALLOWED_EXTENSIONS.has(ext)) {
+            sendJson(res, 400, { error: `File type not allowed: ${ext}` });
+            return;
+          }
+
+          const filePath = path.resolve(config.workRoot, run.id, filename);
+
+          // Verify the resolved path stays within the run directory
+          const runDir = path.resolve(config.workRoot, run.id);
+          if (!filePath.startsWith(runDir)) {
+            sendJson(res, 400, { error: "Invalid filename" });
+            return;
+          }
+
+          try {
+            await fsAccess(filePath);
+          } catch {
+            sendJson(res, 404, { error: `Artifact not found: ${filename}` });
+            return;
+          }
+
+          const CONTENT_TYPES: Record<string, string> = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".json": "application/json",
+            ".txt": "text/plain",
+            ".log": "text/plain",
+            ".zip": "application/zip",
+            ".html": "text/html"
+          };
+
+          const contentType = CONTENT_TYPES[ext] ?? "application/octet-stream";
+          const fileData = await readFile(filePath);
+          res.writeHead(200, {
+            "Content-Type": contentType,
+            "Content-Length": String(fileData.length),
+            "Cache-Control": "public, max-age=3600"
+          });
+          res.end(fileData);
           return;
         }
 
@@ -2302,6 +2802,47 @@ export function startDashboardServer(
           sendJson(res, 200, { chain });
           return;
         }
+      }
+
+      // ── Observer API routes ──
+
+      if (req.method === "GET" && pathname === "/api/observer/state") {
+        if (!observer) {
+          sendJson(res, 200, { enabled: false });
+          return;
+        }
+        sendJson(res, 200, { enabled: true, ...observer.getStateSnapshot() });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/observer/events") {
+        if (!observer) {
+          sendJson(res, 200, { events: [] });
+          return;
+        }
+        const limit = parseLimit(requestUrl.searchParams.get("limit"));
+        sendJson(res, 200, { events: observer.getRecentEvents(limit) });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/observer/rules") {
+        if (!observer) {
+          sendJson(res, 200, { rules: [] });
+          return;
+        }
+        const rules = observer.getRules().map(r => ({
+          id: r.id,
+          source: r.source,
+          conditions: r.conditions,
+          pipeline: r.pipeline,
+          requiresApproval: r.requiresApproval,
+          cooldownMinutes: r.cooldownMinutes,
+          maxRunsPerHour: r.maxRunsPerHour,
+          repoSlug: r.repoSlug,
+          skipTriage: r.skipTriage
+        }));
+        sendJson(res, 200, { rules });
+        return;
       }
 
       sendJson(res, 404, { error: "Not found" });

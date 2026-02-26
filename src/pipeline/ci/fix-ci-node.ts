@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShell, runShellCapture, shellEscape, renderTemplate, appendLog, buildMcpFlags } from "../shell.js";
+import { runShell, runShellCapture, shellEscape, renderTemplate, appendLog, buildMcpFlags, mapToContainerPath } from "../shell.js";
 import { buildCIFixPrompt, type CIAnnotation } from "./ci-monitor.js";
 
 /**
@@ -49,9 +49,9 @@ export async function fixCiNode(
     : config.agentCommandTemplate;
 
   const agentCommand = renderTemplate(template, {
-    repo_dir: repoDir,
-    prompt_file: fixPromptFile,
-    task_file: fixPromptFile,
+    repo_dir: mapToContainerPath(repoDir),
+    prompt_file: mapToContainerPath(fixPromptFile),
+    task_file: mapToContainerPath(fixPromptFile),
     run_id: run.id,
     repo_slug: run.repoSlug,
     parent_run_id: run.parentRunId ?? ""

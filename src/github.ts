@@ -1,4 +1,6 @@
 import { Octokit } from "@octokit/rest";
+import { createAppAuth } from "@octokit/auth-app";
+import type { AppConfig } from "./config.js";
 
 interface PullRequestParams {
   repoSlug: string;
@@ -42,9 +44,53 @@ export function buildAuthenticatedGitUrl(repoSlug: string, token: string): strin
 
 export class GitHubService {
   private readonly octokit: Octokit;
+  private readonly authMode: "pat" | "app";
+  private readonly patToken?: string;
 
-  constructor(token: string) {
-    this.octokit = new Octokit({ auth: token });
+  private constructor(octokit: Octokit, authMode: "pat" | "app", patToken?: string) {
+    this.octokit = octokit;
+    this.authMode = authMode;
+    this.patToken = patToken;
+  }
+
+  /**
+   * Factory: creates a GitHubService from config.
+   * Returns undefined if no GitHub auth is configured.
+   */
+  static create(config: AppConfig): GitHubService | undefined {
+    if (config.githubAppId && config.githubAppPrivateKey && config.githubAppInstallationId) {
+      const octokit = new Octokit({
+        authStrategy: createAppAuth,
+        auth: {
+          appId: config.githubAppId,
+          privateKey: config.githubAppPrivateKey,
+          installationId: config.githubAppInstallationId
+        }
+      });
+      return new GitHubService(octokit, "app");
+    }
+
+    if (config.githubToken) {
+      const octokit = new Octokit({ auth: config.githubToken });
+      return new GitHubService(octokit, "pat", config.githubToken);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Returns a token string usable for git operations (clone URLs, Bearer headers).
+   * PAT mode: returns the stored token.
+   * App mode: requests/refreshes an installation token via @octokit/auth-app.
+   */
+  async getToken(): Promise<string> {
+    if (this.authMode === "pat" && this.patToken) {
+      return this.patToken;
+    }
+
+    // App auth: octokit.auth() returns an installation token
+    const auth = (await this.octokit.auth({ type: "installation" })) as { token: string };
+    return auth.token;
   }
 
   async createPullRequest(params: PullRequestParams): Promise<PullRequestResult> {
@@ -117,16 +163,46 @@ export class GitHubService {
   }
 
   async downloadJobLog(owner: string, repo: string, jobId: number): Promise<string> {
-    // NOTE: For native GitHub Actions, check_run IDs and job IDs coincide.
-    // For third-party CI (CircleCI, etc.), they may differ — callers should
-    // resolve the correct job ID if needed. The caller wraps this in try/catch.
-    // The download endpoint returns a redirect; octokit follows it automatically
     const response = await this.octokit.actions.downloadJobLogsForWorkflowRun({
       owner,
       repo,
       job_id: jobId
     });
-    // Response data is the log text (octokit follows redirect)
     return typeof response.data === "string" ? response.data : String(response.data);
+  }
+
+  async listDeployments(
+    owner: string,
+    repo: string,
+    ref: string
+  ): Promise<Array<{ id: number; environment: string; created_at: string }>> {
+    const response = await this.octokit.repos.listDeployments({
+      owner,
+      repo,
+      ref,
+      per_page: 20
+    });
+    return response.data.map(d => ({
+      id: d.id,
+      environment: d.environment,
+      created_at: d.created_at
+    }));
+  }
+
+  async listDeploymentStatuses(
+    owner: string,
+    repo: string,
+    deploymentId: number
+  ): Promise<Array<{ state: string; environment_url?: string }>> {
+    const response = await this.octokit.repos.listDeploymentStatuses({
+      owner,
+      repo,
+      deployment_id: deploymentId,
+      per_page: 5
+    });
+    return response.data.map(s => ({
+      state: s.state,
+      environment_url: s.environment_url || undefined
+    }));
   }
 }

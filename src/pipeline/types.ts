@@ -58,6 +58,10 @@ export interface NodeDeps {
   logFile: string;
   workRoot: string;
   onPhase: (phase: string) => Promise<void>;
+  /** Send a detail string to the Slack run card (throttled by caller). */
+  onDetail?: (detail: string) => Promise<void>;
+  /** When set, shell commands route through this Docker sandbox container. */
+  sandboxId?: string;
 }
 
 export type NodeHandler = (
@@ -65,6 +69,21 @@ export type NodeHandler = (
   ctx: ContextBag,
   deps: NodeDeps
 ) => Promise<NodeResult>;
+
+// ── Pipeline events (JSONL) ──
+
+export type PipelineEventType = "node_start" | "node_end" | "phase_change" | "artifact" | "error";
+
+export interface PipelineEvent {
+  type: PipelineEventType;
+  timestamp: string;
+  nodeId?: string;
+  phase?: string;
+  outcome?: string;
+  durationMs?: number;
+  error?: string;
+  artifact?: string;
+}
 
 // ── Pipeline result ──
 

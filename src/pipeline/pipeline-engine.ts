@@ -10,15 +10,18 @@ import type {
   PipelineStepResult,
   LoopConfig
 } from "./types.js";
-import type { ExecutionResult, RunRecord } from "../types.js";
+import { EventLogger } from "./event-logger.js";
+import type { ExecutionResult, RunRecord, TokenUsage } from "../types.js";
 import type { AppConfig } from "../config.js";
 import type { GitHubService } from "../github.js";
 import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import { ContextBag } from "./context-bag.js";
 import { evaluateExpression } from "./expression-evaluator.js";
 import { loadPipeline } from "./pipeline-loader.js";
-import { appendLog } from "./shell.js";
+import { appendLog, runInSandboxContext } from "./shell.js";
 import { logInfo, logError } from "../logger.js";
+import type { ContainerManager } from "../sandbox/container-manager.js";
+import type { SandboxHandle } from "../sandbox/types.js";
 
 // Node handler imports
 import { cloneNode } from "./nodes/clone.js";
@@ -42,7 +45,8 @@ import { securityScanNode } from "./quality-gates/security-scan-node.js";
 import { scopeJudgeNode } from "./quality-gates/scope-judge-node.js";
 import { browserVerifyNode } from "./quality-gates/browser-verify-node.js";
 
-// CI feedback node imports
+// Deploy + CI node imports
+import { deployPreviewNode } from "./nodes/deploy-preview.js";
 import { waitCiNode } from "./ci/wait-ci-node.js";
 import { fixCiNode } from "./ci/fix-ci-node.js";
 
@@ -66,6 +70,7 @@ const NODE_HANDLERS: Record<string, NodeHandler> = {
   wait_ci: waitCiNode,
   fix_ci: fixCiNode,
   scope_judge: scopeJudgeNode,
+  deploy_preview: deployPreviewNode,
   browser_verify: browserVerifyNode,
   plan_task: planTaskNode,
   local_test: localTestNode
@@ -81,7 +86,8 @@ export class PipelineEngine {
   constructor(
     private readonly config: AppConfig,
     private readonly githubService?: GitHubService,
-    private readonly hooks?: RunLifecycleHooks
+    private readonly hooks?: RunLifecycleHooks,
+    private readonly containerManager?: ContainerManager
   ) {}
 
   /**
@@ -90,7 +96,8 @@ export class PipelineEngine {
   async execute(
     run: RunRecord,
     onPhase: (phase: PipelinePhase) => Promise<void>,
-    pipelineFile?: string
+    pipelineFile?: string,
+    onDetail?: (detail: string) => Promise<void>
   ): Promise<ExecutionResult> {
     const yamlPath = pipelineFile ?? path.resolve("pipelines/default.yml");
     const pipeline = await loadPipeline(yamlPath);
@@ -105,6 +112,10 @@ export class PipelineEngine {
     // (the clone node will rm + recreate, but we need the dir for pre-node logging)
     await mkdir(runDir, { recursive: true });
     await appendLog(logFile, `${this.config.appName} pipeline started for ${run.id}\n`);
+
+    // Event logger — local to this execution to avoid race conditions
+    // when RUNNER_CONCURRENCY > 1 (multiple execute() calls in parallel).
+    const eventLogger = new EventLogger(runDir);
 
     // Initialize context bag
     const ctx = new ContextBag({
@@ -132,8 +143,10 @@ export class PipelineEngine {
       logFile,
       workRoot: this.config.workRoot,
       onPhase: async (phase: string) => {
+        await eventLogger.emit("phase_change", { phase });
         await onPhase(phase as PipelinePhase);
-      }
+      },
+      onDetail
     };
 
     // Try to resume from checkpoint
@@ -152,7 +165,68 @@ export class PipelineEngine {
       }
     }
 
-    const result = await this.executePipeline(pipeline, ctx, deps, startIndex);
+    // Create sandbox container if enabled
+    let sandbox: SandboxHandle | undefined;
+    if (this.config.sandboxEnabled && this.containerManager) {
+      const sandboxEnv: Record<string, string> = {
+        GOOSE_DISABLE_KEYRING: "1"
+      };
+
+      // Pass through agent-relevant env vars
+      for (const key of [
+        "GOOSE_PROVIDER", "GOOSE_MODEL", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+        "CEMS_API_URL", "CEMS_API_KEY"
+      ]) {
+        if (process.env[key]) {
+          sandboxEnv[key] = process.env[key]!;
+        }
+      }
+
+      // Pass git token for authenticated operations
+      const gitToken = await this.githubService?.getToken();
+      if (gitToken) {
+        sandboxEnv["GIT_TOKEN"] = gitToken;
+      }
+
+      sandbox = await this.containerManager.createSandbox(
+        run.id,
+        {
+          image: this.config.sandboxImage,
+          cpus: this.config.sandboxCpus,
+          memoryMb: this.config.sandboxMemoryMb,
+          env: sandboxEnv,
+          networkMode: "bridge"
+        },
+        this.config.sandboxHostWorkPath
+      );
+
+      await appendLog(logFile, `[sandbox] container created: ${sandbox.containerName}\n`);
+    }
+
+    let result;
+    try {
+      if (sandbox) {
+        // Run pipeline inside AsyncLocalStorage context so all shell calls
+        // within this async tree route through the correct container.
+        // Concurrent pipeline executions each get their own context.
+        result = await runInSandboxContext(sandbox.containerId, run.id, () =>
+          this.executePipeline(pipeline, ctx, deps, startIndex, false, eventLogger)
+        );
+      } else {
+        result = await this.executePipeline(pipeline, ctx, deps, startIndex, false, eventLogger);
+      }
+    } finally {
+      if (sandbox && this.containerManager) {
+        await this.containerManager.destroySandbox(run.id);
+        await appendLog(logFile, `[sandbox] container destroyed: ${sandbox.containerName}\n`);
+      }
+    }
+
+    // Aggregate token usage from all _tokenUsage_* context bag keys
+    const tokenUsage = aggregateTokenUsage(ctx);
+    if (tokenUsage) {
+      ctx.set("tokenUsage", tokenUsage);
+    }
 
     // Build ExecutionResult from context bag
     const branchName = run.branchName;
@@ -170,7 +244,8 @@ export class PipelineEngine {
       logsPath: logFile,
       commitSha,
       changedFiles,
-      prUrl
+      prUrl,
+      tokenUsage: tokenUsage ?? undefined
     };
   }
 
@@ -179,7 +254,8 @@ export class PipelineEngine {
     ctx: ContextBag,
     deps: NodeDeps,
     startIndex: number,
-    pipelineSwitched = false
+    pipelineSwitched = false,
+    eventLogger?: EventLogger
   ): Promise<PipelineResult> {
     const steps: PipelineStepResult[] = [];
     const warnings: string[] = [];
@@ -207,6 +283,7 @@ export class PipelineEngine {
       }
 
       await appendLog(deps.logFile, `\n[pipeline] ${node.id}: starting\n`);
+      await eventLogger?.emit("node_start", { nodeId: node.id });
       const startTime = Date.now();
 
       // Execute the node
@@ -222,6 +299,12 @@ export class PipelineEngine {
 
       const durationMs = Date.now() - startTime;
       await appendLog(deps.logFile, `\n[pipeline] ${node.id}: ${result.outcome} (${String(durationMs)}ms)\n`);
+      await eventLogger?.emit("node_end", {
+        nodeId: node.id,
+        outcome: result.outcome,
+        durationMs,
+        error: result.error
+      });
 
       // Write outputs to context bag
       if (result.outputs) {
@@ -289,7 +372,7 @@ export class PipelineEngine {
             if (newPipeline) {
               const currentIdx = newPipeline.nodes.findIndex(n => n.id === node.id);
               if (currentIdx >= 0) {
-                const tailResult = await this.executePipeline(newPipeline, ctx, deps, currentIdx + 1, true);
+                const tailResult = await this.executePipeline(newPipeline, ctx, deps, currentIdx + 1, true, eventLogger);
                 steps.push(...tailResult.steps);
                 warnings.push(...tailResult.warnings);
                 return { outcome: tailResult.outcome, steps, warnings };
@@ -446,4 +529,25 @@ export class PipelineEngine {
     }
     return handler;
   }
+}
+
+/** Aggregate all _tokenUsage_* context bag entries into a single TokenUsage. */
+export function aggregateTokenUsage(ctx: ContextBag): TokenUsage | null {
+  let gateInput = 0;
+  let gateOutput = 0;
+
+  for (const key of ctx.keys()) {
+    if (!key.startsWith("_tokenUsage_")) continue;
+    const entry = ctx.get<{ input: number; output: number }>(key);
+    if (!entry) continue;
+    gateInput += entry.input;
+    gateOutput += entry.output;
+  }
+
+  if (gateInput === 0 && gateOutput === 0) return null;
+
+  return {
+    qualityGateInputTokens: gateInput,
+    qualityGateOutputTokens: gateOutput
+  };
 }

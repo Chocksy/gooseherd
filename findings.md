@@ -1,49 +1,59 @@
-# Findings — Phase 9 Tasks Research
+# Findings — Phase 14: Container Isolation (Task 30)
 
-## Task 9: CI Feedback in Default Pipeline
-- **Current**: `default.yml` has 9 nodes, no CI. `with-ci-feedback.yml` has 13 nodes including `wait_ci`/`fix_ci`
-- **Key safety**: `wait-ci-node.ts:32-34` returns `success` immediately if `ciWaitEnabled === false` (default)
-- **Fix**: Copy the `wait_ci` block from `with-ci-feedback.yml` lines 68-75 into `default.yml` after `create_pr`
-- **Risk**: Zero — the node no-ops when CI is disabled
+## Research Summary
 
-## Task 17: CEMS x-team-id
-- **Current**: `cems-provider.ts` sends only `Content-Type` + `Authorization` headers
-- **Missing**: `x-team-id` header in both `searchMemories` (line 47-50) and `storeMemory` (line 100-103)
-- **Config gap**: No `CEMS_TEAM_ID` in env schema or AppConfig
-- **CemsProviderConfig**: only `{ apiUrl, apiKey }` — needs `teamId?: string`
-- **index.ts:30**: constructs CemsProvider with `{ apiUrl, apiKey }` — needs `teamId`
+See `docs/research-container-isolation.md` for full industry research (Cursor, Devin, E2B, agent-infra/sandbox).
 
-## Task 13: Real Agent Default
-- **Default**: `"bash scripts/dummy-agent.sh {{repo_dir}} {{prompt_file}} {{run_id}}"` (config.ts:257-258)
-- **dummy-agent.sh**: copies prompt to repo, appends timestamp, adds a README block — no coding
-- **No goose detection**: no `which goose`, no PATH check, no startup probe anywhere
-- **index.ts:17**: `loadConfig()` called but no post-load validation of agent template
-- **Approach**: Log a prominent warning at startup, don't block (dev/test still needs dummy)
+## Key Technical Findings
 
-## Task 18: Diff in Follow-Up Prompts
-- **Current**: hydrate-context.ts:81-95 — follow-up prompt has file names only, no diff content
-- **After clone**: repo has parent branch checked out with parent's commits — `git show HEAD` gives the diff
-- **`runShellCapture` already imported** in hydrate-context.ts
-- **Approach**: Run `git show HEAD --stat` + `git diff HEAD~1..HEAD --unified=3` truncated to ~3000 chars
-- **Key**: Only on follow-up runs (`isFollowUp === true`)
+### 1. Single Choke Point Confirmed
+All shell execution goes through 3 functions in `src/pipeline/shell.ts`:
+- `runShell()` (line 34) — `spawn("bash", ["-lc", command])`
+- `runShellCapture()` (line 155) — same with capture
+- `runShellWithProgress()` (line 114) — same with stderr callback
 
-## Task 16: Richer Memory
-- **`onRunComplete`**: stores one-liner: "Completed task on X: task. Changed files: list"
-- **Missing fields**: task type, diff stats, duration, outcome, error category
-- **`onFeedback`**: guards on `rating !== "down" || !note?.trim()` — positive feedback silently dropped
-- **`ExecutionResult` type** has: `changedFiles`, `prUrl`, `branchName`, `commitSha`, `agentAnalysis`
-- **`agentAnalysis`** has: `filesChanged`, `linesAdded`, `linesRemoved`, `diffSummary`
-- **MemoryProvider interface**: `storeMemory(content, tags, sourceRef)` — content is just a string, so we enrich the string
+Adding an `sandboxId` option to route through `docker exec` is a minimal change.
 
-## Task 15: Friendly Error Messages
-- **Current failure path**: raw `Error.message` → `store.updateRun({ error: message })` → Slack post
-- **`postRunSummary`**: shows first 200 chars of `run.error` in Slack quote block
-- **No categories**: just the raw string from pipeline engine or node errors
-- **Common errors to classify**:
-  - "Failed to clone" → Check GitHub token/repo access
-  - "Validation failed after N" → Run tests locally first
-  - "Agent exited with code" → Agent crashed, check logs
-  - "Command failed with exit code" → Shell command failed
-  - "exceeded Ns, terminating" → Timed out
-  - "no meaningful changes" → Agent didn't produce changes
-- **`formatRunCardBlocks`**: already has one special case for "Recovered after process restart"
+### 2. CWD Pattern — Two Modes
+- **repoDir** (`{workRoot}/{runId}/repo`): Used by git ops, quality gates
+- **gooseherd root** (`path.resolve(".")`): Used by implement.ts (line 52) for agent CLI
+- In container: both map to `/work/repo` and `/work` respectively
+
+### 3. Login Shell Dependency
+`implement.ts` line 55 uses `login: true` (bash -lc) so goose is on PATH.
+In Docker: PATH is set in the image — this becomes cleaner, not harder.
+
+### 4. Docker Available Locally
+Docker 28.5.2 running with 4 containers. Good for local testing.
+
+### 5. Volume Strategy
+Named volumes don't expose host paths. Must use bind mounts:
+- `SANDBOX_HOST_WORK_PATH` (e.g., `/data/gooseherd/work` on host, `.work` locally)
+- For local dev: `SANDBOX_HOST_WORK_PATH=$(pwd)/.work`
+- For Coolify: `SANDBOX_HOST_WORK_PATH=/data/gooseherd/work`
+
+### 6. dockerode npm Package
+- 5M weekly downloads, pure JS, well-maintained
+- API: `docker.createContainer()`, `container.start()`, `container.exec()`, `container.remove()`
+- Types: `@types/dockerode`
+- Zero native deps — clean install
+
+### 7. Dashboard Artifact Serving
+Dashboard currently has NO route to serve files from run directories.
+Need: `GET /api/runs/:id/artifacts/:filename` with path traversal protection.
+Screenshot path already stored in context bag as `screenshotPath`.
+
+### 8. Existing Tests
+- 466 tests across 35 suites
+- `tests/pipeline-nodes.test.ts` — mocks `runShellCapture`, easy to extend
+- `tests/e2e-pipeline.test.ts` — full pipeline with real git, good pattern for Docker integration test
+
+## Risk Assessment
+
+| Risk | Mitigation |
+|------|-----------|
+| Docker socket exposure | Read-only mount, non-root user in sandbox |
+| Path mapping confusion | SANDBOX_HOST_WORK_PATH explicit config |
+| Container cleanup on crash | Automatic label-based cleanup on startup |
+| Test flakiness with Docker | SANDBOX_ENABLED=false keeps existing tests working |
+| Image pull time | Pre-pull image on startup; use local build for dev |

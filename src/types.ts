@@ -19,6 +19,13 @@ export type RunPhase =
   | "completed"
   | "failed";
 
+export interface TokenUsage {
+  qualityGateInputTokens: number;
+  qualityGateOutputTokens: number;
+  agentInputTokens?: number;
+  agentOutputTokens?: number;
+}
+
 export interface RunFeedback {
   rating: "up" | "down";
   note?: string;
@@ -65,6 +72,10 @@ export interface RunRecord {
   ciConclusion?: string;
   /** PR number from GitHub */
   prNumber?: number;
+  /** Token usage from LLM-calling nodes */
+  tokenUsage?: TokenUsage;
+  /** Team identifier derived from channel mapping */
+  teamId?: string;
 }
 
 export interface NewRunInput {
@@ -80,6 +91,8 @@ export interface NewRunInput {
   feedbackNote?: string;
   /** Pipeline override hint from smart triage or trigger rule */
   pipelineHint?: string;
+  /** Team identifier derived from channel mapping */
+  teamId?: string;
 }
 
 export interface ExecutionResult {
@@ -88,6 +101,7 @@ export interface ExecutionResult {
   commitSha: string;
   changedFiles: string[];
   prUrl?: string;
+  tokenUsage?: TokenUsage;
 }
 
 export interface CommandRunRequest {

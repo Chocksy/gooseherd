@@ -1,5 +1,5 @@
 import { App } from "@slack/bolt";
-import type { AppConfig } from "./config.js";
+import { resolveTeamFromChannel, type AppConfig } from "./config.js";
 import { parseCommand } from "./command-parser.js";
 import { logInfo } from "./logger.js";
 import { RunManager } from "./run-manager.js";
@@ -93,6 +93,70 @@ export function parseFollowUpMessage(text: string): { task: string; baseBranch?:
     baseBranch,
     retry
   };
+}
+
+/** Build help blocks for the App Home tab and /help responses. */
+export function buildHelpBlocks(config: AppConfig): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "header",
+      text: { type: "plain_text", text: `${config.appName} — Quick Start`, emoji: true }
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: [
+          `*Mention the bot* in any allowed channel to kick off an AI coding run.`,
+          "",
+          `\`@${config.slackCommandName} owner/repo Fix the login timeout bug\``,
+          "",
+          `The agent clones the repo, writes code, opens a PR, and reports back in the thread.`
+        ].join("\n")
+      }
+    },
+    { type: "divider" },
+    {
+      type: "header",
+      text: { type: "plain_text", text: "Commands", emoji: true }
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: [
+          `\`${botCommand(config, "owner/repo your task here")}\` — natural format`,
+          `\`${botCommand(config, "run owner/repo[@base] | your task")}\` — explicit format`,
+          `\`${botCommand(config, "status")}\` — latest run in thread/channel`,
+          `\`${botCommand(config, "status <run-id>")}\` — specific run status`,
+          `\`${botCommand(config, "tail")}\` — latest logs`,
+          `\`${botCommand(config, "tail <run-id>")}\` — specific run logs`,
+          `\`${botCommand(config, "help")}\` — this help text`
+        ].join("\n")
+      }
+    },
+    { type: "divider" },
+    {
+      type: "header",
+      text: { type: "plain_text", text: "Thread Follow-ups", emoji: true }
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: [
+          "In a run thread, mention the bot with plain text to queue a follow-up run on the same branch.",
+          "",
+          "*Examples:*",
+          `\`@${config.slackCommandName} also fix the tests\``,
+          `\`@${config.slackCommandName} retry\``,
+          `\`@${config.slackCommandName} base=staging add the migration\``,
+          "",
+          "Casual messages (thanks, lgtm, etc.) are ignored. Approval signals save positive feedback."
+        ].join("\n")
+      }
+    }
+  ];
 }
 
 export async function startSlackApp(config: AppConfig, runManager: RunManager, observer?: ObserverDaemon): Promise<void> {
@@ -203,7 +267,8 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager, o
       baseBranch: payload.baseBranch,
       requestedBy: userId,
       channelId: payload.channelId,
-      threadTs: payload.threadTs
+      threadTs: payload.threadTs,
+      teamId: resolveTeamFromChannel(payload.channelId, config.teamChannelMap)
     });
 
     await client.chat.postMessage({
@@ -325,6 +390,22 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager, o
     });
   }
 
+  // ── App Home Tab ──────────────────────────────────────
+  app.event("app_home_opened", async ({ event, client }) => {
+    try {
+      await client.views.publish({
+        user_id: event.user,
+        view: {
+          type: "home",
+          blocks: buildHelpBlocks(config) as any[]
+        }
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown";
+      logInfo("Failed to publish App Home tab", { error: msg });
+    }
+  });
+
   app.event("app_mention", async ({ event, say }) => {
     const replyThreadTs = event.thread_ts ?? event.ts;
 
@@ -341,20 +422,8 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager, o
     if (command.type === "help") {
       await sayAs(say, {
         thread_ts: replyThreadTs,
-        text: [
-          `${config.appName} commands:`,
-          `- \`${botCommand(config, "owner/repo your task here")}\` (natural format)`,
-          `- \`${botCommand(config, "run owner/repo[@base-branch] | your task")}\` (explicit format)`,
-          `- \`${botCommand(config, "status")}\` (latest in thread/channel)`,
-          `- \`${botCommand(config, "status <run-id-or-prefix>")}\``,
-          `- \`${botCommand(config, "tail")}\` (latest logs in thread/channel)`,
-          `- \`${botCommand(config, "tail <run-id-or-prefix>")}\``,
-          `- \`${botCommand(config, "help")}\``,
-          "",
-          "Thread follow-up mode:",
-          "- In a run thread, mention the bot with plain text to queue a follow-up run on the same repo.",
-          "- Optional base override in thread: `base=master retry` or `branch is master retry`."
-        ].join("\n")
+        blocks: buildHelpBlocks(config),
+        text: `${config.appName} help — use \`${botCommand(config, "help")}\` for commands.`
       });
       return;
     }
@@ -475,7 +544,8 @@ export async function startSlackApp(config: AppConfig, runManager: RunManager, o
       baseBranch: payload.baseBranch ?? config.defaultBaseBranch,
       requestedBy: event.user,
       channelId: event.channel,
-      threadTs: replyThreadTs
+      threadTs: replyThreadTs,
+      teamId: resolveTeamFromChannel(event.channel, config.teamChannelMap)
     });
 
     await sayAs(say, {

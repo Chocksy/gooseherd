@@ -7,7 +7,7 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { DedupEntry, ObserverState } from "./types.js";
+import type { DedupEntry, ObserverState, ObserverStateSnapshot, RuleOutcomeStats } from "./types.js";
 
 /** Create a fresh empty state (avoids shared-reference mutation). */
 function freshState(): ObserverState {
@@ -17,7 +17,9 @@ function freshState(): ObserverState {
     dailyCount: 0,
     dailyPerRepo: {},
     counterDay: "",
-    sentryLastPoll: {}
+    sentryLastPoll: {},
+    githubLastRunId: {},
+    ruleOutcomes: {}
   };
 }
 
@@ -34,13 +36,16 @@ export class ObserverStateStore {
     try {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<ObserverState>;
+      const extra = parsed as unknown as Record<string, unknown>;
       this.state = {
         dedupEntries: parsed.dedupEntries ?? {},
         rateLimitEvents: parsed.rateLimitEvents ?? {},
         dailyCount: parsed.dailyCount ?? 0,
         dailyPerRepo: parsed.dailyPerRepo ?? {},
         counterDay: parsed.counterDay ?? "",
-        sentryLastPoll: parsed.sentryLastPoll ?? {}
+        sentryLastPoll: parsed.sentryLastPoll ?? {},
+        githubLastRunId: (extra["githubLastRunId"] as Record<string, number>) ?? {},
+        ruleOutcomes: (extra["ruleOutcomes"] as Record<string, RuleOutcomeStats>) ?? {}
       };
     } catch {
       this.state = freshState();
@@ -71,16 +76,25 @@ export class ObserverStateStore {
     return true;
   }
 
-  setDedup(key: string, ttlMs: number, runId?: string): void {
-    this.state.dedupEntries[key] = { seenAt: Date.now(), ttlMs, runId };
+  setDedup(key: string, ttlMs: number, runId?: string, ruleId?: string): void {
+    this.state.dedupEntries[key] = { seenAt: Date.now(), ttlMs, runId, ruleId };
     this.dirty = true;
   }
 
-  markDedupCompleted(runId: string): void {
+  /**
+   * Mark a dedup entry as completed and record the outcome for its rule.
+   * Called when a run reaches terminal status (completed or failed).
+   */
+  markDedupCompleted(runId: string, status: string): void {
     for (const entry of Object.values(this.state.dedupEntries)) {
       if (entry.runId === runId) {
         entry.completedAt = Date.now();
         this.dirty = true;
+
+        // Record outcome for the associated rule
+        if (entry.ruleId) {
+          this.recordRuleOutcome(entry.ruleId, status);
+        }
         return;
       }
     }
@@ -154,6 +168,53 @@ export class ObserverStateStore {
     }
   }
 
+  // ── Rule outcome tracking ──
+
+  private recordRuleOutcome(ruleId: string, status: string): void {
+    const existing = this.state.ruleOutcomes[ruleId] ?? {
+      success: 0, failure: 0, lastOutcome: "", lastAt: ""
+    };
+
+    if (status === "completed") {
+      existing.success += 1;
+    } else {
+      existing.failure += 1;
+    }
+    existing.lastOutcome = status;
+    existing.lastAt = new Date().toISOString();
+
+    this.state.ruleOutcomes[ruleId] = existing;
+    this.dirty = true;
+  }
+
+  getOutcomeStats(ruleId: string): RuleOutcomeStats | undefined {
+    return this.state.ruleOutcomes[ruleId];
+  }
+
+  getAllOutcomeStats(): Record<string, RuleOutcomeStats> {
+    return { ...this.state.ruleOutcomes };
+  }
+
+  /** Serializable snapshot of observer state for dashboard consumption. */
+  getSnapshot(): ObserverStateSnapshot {
+    const dedupCount = Object.keys(this.state.dedupEntries).length;
+    const activeDedups = Object.entries(this.state.dedupEntries)
+      .filter(([, e]) => !e.completedAt)
+      .length;
+
+    return {
+      dedupCount,
+      activeDedups,
+      dailyCount: this.state.dailyCount,
+      dailyPerRepo: { ...this.state.dailyPerRepo },
+      counterDay: this.state.counterDay,
+      ruleOutcomes: { ...this.state.ruleOutcomes },
+      rateLimitSources: Object.fromEntries(
+        Object.entries(this.state.rateLimitEvents).map(([k, v]) => [k, v.length])
+      )
+    };
+  }
+
   // ── Sentry poll cursors ──
 
   getSentryLastPoll(project: string): string | undefined {
@@ -162,6 +223,17 @@ export class ObserverStateStore {
 
   setSentryLastPoll(project: string, timestamp: string): void {
     this.state.sentryLastPoll[project] = timestamp;
+    this.dirty = true;
+  }
+
+  // ── GitHub poll cursors ──
+
+  getGithubLastRunId(repoSlug: string): number | undefined {
+    return this.state.githubLastRunId[repoSlug];
+  }
+
+  setGithubLastRunId(repoSlug: string, runId: number): void {
+    this.state.githubLastRunId[repoSlug] = runId;
     this.dirty = true;
   }
 }

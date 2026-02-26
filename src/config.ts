@@ -10,6 +10,9 @@ const envSchema = z.object({
   SLACK_ALLOWED_CHANNELS: z.string().optional(),
 
   GITHUB_TOKEN: z.string().optional(),
+  GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_APP_INSTALLATION_ID: z.string().optional(),
   GITHUB_DEFAULT_OWNER: z.string().optional(),
   REPO_ALLOWLIST: z.string().optional(),
 
@@ -66,9 +69,13 @@ const envSchema = z.object({
   OBSERVER_SENTRY_POLL_INTERVAL_SECONDS: z.string().optional(),
 
   OBSERVER_GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  OBSERVER_SENTRY_WEBHOOK_SECRET: z.string().optional(),
   OBSERVER_WEBHOOK_PORT: z.string().optional(),
+  OBSERVER_GITHUB_POLL_INTERVAL_SECONDS: z.string().optional(),
+  OBSERVER_GITHUB_WATCHED_REPOS: z.string().optional(),
 
-  ANTHROPIC_API_KEY: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
+  PLAN_TASK_MODEL: z.string().optional(),
   SCOPE_JUDGE_ENABLED: z.string().optional(),
   SCOPE_JUDGE_MODEL: z.string().optional(),
   SCOPE_JUDGE_MIN_PASS_SCORE: z.string().optional(),
@@ -81,12 +88,23 @@ const envSchema = z.object({
   REVIEW_APP_URL_PATTERN: z.string().optional(),
   SCREENSHOT_ENABLED: z.string().optional(),
 
+
   CI_WAIT_ENABLED: z.string().optional(),
   CI_POLL_INTERVAL_SECONDS: z.string().optional(),
   CI_PATIENCE_TIMEOUT_SECONDS: z.string().optional(),
   CI_MAX_WAIT_SECONDS: z.string().optional(),
   CI_CHECK_FILTER: z.string().optional(),
-  CI_MAX_FIX_ROUNDS: z.string().optional()
+  CI_MAX_FIX_ROUNDS: z.string().optional(),
+
+  DASHBOARD_TOKEN: z.string().optional(),
+
+  TEAM_CHANNEL_MAP: z.string().optional(),
+
+  SANDBOX_ENABLED: z.string().optional(),
+  SANDBOX_IMAGE: z.string().optional(),
+  SANDBOX_HOST_WORK_PATH: z.string().optional(),
+  SANDBOX_CPUS: z.string().optional(),
+  SANDBOX_MEMORY_MB: z.string().optional()
 });
 
 function parseList(value?: string): string[] {
@@ -129,6 +147,9 @@ export interface AppConfig {
   slackAllowedChannels: string[];
 
   githubToken?: string;
+  githubAppId?: number;
+  githubAppPrivateKey?: string;
+  githubAppInstallationId?: number;
   githubDefaultOwner?: string;
   repoAllowlist: string[];
 
@@ -188,9 +209,14 @@ export interface AppConfig {
   observerSentryPollIntervalSeconds: number;
 
   observerGithubWebhookSecret?: string;
+  observerSentryWebhookSecret?: string;
   observerWebhookPort: number;
+  observerGithubPollIntervalSeconds: number;
+  /** Repos to watch for failed GitHub Actions: "owner/repo,owner2/repo2" */
+  observerGithubWatchedRepos: string[];
 
-  anthropicApiKey?: string;
+  openrouterApiKey?: string;
+  planTaskModel: string;
   scopeJudgeEnabled: boolean;
   scopeJudgeModel: string;
   scopeJudgeMinPassScore: number;
@@ -203,12 +229,25 @@ export interface AppConfig {
   reviewAppUrlPattern?: string;
   screenshotEnabled: boolean;
 
+
   ciWaitEnabled: boolean;
   ciPollIntervalSeconds: number;
   ciPatienceTimeoutSeconds: number;
   ciMaxWaitSeconds: number;
   ciCheckFilter: string[];
   ciMaxFixRounds: number;
+
+  dashboardToken?: string;
+
+  /** Team → channel IDs mapping. JSON format: {"team1":["C123","C456"]} */
+  teamChannelMap: Map<string, string[]>;
+
+  sandboxEnabled: boolean;
+  sandboxImage: string;
+  /** Host-side path that maps to workRoot. Required when sandboxEnabled=true for DooD volume mounts. */
+  sandboxHostWorkPath: string;
+  sandboxCpus: number;
+  sandboxMemoryMb: number;
 }
 
 function parseRepoMap(value?: string): Map<string, string> {
@@ -224,6 +263,42 @@ function parseRepoMap(value?: string): Map<string, string> {
     }
   }
   return map;
+}
+
+export function parseTeamChannelMap(value?: string): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  if (!value || value.trim() === "") return map;
+  try {
+    const parsed = JSON.parse(value) as Record<string, string[]>;
+    for (const [team, channels] of Object.entries(parsed)) {
+      if (Array.isArray(channels)) {
+        map.set(team, channels.map((c) => String(c).trim()).filter(Boolean));
+      }
+    }
+  } catch {
+    // Ignore invalid JSON
+  }
+  return map;
+}
+
+export function resolveTeamFromChannel(
+  channelId: string,
+  teamChannelMap: Map<string, string[]>
+): string | undefined {
+  for (const [team, channels] of teamChannelMap) {
+    if (channels.includes(channelId)) return team;
+  }
+  return undefined;
+}
+
+export function resolveGitHubAuthMode(config: AppConfig): "app" | "pat" | "none" {
+  if (config.githubAppId && config.githubAppPrivateKey && config.githubAppInstallationId) {
+    return "app";
+  }
+  if (config.githubToken) {
+    return "pat";
+  }
+  return "none";
 }
 
 function buildMcpExtensions(cemsMcpCommand?: string, mcpExtensions?: string): string[] {
@@ -252,6 +327,11 @@ export function loadConfig(): AppConfig {
     slackAllowedChannels: parseList(parsed.SLACK_ALLOWED_CHANNELS),
 
     githubToken: parsed.GITHUB_TOKEN,
+    githubAppId: parsed.GITHUB_APP_ID ? parseInteger(parsed.GITHUB_APP_ID, 0) || undefined : undefined,
+    githubAppPrivateKey: parsed.GITHUB_APP_PRIVATE_KEY?.trim() || undefined,
+    githubAppInstallationId: parsed.GITHUB_APP_INSTALLATION_ID
+      ? parseInteger(parsed.GITHUB_APP_INSTALLATION_ID, 0) || undefined
+      : undefined,
     githubDefaultOwner: parsed.GITHUB_DEFAULT_OWNER,
     repoAllowlist: parseList(parsed.REPO_ALLOWLIST),
 
@@ -310,26 +390,41 @@ export function loadConfig(): AppConfig {
     observerSentryPollIntervalSeconds: parseInteger(parsed.OBSERVER_SENTRY_POLL_INTERVAL_SECONDS, 300),
 
     observerGithubWebhookSecret: parsed.OBSERVER_GITHUB_WEBHOOK_SECRET?.trim() || undefined,
+    observerSentryWebhookSecret: parsed.OBSERVER_SENTRY_WEBHOOK_SECRET?.trim() || undefined,
     observerWebhookPort: parseInteger(parsed.OBSERVER_WEBHOOK_PORT, 9090),
+    observerGithubPollIntervalSeconds: parseInteger(parsed.OBSERVER_GITHUB_POLL_INTERVAL_SECONDS, 300),
+    observerGithubWatchedRepos: parseList(parsed.OBSERVER_GITHUB_WATCHED_REPOS),
 
-    anthropicApiKey: parsed.ANTHROPIC_API_KEY?.trim() || undefined,
+    openrouterApiKey: parsed.OPENROUTER_API_KEY?.trim() || undefined,
+    planTaskModel: parsed.PLAN_TASK_MODEL?.trim() || "anthropic/claude-haiku-4-5",
     scopeJudgeEnabled: parseBoolean(parsed.SCOPE_JUDGE_ENABLED, false),
-    scopeJudgeModel: parsed.SCOPE_JUDGE_MODEL?.trim() || "claude-haiku-4-5-20251001",
+    scopeJudgeModel: parsed.SCOPE_JUDGE_MODEL?.trim() || "anthropic/claude-haiku-4-5",
     scopeJudgeMinPassScore: parseInteger(parsed.SCOPE_JUDGE_MIN_PASS_SCORE, 60),
 
     observerSmartTriageEnabled: parseBoolean(parsed.OBSERVER_SMART_TRIAGE_ENABLED, false),
-    observerSmartTriageModel: parsed.OBSERVER_SMART_TRIAGE_MODEL?.trim() || "claude-haiku-4-5-20251001",
+    observerSmartTriageModel: parsed.OBSERVER_SMART_TRIAGE_MODEL?.trim() || "anthropic/claude-haiku-4-5",
     observerSmartTriageTimeoutMs: parseInteger(parsed.OBSERVER_SMART_TRIAGE_TIMEOUT_MS, 10_000),
 
     browserVerifyEnabled: parseBoolean(parsed.BROWSER_VERIFY_ENABLED, false),
     reviewAppUrlPattern: parsed.REVIEW_APP_URL_PATTERN?.trim() || undefined,
     screenshotEnabled: parseBoolean(parsed.SCREENSHOT_ENABLED, false),
 
+
     ciWaitEnabled: parseBoolean(parsed.CI_WAIT_ENABLED, false),
     ciPollIntervalSeconds: parseInteger(parsed.CI_POLL_INTERVAL_SECONDS, 30),
     ciPatienceTimeoutSeconds: parseInteger(parsed.CI_PATIENCE_TIMEOUT_SECONDS, 300),
     ciMaxWaitSeconds: parseInteger(parsed.CI_MAX_WAIT_SECONDS, 1800),
     ciCheckFilter: parseList(parsed.CI_CHECK_FILTER),
-    ciMaxFixRounds: parseInteger(parsed.CI_MAX_FIX_ROUNDS, 2)
+    ciMaxFixRounds: parseInteger(parsed.CI_MAX_FIX_ROUNDS, 2),
+
+    dashboardToken: parsed.DASHBOARD_TOKEN?.trim() || undefined,
+
+    teamChannelMap: parseTeamChannelMap(parsed.TEAM_CHANNEL_MAP),
+
+    sandboxEnabled: parseBoolean(parsed.SANDBOX_ENABLED, false),
+    sandboxImage: parsed.SANDBOX_IMAGE?.trim() || "gooseherd/sandbox:default",
+    sandboxHostWorkPath: parsed.SANDBOX_HOST_WORK_PATH?.trim() || "",
+    sandboxCpus: parseInteger(parsed.SANDBOX_CPUS, 2),
+    sandboxMemoryMb: parseInteger(parsed.SANDBOX_MEMORY_MB, 4096)
   };
 }

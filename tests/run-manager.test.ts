@@ -341,12 +341,42 @@ test("processRun posts failure summary on error", async () => {
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
-  const summary = postMessages[postMessages.length - 1];
+  const summary = postMessages.findLast((c) => {
+    const text = c.args.text;
+    return typeof text === "string" && text.includes("Run failed");
+  });
   assert.ok(summary, "Should have a summary message on failure");
   const summaryText = summary.args.text as string;
   assert.ok(summaryText.includes("Run failed"), "Summary should say 'Run failed'");
   assert.ok(summaryText.includes("Agent timed out"), "Summary should include error");
   assert.ok(summaryText.includes("retry"), "Summary should suggest retry");
+
+  await cleanupTestStore(tmpDir);
+});
+
+test("processRun with local channel skips Slack posts and still completes", async () => {
+  const { store, tmpDir } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const mockPipeline = makeMockPipelineEngine();
+  const config = makeConfig();
+
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "local trigger task",
+    baseBranch: "main",
+    requestedBy: "local-trigger",
+    channelId: "local",
+    threadTs: "local"
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const stored = await store.getRun(run.id);
+  assert.equal(stored?.status, "completed");
+  assert.equal(stored?.phase, "completed");
+  assert.equal(mockClient._calls.length, 0, "No Slack API calls should be made for local runs");
 
   await cleanupTestStore(tmpDir);
 });
@@ -652,7 +682,7 @@ test("failure summary shows classified error with suggestion for known patterns"
   const summary = postMessages[postMessages.length - 1];
   const summaryText = summary.args.text as string;
   assert.ok(summaryText.includes("Failed to clone repository"), "Should show friendly error name");
-  assert.ok(summaryText.includes("GITHUB_TOKEN"), "Should show suggestion");
+  assert.ok(summaryText.includes("GitHub credentials"), "Should show suggestion");
 
   await cleanupTestStore(tmpDir);
 });

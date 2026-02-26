@@ -73,10 +73,20 @@ services:
       - CEMS_API_KEY=${CEMS_API_KEY:-}
       - CEMS_MCP_COMMAND=${CEMS_MCP_COMMAND:-}
 
+      # ── Sandbox (Docker-out-of-Docker) ──
+      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-false}
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-gooseherd/sandbox:default}
+      - SANDBOX_HOST_WORK_PATH=${SANDBOX_HOST_WORK_PATH:-}
+      - SANDBOX_CPUS=${SANDBOX_CPUS:-2}
+      - SANDBOX_MEMORY_MB=${SANDBOX_MEMORY_MB:-4096}
+
     volumes:
-      - gooseherd-work:/app/.work
+      # When SANDBOX_ENABLED=true, use bind mount so sandbox containers can share the path:
+      #   SANDBOX_HOST_WORK_PATH=/data/gooseherd/work → /data/gooseherd/work:/app/.work
+      # When SANDBOX_ENABLED=false, named volume is fine (default):
+      - ${SANDBOX_HOST_WORK_PATH:-gooseherd-work}:/app/.work
       - gooseherd-data:/app/data
-      - goose-sessions:/root/.local/share/goose   # Persist Goose sessions for --fork follow-ups
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker-out-of-Docker for sandbox containers
     restart: unless-stopped
     deploy:
       resources:
@@ -99,4 +109,3 @@ services:
 volumes:
   gooseherd-work:
   gooseherd-data:
-  goose-sessions:

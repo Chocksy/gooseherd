@@ -1,5 +1,131 @@
 # Progress — Gooseherd Pipeline Implementation
 
+## Phase 14: Docker Container Isolation (Task 30) — COMPLETE
+
+### Session: 2026-02-25
+
+### Implementation
+- [x] Phase 1: ContainerManager class (dockerode) — create/exec/destroy sandbox containers
+- [x] Phase 2: shell.ts AsyncLocalStorage routing — concurrency-safe per-run sandbox context
+- [x] Phase 3: Sandbox Dockerfile — node22 + goose + git + gitleaks + chromium
+- [x] Phase 4: Config + env vars — SANDBOX_ENABLED, SANDBOX_IMAGE, SANDBOX_HOST_WORK_PATH, etc.
+- [x] Phase 5: Pipeline engine wiring — sandbox lifecycle (create before, destroy in finally)
+- [x] Phase 6: Dashboard artifacts API — `/api/runs/:id/artifacts/:filename`
+- [x] Phase 7: Docker integration tests — 3 tests: ping, lifecycle, orphan cleanup
+- [x] Phase 8: E2E sandbox run against epiccoders/pxls — screenshot in dashboard
+
+### Codex Review Fixes
+- [x] CRITICAL: Race condition on module-level sandbox ID → AsyncLocalStorage<SandboxContext>
+- [x] CRITICAL: mapToContainerPath wrong base → compute relative to workRoot/runId
+- [x] CRITICAL: Command-string paths unmapped → mapToContainerPath in 6 node handlers
+- [x] HIGH: PipelineEngine shared-instance race → eventLogger + onDetail per-execution
+- [x] HIGH: Fail-open sandbox routing → fail-closed (throw if sandbox set but no manager)
+- [x] HIGH: Custom stream demux bug → dockerode modem.demuxStream()
+- [x] HIGH: Gitleaks report reads host fs → route through shell (cat via sandbox)
+- [x] HIGH: Container leak on partial start → try/catch + cleanup
+- [x] HIGH: Timeout doesn't kill container process → best-effort kill -9 -1
+- [x] CRITICAL: commit.ts git diff --quiet misses untracked → git status --porcelain
+- [x] LOW: resolvesSandbox typo → resolveSandbox
+- [x] Clone node rm(runDir) breaks bind mount → readdir+rm pattern
+
+### Final State
+- TypeScript: 0 errors
+- Tests: 136+ pass (unit + integration)
+- Docker integration tests: 3/3 pass
+- E2E: Full pipeline in sandbox against epiccoders/pxls, screenshot visible in dashboard
+- PR created: https://github.com/EpicCoders/pxls/pull/616
+
+### New/Modified Files
+- `src/sandbox/container-manager.ts` — Docker container lifecycle
+- `src/sandbox/types.ts` — SandboxConfig, SandboxHandle, SandboxExecResult
+- `src/pipeline/shell.ts` — AsyncLocalStorage sandbox routing, mapToContainerPath
+- `src/pipeline/pipeline-engine.ts` — sandbox create/destroy, runInSandboxContext
+- `src/pipeline/nodes/clone.ts` — readdir+rm, mapToContainerPath
+- `src/pipeline/nodes/implement.ts` — mapToContainerPath template vars
+- `src/pipeline/nodes/validate.ts` — mapToContainerPath template vars
+- `src/pipeline/nodes/lint-fix.ts` — mapToContainerPath template vars
+- `src/pipeline/nodes/fix-validation.ts` — mapToContainerPath template vars
+- `src/pipeline/nodes/commit.ts` — git status --porcelain fix
+- `src/pipeline/ci/fix-ci-node.ts` — mapToContainerPath template vars
+- `src/pipeline/quality-gates/security-scan-node.ts` — read via shell
+- `src/local-trigger.ts` — sandbox wiring
+- `src/index.ts` — sandbox wiring
+- `src/config.ts` — SANDBOX_* env vars
+- `sandbox/Dockerfile` — sandbox container image
+- `scripts/sandbox-dummy-agent.sh` — E2E test agent
+- `tests/sandbox-integration.test.ts` — Docker integration tests
+
+---
+
+## Phase 13: Setup Wizard + GitHub App Auth + Team Tagging (Tasks 28, 32, 34) — COMPLETE
+
+### Session: 2026-02-25
+
+### Research
+- [x] 4 parallel research agents analyzed remaining 4 tasks
+- [x] Codex-investigator review: MODIFY verdict with 3 required + 5 recommended fixes
+- [x] Created findings.md and task_plan.md with 5 phases
+
+### Implementation
+- [x] Phase 1: Setup Wizard (Task 28) — `scripts/setup.ts` with @clack/prompts, 4-step flow, `npm run setup`
+- [x] Phase 2: GitHub App Auth (Task 32) — factory pattern `GitHubService.create()`, `@octokit/auth-app`, installation token refresh before push, tokenGetter wired through observer daemon
+- [x] Phase 3: Team Tagging Level B (Task 34) — `teamId` on RunRecord/NewRunInput, `TEAM_CHANNEL_MAP` JSON config, `resolveTeamFromChannel`, store filtering, dashboard `?team=` param
+- [x] Codex fixes: push.ts token refresh, daemon tokenGetter, classifyError messages, E2E skip conditions, test assertions
+- [x] Tests: 53 new tests in phase13.test.ts covering all 3 features
+
+### Final State
+- TypeScript: 0 errors
+- Tests: 466/466 pass (35 suites)
+- New files: setup.ts, phase13.test.ts
+- Remaining: Task 30 (Container Isolation) — deferred, no forcing function
+
+---
+
+## Phase 12: Security + Observability + Polish (Tasks 35, 33, 37, 36, 31, 28-lite, Housekeeping) — COMPLETE
+
+### Session: 2026-02-24
+
+### Research
+- [x] 5 parallel research agents analyzed all 10 remaining tasks
+- [x] Codex-investigator challenge: reprioritized tasks (35 elevated, 28 demoted)
+- [x] Created findings.md with deep research per task
+- [x] Created task_plan.md with 5 implementation phases
+
+### Implementation
+- [x] Phase 1: Dashboard Auth (Task 35) — DASHBOARD_TOKEN, Bearer/cookie auth, login page, logout, timing-safe compare
+- [x] Phase 2: Token Usage Tracking (Task 33) — TokenUsage type, _tokenUsage_* context bag keys, aggregation, dashboard display
+- [x] Phase 3: Help Command / App Home Tab (Task 37) — buildHelpBlocks(), app_home_opened event, manifest update
+- [x] Phase 4: Clone Progress in Slack (Task 36) — onDetail callback, runShellWithProgress, git clone --progress parsing, throttled Slack updates
+- [x] Phase 5: Run Events Log (Task 31) — EventLogger JSONL, pipeline event emission, /api/runs/:id/pipeline-events, dashboard timeline
+- [x] Phase 6: .env.example + validate (Task 28 lite) — updated .env.example, scripts/validate-env.ts, npm run validate
+- [x] Phase 7: Update architecture.md (Housekeeping) — test count 220→413, node count 18→20, file map updated, new feature docs
+
+### Final State
+- TypeScript: 0 errors
+- Tests: 413/413 pass (20 suites)
+- New files: event-logger.ts, validate-env.ts, phase12.test.ts
+
+---
+
+## Phase 11: Observer Completeness + Operational Maturity (Tasks 29, 24, 21, 23, 25, 27) — COMPLETE
+
+### Session: 2026-02-24
+
+### Implementation
+- [x] Task 29: Notify Node — webhook POST dispatch, 7 tests
+- [x] Task 24: Sentry Webhook Receiver — HMAC-SHA256 verification, issue/metric alert parsing, 17 tests
+- [x] Task 21: Observer Learning Loop — RunManager terminal callbacks, rule outcome tracking in state store
+- [x] Task 23: GitHub Actions Polling — github-poller.ts, cursor tracking, daemon lifecycle wiring
+- [x] Task 25: Config Hot-Reload — SIGHUP handler, observer.reload(), fs.watch on trigger rules YAML
+- [x] Task 27: Dashboard Observer Panel — state snapshot, event history ring buffer, 3 API routes, UI panel with rules/budget/events
+
+### Final State
+- TypeScript: 0 errors
+- Tests: 387/388 pass (1 pre-existing flaky shell.test.ts)
+- New files: sentry-webhook-adapter.ts, github-poller.ts, sentry-webhook.test.ts
+
+---
+
 ## Phase 10: Quality Depth + Adoption (Tasks 7, 26, 19, 20, 22, 10) — COMPLETE
 
 ### Session: 2026-02-24

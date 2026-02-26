@@ -95,6 +95,18 @@ nodes:
       max_rounds: 2
       on_exhausted: complete_with_warning
 
+  # Deploy preview — trigger deployment and wait for URL
+  # Configure strategy in config block. See docs/research-deploy-preview.md for options.
+  - id: deploy_preview
+    type: deterministic
+    action: deploy_preview
+    enabled: false
+    on_soft_fail: warn
+    config:
+      strategy: url_pattern
+      url_pattern: "https://{{prNumber}}.preview.example.com"
+      readiness_timeout_seconds: 300
+
   # Browser verification — smoke test + accessibility (opt-in)
   - id: browser_verify
     type: agentic

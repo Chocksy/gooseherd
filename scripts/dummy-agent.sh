@@ -5,6 +5,9 @@ REPO_DIR="${1:?repo dir is required}"
 PROMPT_FILE="${2:?prompt file is required}"
 RUN_ID="${3:?run id is required}"
 
+# Accept and ignore extra args (MCP extensions, etc.)
+shift 3 || true
+
 mkdir -p "$REPO_DIR"
 
 cp "$PROMPT_FILE" "$REPO_DIR/.gooseherd-task-${RUN_ID}.md"
@@ -19,3 +22,49 @@ cat <<MSG >> "$REPO_DIR/README.md"
 ## Gooseherd Run ${RUN_ID}
 This repository was updated by Gooseherd dummy agent during testing.
 MSG
+
+# Generate a screenshot PNG in the run directory (parent of repo_dir)
+RUN_DIR="$(dirname "$REPO_DIR")"
+python3 -c "
+import struct, zlib, sys
+
+w, h = 800, 400
+
+rows = []
+for y in range(h):
+    row = bytearray([0])
+    for x in range(w):
+        if y < 60:
+            row.extend([99, 102, 241])
+        elif 80 <= y <= 120 and 40 <= x <= 500:
+            row.extend([205, 214, 244])
+        elif 140 <= y <= 160 and 40 <= x <= 350:
+            row.extend([166, 173, 200])
+        elif 200 <= y <= 280 and 40 <= x <= 760:
+            if (y - 200) % 30 < 20:
+                row.extend([49, 50, 68])
+            else:
+                row.extend([30, 30, 46])
+        elif 310 <= y <= 340 and 40 <= x <= 200:
+            row.extend([137, 220, 137])
+        else:
+            row.extend([30, 30, 46])
+    rows.append(bytes(row))
+
+raw_data = b''.join(rows)
+
+def make_chunk(ctype, data):
+    c = ctype + data
+    crc = struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+    return struct.pack('>I', len(data)) + c + crc
+
+sig = b'\x89PNG\r\n\x1a\n'
+ihdr = make_chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+idat = make_chunk(b'IDAT', zlib.compress(raw_data, 9))
+iend = make_chunk(b'IEND', b'')
+
+with open(sys.argv[1], 'wb') as f:
+    f.write(sig + ihdr + idat + iend)
+" "$RUN_DIR/screenshot.png"
+
+echo "[dummy-agent] Screenshot saved to $RUN_DIR/screenshot.png"

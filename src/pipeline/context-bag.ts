@@ -37,6 +37,11 @@ export class ContextBag {
     return this.data.has(key);
   }
 
+  /** Return all keys in the context bag */
+  keys(): IterableIterator<string> {
+    return this.data.keys();
+  }
+
   /** Merge multiple outputs into the context bag */
   mergeOutputs(outputs: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(outputs)) {

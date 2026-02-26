@@ -7,6 +7,8 @@ import { PipelineEngine } from "./pipeline/index.js";
 import { logError, logInfo } from "./logger.js";
 import { CemsProvider } from "./memory/cems-provider.js";
 import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
+import { ContainerManager } from "./sandbox/container-manager.js";
+import { setSandboxManager } from "./pipeline/shell.js";
 
 function parseArgs(args: string[]): { repoSlug: string; baseBranch?: string; task: string } {
   if (args.length < 2) {
@@ -52,12 +54,31 @@ async function main(): Promise<void> {
     config.branchPrefix
   );
 
-  const githubService = config.githubToken ? new GitHubService(config.githubToken) : undefined;
+  const githubService = GitHubService.create(config);
   const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
     ? new CemsProvider({ apiUrl: config.cemsApiUrl, apiKey: config.cemsApiKey })
     : undefined;
   const hooks = new RunLifecycleHooks(memoryProvider);
-  const pipelineEngine = new PipelineEngine(config, githubService, hooks);
+
+  // Sandbox container manager (Docker-out-of-Docker)
+  let containerManager: ContainerManager | undefined;
+  if (config.sandboxEnabled) {
+    if (!config.sandboxHostWorkPath) {
+      logError("SANDBOX_HOST_WORK_PATH is required when SANDBOX_ENABLED=true");
+      process.exit(1);
+    }
+    containerManager = new ContainerManager();
+    const dockerOk = await containerManager.ping();
+    if (!dockerOk) {
+      logError("Docker daemon not reachable. SANDBOX_ENABLED=true requires Docker.");
+      process.exit(1);
+    }
+    await containerManager.cleanupOrphans();
+    setSandboxManager(containerManager, config.workRoot);
+    logInfo("Sandbox mode enabled", { image: config.sandboxImage });
+  }
+
+  const pipelineEngine = new PipelineEngine(config, githubService, hooks, containerManager);
 
   await store.updateRun(run.id, {
     status: "running",

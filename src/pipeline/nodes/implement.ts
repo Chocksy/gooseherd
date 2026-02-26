@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShellCapture, shellEscape, renderTemplate, buildMcpFlags } from "../shell.js";
+import { runShellCapture, shellEscape, renderTemplate, buildMcpFlags, mapToContainerPath } from "../shell.js";
 
 export interface AgentAnalysis {
   verdict: "clean" | "suspect" | "empty";
@@ -33,9 +33,9 @@ export async function implementNode(
     : config.agentCommandTemplate;
 
   const agentCommand = renderTemplate(template, {
-    repo_dir: repoDir,
-    prompt_file: promptFile,
-    task_file: promptFile,
+    repo_dir: mapToContainerPath(repoDir),
+    prompt_file: mapToContainerPath(promptFile),
+    task_file: mapToContainerPath(promptFile),
     run_id: run.id,
     repo_slug: run.repoSlug,
     parent_run_id: run.parentRunId ?? ""

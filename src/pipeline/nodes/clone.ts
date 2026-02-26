@@ -1,8 +1,8 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShell, runShellCapture, shellEscape, appendLog } from "../shell.js";
+import { runShell, runShellCapture, runShellWithProgress, shellEscape, appendLog, mapToContainerPath } from "../shell.js";
 import { buildAuthenticatedGitUrl } from "../../github.js";
 import { loadRepoConfig, applyRepoConfig } from "../repo-config.js";
 
@@ -22,8 +22,12 @@ export async function cloneNode(
   const repoDir = path.join(runDir, "repo");
   const promptFile = path.join(runDir, "task.md");
 
-  // Reset run workspace
-  await rm(runDir, { recursive: true, force: true });
+  // Reset run workspace contents (clean contents, not the directory itself,
+  // to preserve Docker bind mounts in sandbox mode)
+  const entries = await readdir(runDir).catch(() => [] as string[]);
+  for (const entry of entries) {
+    await rm(path.join(runDir, entry), { recursive: true, force: true });
+  }
   await mkdir(runDir, { recursive: true });
   const followUpNote = run.parentRunId ? ` (follow-up from ${run.parentRunId})` : "";
   await writeFile(logFile, `${config.appName} run ${run.id}${followUpNote}\n`, "utf8");
@@ -33,8 +37,9 @@ export async function cloneNode(
   ctx.set("repoDir", repoDir);
   ctx.set("promptFile", promptFile);
 
-  const repoUrl = config.githubToken
-    ? buildAuthenticatedGitUrl(run.repoSlug, config.githubToken)
+  const token = await deps.githubService?.getToken();
+  const repoUrl = token
+    ? buildAuthenticatedGitUrl(run.repoSlug, token)
     : `https://github.com/${run.repoSlug}.git`;
 
   await deps.onPhase("cloning");
@@ -42,7 +47,23 @@ export async function cloneNode(
   // Shallow clone option from node config
   const depth = (_nodeConfig.config?.["depth"] as number) ?? 0;
   const depthFlag = depth > 0 ? ` --depth ${String(depth)}` : "";
-  await runShell(`git clone${depthFlag} ${shellEscape(repoUrl)} ${shellEscape(repoDir)}`, { logFile });
+  const progressFlag = deps.onDetail ? " --progress" : "";
+
+  // Map repoDir for command string (no-op outside sandbox, maps to /work/repo in sandbox)
+  const cloneTarget = mapToContainerPath(repoDir);
+  const cloneProgressRe = /(Receiving|Resolving|Counting) objects:\s+(\d+)%/;
+  await runShellWithProgress(
+    `git clone${depthFlag}${progressFlag} ${shellEscape(repoUrl)} ${shellEscape(cloneTarget)}`,
+    {
+      logFile,
+      onStderr: deps.onDetail ? (chunk) => {
+        const match = cloneProgressRe.exec(chunk);
+        if (match) {
+          deps.onDetail?.(`Cloning repo... ${match[1]} objects: ${match[2]}%`);
+        }
+      } : undefined
+    }
+  );
 
   const isFollowUp = !!run.parentRunId && !!run.parentBranchName;
   ctx.set("isFollowUp", isFollowUp);

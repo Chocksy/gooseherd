@@ -1,11 +1,11 @@
 /**
  * Plan Task Node — LLM planning step before agent implementation.
  *
- * Calls a fast model (Haiku) to break the task into implementation steps.
+ * Calls a fast model via OpenRouter to break the task into implementation steps.
  * Writes the structured plan to context bag for hydrate-context to inject
  * into the agent prompt.
  *
- * Skips gracefully if no ANTHROPIC_API_KEY is configured.
+ * Skips gracefully if no OPENROUTER_API_KEY is configured.
  */
 
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
@@ -38,8 +38,8 @@ export async function planTaskNode(
   const config = deps.config;
 
   // Skip if no API key
-  if (!config.anthropicApiKey) {
-    logInfo("plan_task: skipped (no ANTHROPIC_API_KEY)");
+  if (!config.openrouterApiKey) {
+    logInfo("plan_task: skipped (no OPENROUTER_API_KEY)");
     return { outcome: "skipped" };
   }
 
@@ -56,8 +56,8 @@ export async function planTaskNode(
   ].filter(Boolean).join("\n");
 
   const llmConfig: LLMCallerConfig = {
-    apiKey: config.anthropicApiKey,
-    defaultModel: "claude-haiku-4-5-20251001",
+    apiKey: config.openrouterApiKey,
+    defaultModel: config.planTaskModel,
     defaultTimeoutMs: 15_000
   };
 
@@ -79,6 +79,11 @@ export async function planTaskNode(
       runId: run.id,
       tokens: response.inputTokens + response.outputTokens,
       planLines: plan.split("\n").length
+    });
+
+    ctx.set("_tokenUsage_plan_task", {
+      input: response.inputTokens,
+      output: response.outputTokens
     });
 
     return {

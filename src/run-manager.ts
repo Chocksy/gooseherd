@@ -21,7 +21,7 @@ interface ClassifiedError {
 const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
   {
     test: /failed to clone|clone.*failed|fatal:.*repository|failed to (fetch|checkout).*branch/i,
-    result: { category: "clone", friendly: "Failed to clone repository", suggestion: "Check that the repo exists and GITHUB_TOKEN has access." }
+    result: { category: "clone", friendly: "Failed to clone repository", suggestion: "Check that the repo exists and your GitHub credentials (GITHUB_TOKEN or GitHub App) have access." }
   },
   {
     test: /exceeded \d+s.*terminating|\[timeout\]/i,
@@ -45,7 +45,7 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
   },
   {
     test: /pr.*failed|pull request.*failed|create_pr.*failed/i,
-    result: { category: "pr", friendly: "Failed to create pull request", suggestion: "Check that GITHUB_TOKEN has permission to create PRs on this repo." }
+    result: { category: "pr", friendly: "Failed to create pull request", suggestion: "Check that your GitHub credentials (GITHUB_TOKEN or GitHub App) have permission to create PRs on this repo." }
   },
 ];
 
@@ -95,6 +95,10 @@ function statusEmoji(status: RunRecord["status"]): string {
   return "🤖";
 }
 
+function isSlackChannelId(channelId: string): boolean {
+  return /^[CGD][A-Z0-9]+$/.test(channelId);
+}
+
 function formatElapsed(startedAt?: string): string | undefined {
   if (!startedAt) {
     return undefined;
@@ -132,8 +136,11 @@ function isRetryableStatus(status: RunRecord["status"]): boolean {
   return status === "failed" || status === "completed";
 }
 
+export type RunTerminalCallback = (runId: string, status: string) => void;
+
 export class RunManager {
   private readonly queue: PQueue;
+  private readonly terminalCallbacks: RunTerminalCallback[] = [];
 
   constructor(
     private readonly config: AppConfig,
@@ -143,6 +150,21 @@ export class RunManager {
     private readonly hooks?: RunLifecycleHooks
   ) {
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
+  }
+
+  /** Register a callback that fires when any run reaches terminal status. */
+  onRunTerminal(cb: RunTerminalCallback): void {
+    this.terminalCallbacks.push(cb);
+  }
+
+  private fireTerminalCallbacks(runId: string, status: string): void {
+    for (const cb of this.terminalCallbacks) {
+      try {
+        cb(runId, status);
+      } catch {
+        // Swallow errors from callbacks to avoid disrupting the run manager
+      }
+    }
   }
 
   async enqueueRun(input: NewRunInput): Promise<RunRecord> {
@@ -341,15 +363,20 @@ export class RunManager {
     };
 
     const upsertRunCard = async (detail?: string): Promise<void> => {
-      const nextTs = await this.postOrUpdateRunCard(run, {
-        phase: currentPhase,
-        detail,
-        heartbeatTick,
-        statusMessageTs
-      });
-      if (nextTs && nextTs !== statusMessageTs) {
-        statusMessageTs = nextTs;
-        run = await this.store.updateRun(stableRunId, { statusMessageTs: nextTs });
+      try {
+        const nextTs = await this.postOrUpdateRunCard(run, {
+          phase: currentPhase,
+          detail,
+          heartbeatTick,
+          statusMessageTs
+        });
+        if (nextTs && nextTs !== statusMessageTs) {
+          statusMessageTs = nextTs;
+          run = await this.store.updateRun(stableRunId, { statusMessageTs: nextTs });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        logError("Failed to post/update run card", { runId: stableRunId, channelId: run.channelId, error: message });
       }
     };
 
@@ -361,6 +388,15 @@ export class RunManager {
         logsPath: path.resolve(this.config.workRoot, stableRunId, "run.log"),
         error: undefined
       });
+
+      // Throttled detail callback for progress updates (max once per 5s)
+      let lastDetailTime = 0;
+      const onDetail = async (detail: string) => {
+        const now = Date.now();
+        if (now - lastDetailTime < 5000) return;
+        lastDetailTime = now;
+        await upsertRunCard(detail);
+      };
 
       await upsertRunCard("Run accepted by worker.");
       heartbeat = setInterval(() => {
@@ -384,7 +420,7 @@ export class RunManager {
       const pipelineFile = run.pipelineHint && /^[a-zA-Z0-9_-]+$/.test(run.pipelineHint)
         ? `pipelines/${run.pipelineHint}.yml`
         : this.config.pipelineFile;
-      const result = await this.pipelineEngine.execute(run, phaseCallback, pipelineFile);
+      const result = await this.pipelineEngine.execute(run, phaseCallback, pipelineFile, onDetail);
       stopHeartbeat();
 
       run = await this.store.updateRun(stableRunId, {
@@ -395,6 +431,7 @@ export class RunManager {
         commitSha: result.commitSha,
         changedFiles: result.changedFiles,
         prUrl: result.prUrl,
+        tokenUsage: result.tokenUsage,
         error: undefined
       });
       currentPhase = "completed";
@@ -414,6 +451,9 @@ export class RunManager {
 
       // Store run completion via lifecycle hooks (fire-and-forget, errors swallowed internally)
       this.hooks?.onRunComplete(run, result);
+
+      // Notify terminal listeners (observer learning loop)
+      this.fireTerminalCallbacks(run.id, "completed");
     } catch (error) {
       stopHeartbeat();
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -434,10 +474,16 @@ export class RunManager {
       await this.postRunSummary(failed);
 
       logError("Run failed", { runId: failed.id, error: message });
+
+      // Notify terminal listeners (observer learning loop)
+      this.fireTerminalCallbacks(failed.id, "failed");
     }
   }
 
   private async postRunSummary(run: RunRecord, result?: ExecutionResult): Promise<void> {
+    if (!this.shouldPostToSlack(run)) {
+      return;
+    }
     try {
       const lines: string[] = [];
 
@@ -527,6 +573,10 @@ export class RunManager {
       statusMessageTs?: string;
     }
   ): Promise<string | undefined> {
+    if (!this.shouldPostToSlack(run)) {
+      return args.statusMessageTs;
+    }
+
     const text = this.formatRunCardText(run, args);
     const blocks = this.formatRunCardBlocks(run, args);
     if (args.statusMessageTs) {
@@ -694,5 +744,9 @@ export class RunManager {
 
   private botCommand(command: string): string {
     return `@${this.config.slackCommandName} ${command}`.trim();
+  }
+
+  private shouldPostToSlack(run: RunRecord): boolean {
+    return isSlackChannelId(run.channelId);
   }
 }

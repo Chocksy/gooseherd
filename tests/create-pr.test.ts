@@ -49,7 +49,7 @@ test("buildPrBody: follow-up without feedback defaults to retry", () => {
 
 // ── Agent analysis section ──
 
-test("buildPrBody: includes Changes section with agent analysis", () => {
+test("buildPrBody: includes What changed section with agent analysis", () => {
   const analysis: AgentAnalysis = {
     verdict: "clean",
     filesChanged: ["src/settings.ts", "src/theme.css", "tests/settings.test.ts"],
@@ -58,26 +58,28 @@ test("buildPrBody: includes Changes section with agent analysis", () => {
     signals: []
   };
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, analysis);
-  assert.ok(body.includes("## Changes"));
-  assert.ok(body.includes("**Files changed:** 3"));
-  assert.ok(body.includes("+50 / -20"));
+  assert.ok(body.includes("## What changed"));
+  assert.ok(body.includes("**3** files changed"));
+  assert.ok(body.includes("+50"));
+  assert.ok(body.includes("-20"));
   assert.ok(body.includes("`src/settings.ts`"));
   assert.ok(body.includes("`src/theme.css`"));
   assert.ok(body.includes("`tests/settings.test.ts`"));
 });
 
-test("buildPrBody: hides individual files when more than 20", () => {
-  const files = Array.from({ length: 25 }, (_, i) => `src/file${String(i)}.ts`);
+test("buildPrBody: collapses individual files when more than 30", () => {
+  const files = Array.from({ length: 35 }, (_, i) => `src/file${String(i)}.ts`);
   const analysis: AgentAnalysis = {
     verdict: "clean",
     filesChanged: files,
     diffSummary: "big diff",
-    diffStats: { added: 100, removed: 50, filesCount: 25 },
+    diffStats: { added: 100, removed: 50, filesCount: 35 },
     signals: []
   };
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, analysis);
-  assert.ok(body.includes("**Files changed:** 25"));
-  assert.ok(!body.includes("`src/file0.ts`"), "Should NOT list individual files when > 20");
+  assert.ok(body.includes("**35** files changed"));
+  assert.ok(body.includes("<details>"), "Should collapse files into details tag");
+  assert.ok(body.includes("`src/file0.ts`"), "Files should still be listed inside collapse");
 });
 
 test("buildPrBody: includes signals when present", () => {
@@ -89,7 +91,7 @@ test("buildPrBody: includes signals when present", () => {
     signals: ['warning signal: "deprecated"']
   };
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, analysis);
-  assert.ok(body.includes("**Signals:**"));
+  assert.ok(body.includes("**Signals detected:**"));
   assert.ok(body.includes("deprecated"));
 });
 
@@ -102,34 +104,59 @@ test("buildPrBody: no Signals section when signals array is empty", () => {
     signals: []
   };
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, analysis);
-  assert.ok(!body.includes("**Signals:**"), "Should not have Signals section when empty");
+  assert.ok(!body.includes("**Signals detected:**"), "Should not have Signals section when empty");
 });
 
-test("buildPrBody: no Changes section when agentAnalysis is undefined", () => {
+test("buildPrBody: no What changed section when agentAnalysis is undefined", () => {
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false);
-  assert.ok(!body.includes("## Changes"), "Should not have Changes section without analysis");
+  assert.ok(!body.includes("files changed"), "Should not have file stats without analysis");
 });
 
 // ── Quality gate report ──
 
-test("buildPrBody: includes quality gate warnings", () => {
+test("buildPrBody: includes verification section with gate warnings", () => {
   const gateReport = [
     { gate: "diff_gate", verdict: "pass", reasons: [] },
     { gate: "forbidden_files", verdict: "soft_fail", reasons: [".env file detected"] }
   ];
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, gateReport);
-  assert.ok(body.includes("## Quality Gates"));
-  assert.ok(body.includes("forbidden_files"));
+  assert.ok(body.includes("## Verification"));
+  assert.ok(body.includes("Forbidden Files"));
   assert.ok(body.includes(".env file detected"));
 });
 
-test("buildPrBody: no Quality Gates section when all gates pass with empty reasons", () => {
+test("buildPrBody: shows all gates including passes for a convincing report", () => {
   const gateReport = [
     { gate: "diff_gate", verdict: "pass", reasons: [] },
     { gate: "security_scan", verdict: "pass", reasons: [] }
   ];
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, gateReport);
-  assert.ok(!body.includes("## Quality Gates"), "All pass + empty reasons → no section");
+  assert.ok(body.includes("## Verification"), "Shows all gates even when all pass");
+  assert.ok(body.includes("Diff Gate"));
+  assert.ok(body.includes("Security Scan"));
+});
+
+// ── Screenshot ──
+
+test("buildPrBody: includes screenshot when URL provided", () => {
+  const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, undefined, undefined, undefined,
+    "https://dashboard.example.com/api/runs/run-abc12345/artifacts/screenshot.png");
+  assert.ok(body.includes("## Screenshot"));
+  assert.ok(body.includes("![Screenshot]"));
+  assert.ok(body.includes("dashboard.example.com"));
+});
+
+test("buildPrBody: no screenshot section without URL", () => {
+  const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false);
+  assert.ok(!body.includes("## Screenshot"));
+});
+
+// ── Commit and changed files from context ──
+
+test("buildPrBody: includes commit SHA in details table", () => {
+  const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, undefined, "abc123def456");
+  assert.ok(body.includes("`abc123def456`"));
+  assert.ok(body.includes("**Commit**"));
 });
 
 // ── Combined: analysis + gates + follow-up ──
@@ -155,17 +182,19 @@ test("buildPrBody: all sections combined in correct order", () => {
   // Verify all sections exist
   assert.ok(body.includes("## Task"));
   assert.ok(body.includes("## Follow-up"));
-  assert.ok(body.includes("## Changes"));
-  assert.ok(body.includes("## Quality Gates"));
+  assert.ok(body.includes("## What changed"));
+  assert.ok(body.includes("## Verification"));
 
-  // Verify order: Task → Details → Follow-up → Changes → Quality Gates → Footer
+  // Verify order: Task → Follow-up → What changed → Verification → Details → Footer
   const taskIdx = body.indexOf("## Task");
   const followUpIdx = body.indexOf("## Follow-up");
-  const changesIdx = body.indexOf("## Changes");
-  const gatesIdx = body.indexOf("## Quality Gates");
+  const changesIdx = body.indexOf("## What changed");
+  const gatesIdx = body.indexOf("## Verification");
+  const detailsIdx = body.indexOf("## Details");
   const footerIdx = body.indexOf("Automated by");
   assert.ok(taskIdx < followUpIdx);
   assert.ok(followUpIdx < changesIdx);
   assert.ok(changesIdx < gatesIdx);
-  assert.ok(gatesIdx < footerIdx);
+  assert.ok(gatesIdx < detailsIdx);
+  assert.ok(detailsIdx < footerIdx);
 });

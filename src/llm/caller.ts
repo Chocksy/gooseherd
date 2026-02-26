@@ -1,5 +1,5 @@
 /**
- * Thin LLM caller — raw HTTP to Anthropic Messages API.
+ * Thin LLM caller — raw HTTP to OpenRouter (OpenAI-compatible Chat Completions API).
  * No SDK dependency. Supports model selection, timeout, JSON mode.
  */
 
@@ -26,8 +26,8 @@ export interface LLMResponse {
 }
 
 /**
- * Call the Anthropic Messages API with timeout support.
- * Returns the text content from the first content block.
+ * Call the OpenRouter Chat Completions API with timeout support.
+ * Returns the text content from the first choice.
  * Throws on timeout, network errors, or API errors.
  */
 export async function callLLM(
@@ -42,18 +42,17 @@ export async function callLLM(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": config.apiKey,
-        "anthropic-version": "2023-06-01"
+        "Authorization": `Bearer ${config.apiKey}`
       },
       body: JSON.stringify({
         model,
         max_tokens: maxTokens,
-        system: request.system,
         messages: [
+          { role: "system", content: request.system },
           { role: "user", content: request.userMessage }
         ]
       }),
@@ -62,25 +61,25 @@ export async function callLLM(
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Anthropic API ${String(response.status)}: ${body.slice(0, 200)}`);
+      throw new Error(`OpenRouter API ${String(response.status)}: ${body.slice(0, 200)}`);
     }
 
     const data = await response.json() as {
-      content: Array<{ type: string; text?: string }>;
+      choices: Array<{ message: { content: string } }>;
       model: string;
-      usage: { input_tokens: number; output_tokens: number };
+      usage: { prompt_tokens: number; completion_tokens: number };
     };
 
-    const textBlock = data.content.find(b => b.type === "text");
-    if (!textBlock?.text) {
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
       throw new Error("No text content in API response");
     }
 
     return {
-      content: textBlock.text,
+      content,
       model: data.model,
-      inputTokens: data.usage.input_tokens,
-      outputTokens: data.usage.output_tokens
+      inputTokens: data.usage.prompt_tokens,
+      outputTokens: data.usage.completion_tokens
     };
   } finally {
     clearTimeout(timer);

@@ -56,21 +56,24 @@ async function main(): Promise<void> {
   let containerManager: ContainerManager | undefined;
   if (config.sandboxEnabled) {
     if (!config.sandboxHostWorkPath) {
-      logError("SANDBOX_HOST_WORK_PATH is required when SANDBOX_ENABLED=true");
-      process.exit(1);
+      logWarn("SANDBOX_HOST_WORK_PATH is required when SANDBOX_ENABLED=true — sandbox disabled");
+      config.sandboxEnabled = false;
+    } else {
+      containerManager = new ContainerManager();
+      const dockerOk = await containerManager.ping();
+      if (!dockerOk) {
+        logWarn("Docker daemon not reachable — sandbox disabled. Mount the Docker socket or set SANDBOX_ENABLED=false");
+        containerManager = undefined;
+        config.sandboxEnabled = false;
+      } else {
+        const orphans = await containerManager.cleanupOrphans();
+        if (orphans > 0) {
+          logInfo("Cleaned up orphaned sandbox containers", { count: orphans });
+        }
+        setSandboxManager(containerManager, config.workRoot);
+        logInfo("Sandbox mode enabled", { image: config.sandboxImage, hostWorkPath: config.sandboxHostWorkPath });
+      }
     }
-    containerManager = new ContainerManager();
-    const dockerOk = await containerManager.ping();
-    if (!dockerOk) {
-      logError("Docker daemon not reachable. SANDBOX_ENABLED=true requires Docker socket at /var/run/docker.sock");
-      process.exit(1);
-    }
-    const orphans = await containerManager.cleanupOrphans();
-    if (orphans > 0) {
-      logInfo("Cleaned up orphaned sandbox containers", { count: orphans });
-    }
-    setSandboxManager(containerManager, config.workRoot);
-    logInfo("Sandbox mode enabled", { image: config.sandboxImage, hostWorkPath: config.sandboxHostWorkPath });
   }
 
   const pipelineEngine = new PipelineEngine(config, githubService, hooks, containerManager);

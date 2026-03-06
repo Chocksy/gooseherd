@@ -103,6 +103,10 @@ Built-in run inspector at `http://localhost:8787`:
 npm run local:trigger -- yourorg/yourrepo@main "make footer full width"
 ```
 
+## Deployment
+
+See **[docs/deployment.md](docs/deployment.md)** for the full deployment guide — all environment variables, feature toggles, production tips, and docker-compose configuration.
+
 ## Architecture
 
 See **[docs/architecture.md](docs/architecture.md)** for the full system diagram — pipeline engine, 19 node handlers, YAML pipeline composition, and the observer auto-trigger system.

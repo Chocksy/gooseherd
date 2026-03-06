@@ -1,0 +1,243 @@
+# Deployment Guide
+
+## Minimum Requirements
+
+- Docker (or Node.js 22+)
+- A GitHub PAT or GitHub App credentials
+- An LLM API key (OpenRouter, Anthropic, or OpenAI)
+
+## 1. Quick Deploy (Docker)
+
+```bash
+docker pull ghcr.io/chocksy/gooseherd:latest
+cp .env.example .env
+# Edit .env with your tokens (see below)
+docker compose up -d
+open http://localhost:8787
+```
+
+## 2. Environment Variables Reference
+
+All configuration is done through environment variables in your `.env` file. Copy `.env.example` as a starting point — it has sensible defaults for everything.
+
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_TOKEN` | GitHub PAT with repo access (or use GitHub App below) |
+| `OPENROUTER_API_KEY` | OpenRouter API key for LLM calls |
+
+### GitHub App (alternative to PAT)
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_APP_ID` | GitHub App ID |
+| `GITHUB_APP_PRIVATE_KEY` | Private key (PEM format) |
+| `GITHUB_APP_INSTALLATION_ID` | Installation ID |
+
+### Slack (optional — omit for dashboard-only mode)
+
+| Variable | Description |
+|----------|-------------|
+| `SLACK_BOT_TOKEN` | `xoxb-...` Bot token |
+| `SLACK_APP_TOKEN` | `xapp-...` App-level token (Socket Mode) |
+| `SLACK_SIGNING_SECRET` | Signing secret from Slack app settings |
+| `SLACK_COMMAND_NAME` | Slash command name (default: `gooseherd`) |
+| `SLACK_ALLOWED_CHANNELS` | Comma-separated channel IDs to restrict the bot to |
+
+### Agent
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_COMMAND_TEMPLATE` | `bash scripts/dummy-agent.sh ...` | Command to run the AI agent. Supports `{{repo_dir}}`, `{{prompt_file}}`, `{{run_id}}` placeholders |
+| `AGENT_TIMEOUT_SECONDS` | `600` | Max time for agent execution |
+| `VALIDATION_COMMAND` | (empty) | Shell command to validate changes (e.g. `npm run lint`) |
+| `LINT_FIX_COMMAND` | (empty) | Auto-fix linting issues before commit |
+
+**pi-agent example:**
+```
+AGENT_COMMAND_TEMPLATE=cd {{repo_dir}} && pi -p @{{prompt_file}} --model openrouter/openai/gpt-4.1-mini --no-session --mode json --tools read,write,edit,bash,grep,find,ls {{pi_extensions}} {{mcp_flags}}
+```
+
+### Runtime
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DRY_RUN` | `true` | When true, skips git push and PR creation |
+| `RUNNER_CONCURRENCY` | `1` | Max concurrent runs |
+| `WORK_ROOT` | `.work` | Directory for cloned repos and run artifacts |
+| `DATA_DIR` | `data` | Directory for run data (JSON store) |
+| `GITHUB_DEFAULT_OWNER` | (empty) | Default org/user when repo slug omits the owner |
+| `REPO_ALLOWLIST` | (empty) | Comma-separated list of allowed repos |
+
+### Dashboard
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DASHBOARD_ENABLED` | `true` | Enable the web dashboard |
+| `DASHBOARD_PORT` | `8787` | Port for the dashboard |
+| `DASHBOARD_PUBLIC_URL` | (empty) | Public URL if behind a reverse proxy (e.g. `https://gooseherd.example.com`) |
+| `DASHBOARD_TOKEN` | (empty) | Set to require authentication. Users must enter this token to access the dashboard |
+
+### LLM Models
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_LLM_MODEL` | `anthropic/claude-haiku-4-5` | Shared default for all LLM features |
+| `PLAN_TASK_MODEL` | (uses default) | Override for task planning |
+| `ORCHESTRATOR_MODEL` | (uses default) | Override for the orchestrator |
+| `SCOPE_JUDGE_MODEL` | (uses default) | Override for scope judging |
+| `BROWSER_VERIFY_MODEL` | `openai/gpt-4.1-mini` | Override for browser verification |
+| `BROWSER_VERIFY_EXECUTION_MODEL` | (uses browser verify model) | Stagehand execution model |
+
+### Pipeline
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PIPELINE_FILE` | `pipelines/pipeline.yml` | Path to the pipeline definition |
+
+Built-in pipeline presets: `pipeline.yml` (default), `complex.yml`, `hotfix.yml`, `docs-only.yml`, `ui-change.yml`.
+
+## 3. Features (toggle via env vars)
+
+Each feature defaults to **off** and can be enabled by setting the corresponding env var. The Settings panel in the dashboard shows which features are currently active.
+
+### Browser Verify
+
+Automatically verifies changes on a preview deployment using a headless browser + LLM vision.
+
+```env
+BROWSER_VERIFY_ENABLED=true
+REVIEW_APP_URL_PATTERN=https://{{prNumber}}.preview.example.com
+BROWSER_VERIFY_MODEL=openai/gpt-4.1-mini
+BROWSER_VERIFY_MAX_STEPS=15
+```
+
+Requires a preview/review app system (e.g. Coolify, Vercel, Netlify) that deploys PRs to a predictable URL.
+
+### CI Wait (CI Feedback Loop)
+
+Waits for CI to pass after pushing, and auto-fixes failures.
+
+```env
+CI_WAIT_ENABLED=true
+```
+
+### Observer (Auto-Triggers)
+
+Watches external sources (Sentry, GitHub, Slack) and automatically creates runs.
+
+```env
+OBSERVER_ENABLED=true
+OBSERVER_ALERT_CHANNEL_ID=C123456
+OBSERVER_RULES_FILE=observer-rules/default.yml
+SENTRY_AUTH_TOKEN=...
+SENTRY_ORG_SLUG=your-org
+```
+
+### Scope Judge
+
+LLM-powered check that rejects changes that go beyond the original task scope.
+
+```env
+SCOPE_JUDGE_ENABLED=true
+SCOPE_JUDGE_MIN_PASS_SCORE=60
+```
+
+### Sandbox (Docker-out-of-Docker)
+
+Runs each agent in an isolated Docker container.
+
+```env
+SANDBOX_ENABLED=true
+SANDBOX_HOST_WORK_PATH=/absolute/path/to/work/dir
+```
+
+Requires Docker socket access. The `SANDBOX_HOST_WORK_PATH` must be the **host-side** absolute path to your work directory (for bind mount resolution).
+
+### CEMS Memory
+
+Persistent memory across runs via [CEMS](https://getcems.com).
+
+```env
+CEMS_ENABLED=true
+CEMS_API_URL=http://localhost:8100
+CEMS_API_KEY=your-key
+```
+
+## 4. Dashboard Authentication
+
+By default, the dashboard has no auth (suitable for localhost). For production:
+
+```env
+DASHBOARD_TOKEN=your-secret-token
+```
+
+Users will see a login page and must enter the token. API calls require `Authorization: Bearer <token>` or a session cookie.
+
+## 5. Production Tips
+
+### Use a reverse proxy
+
+Put nginx, Caddy, or Cloudflare Tunnel in front of the dashboard for HTTPS:
+
+```env
+DASHBOARD_PUBLIC_URL=https://gooseherd.example.com
+```
+
+### Set DRY_RUN=false
+
+The default is `true` (no git push, no PR creation). For production:
+
+```env
+DRY_RUN=false
+```
+
+### Increase concurrency
+
+```env
+RUNNER_CONCURRENCY=3
+```
+
+### Restrict repos
+
+```env
+REPO_ALLOWLIST=myorg/frontend,myorg/backend
+```
+
+### Workspace cleanup
+
+Old workspaces are cleaned up automatically:
+
+```env
+WORKSPACE_CLEANUP_ENABLED=true
+WORKSPACE_MAX_AGE_HOURS=24
+```
+
+## 6. Updating
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The data directory (`data/`) persists between updates. Run data and configuration are not affected.
+
+## 7. docker-compose.yml
+
+The default `docker-compose.yml` pulls the published image:
+
+```yaml
+services:
+  gooseherd:
+    image: ghcr.io/chocksy/gooseherd:latest
+    build: .
+    env_file: .env
+    ports:
+      - "${DASHBOARD_PORT:-8787}:${DASHBOARD_PORT:-8787}"
+    volumes:
+      - ./data:/app/data
+      - ./.work:/app/.work
+```
+
+To build from source instead of pulling, run `docker compose build`.

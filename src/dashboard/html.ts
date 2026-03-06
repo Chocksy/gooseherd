@@ -1679,7 +1679,9 @@ export function dashboardHtml(config: AppConfig): string {
       const response = await fetch(url, options);
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || 'Request failed');
+        var msg = 'Request failed';
+        try { msg = JSON.parse(text).error || msg; } catch (_) { msg = text || msg; }
+        throw new Error(msg);
       }
       return response.json();
     }

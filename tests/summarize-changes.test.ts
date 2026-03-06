@@ -38,10 +38,10 @@ describe("buildInstruction with changeSummary", () => {
     );
     assert.ok(msg.includes("Change summary"));
     assert.ok(msg.includes("Changed the user profile page heading"));
-    assert.ok(msg.includes("test@test.com"));
+    assert.ok(msg.includes("%email%"));
     // changeSummary should appear before credentials
     const summaryPos = msg.indexOf("Change summary");
-    const credPos = msg.indexOf("Test account credentials");
+    const credPos = msg.indexOf("Authentication credentials");
     assert.ok(summaryPos < credPos, "changeSummary should come before credentials");
   });
 });

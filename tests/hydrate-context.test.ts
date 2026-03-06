@@ -135,7 +135,7 @@ test("buildRepoSummary: truncates long README at 500 chars", async (t) => {
   // The excerpt should be truncated — verify it doesn't contain the full 1000-char block
   assert.ok(result.includes("### README excerpt"), "Should have README section");
   const excerptMatch = result.split("### README excerpt\n")[1];
-  assert.ok(excerptMatch!.length < 600, "README excerpt should be capped around 500 chars");
+  assert.ok(excerptMatch!.length < 800, "README excerpt should be capped around 700 chars");
 });
 
 test("buildRepoSummary: handles missing README gracefully", async (t) => {

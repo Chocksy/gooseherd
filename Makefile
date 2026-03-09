@@ -1,4 +1,4 @@
-.PHONY: setup dev build run stop test pull
+.PHONY: setup dev build run stop test pull docker docker-sandbox
 
 setup: ## Install dependencies and copy env file
 	npm install
@@ -10,8 +10,16 @@ dev: ## Start in development mode (hot reload)
 build: ## Compile TypeScript
 	npm run build
 
-run: ## Start with Docker Compose
+run: ## Start with Docker Compose (pulls pre-built image)
 	docker compose up -d
+
+docker: ## Build from source and start both gooseherd + sandbox
+	docker compose up -d --build
+	docker build -t gooseherd/sandbox:default sandbox/
+	@echo "Ready — gooseherd running, sandbox image built"
+
+docker-sandbox: ## Rebuild only the sandbox image
+	docker build -t gooseherd/sandbox:default sandbox/
 
 stop: ## Stop Docker Compose
 	docker compose down

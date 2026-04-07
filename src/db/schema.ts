@@ -264,3 +264,12 @@ export const setup = pgTable("setup", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const configSections = pgTable("config_sections", {
+  section: text("section").primaryKey(),
+  config: jsonb("config").notNull().$type<Record<string, unknown>>().default({}),
+  secretsEnc: bytea("secrets_enc"),
+  overrideFromEnv: boolean("override_from_env").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

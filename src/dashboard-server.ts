@@ -550,6 +550,11 @@ export function startDashboardServer(
             pipelineFile: config.pipelineFile,
             slackConnected: Boolean(config.slackBotToken),
             githubAuthMode,
+            configOverrides: {
+              githubFromEnv: parseOverrideFlag(process.env.GITHUB_CONFIG_OVERRIDE_FROM_ENV),
+              slackFromEnv: parseOverrideFlag(process.env.SLACK_CONFIG_OVERRIDE_FROM_ENV),
+              llmFromEnv: parseOverrideFlag(process.env.LLM_CONFIG_OVERRIDE_FROM_ENV),
+            },
             features: {
               observer: config.observerEnabled,
               sandbox: config.sandboxEnabled,
@@ -1194,4 +1199,10 @@ export function startDashboardServer(
       url: `http://${config.dashboardHost}:${String(config.dashboardPort)}`
     });
   });
+}
+
+function parseOverrideFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }

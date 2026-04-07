@@ -583,9 +583,7 @@ export function startDashboardServer(
               orchestrator: config.orchestratorModel,
               browserVerify: config.browserVerifyModel,
             },
-            agentCommandTemplate: config.agentCommandTemplate.length > 20
-              ? config.agentCommandTemplate.slice(0, 20) + "..."
-              : config.agentCommandTemplate,
+            agentCommandTemplate: config.agentCommandTemplate,
           },
           stats,
         });

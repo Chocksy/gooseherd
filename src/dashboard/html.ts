@@ -254,11 +254,33 @@ export function dashboardHtml(config: AppConfig): string {
       color: var(--muted); margin: 0 0 10px; font-weight: 700;
     }
     .settings-row {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 6px 0; font-size: 13px;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 12px; padding: 6px 0; font-size: 13px;
     }
-    .settings-row .label { color: var(--muted); }
-    .settings-row .value { font-weight: 600; text-align: right; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .settings-row .label { color: var(--muted); flex: 0 0 120px; }
+    .settings-row .value {
+      font-weight: 600; text-align: right; flex: 1 1 auto; min-width: 0;
+      overflow-wrap: anywhere; word-break: break-word;
+    }
+    .settings-row .value.compact {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .settings-row.stacked {
+      display: block;
+    }
+    .settings-row.stacked .label {
+      display: block; flex: none; margin-bottom: 6px;
+    }
+    .settings-row.stacked .value {
+      display: block; text-align: left;
+    }
+    .settings-row .value.settings-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .settings-badge {
       display: inline-block; padding: 2px 8px; border-radius: 999px;
       font-size: 11px; font-weight: 600;
@@ -3052,11 +3074,11 @@ export function dashboardHtml(config: AppConfig): string {
         var badge = (on) => '<span class="settings-badge ' + (on ? 'on' : 'off') + '">' + (on ? 'On' : 'Off') + '</span>';
         el.settingsBody.innerHTML =
           '<div class="settings-section"><h3>Configuration</h3>' +
-          '<div class="settings-row"><span class="label">App Name</span><span class="value">' + esc(c.appName || '') + '</span></div>' +
-          '<div class="settings-row"><span class="label">Pipeline</span><span class="value">' + esc(c.pipelineFile || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">App Name</span><span class="value compact">' + esc(c.appName || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Pipeline</span><span class="value compact">' + esc(c.pipelineFile || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Slack</span><span class="value">' + badge(c.slackConnected) + '</span></div>' +
-          '<div class="settings-row"><span class="label">GitHub Auth</span><span class="value">' + esc(c.githubAuthMode || 'none') + '</span></div>' +
-          '<div class="settings-row"><span class="label">Agent Command</span><span class="value" title="' + esc(c.agentCommandTemplate || '') + '">' + esc(c.agentCommandTemplate || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">GitHub Auth</span><span class="value compact">' + esc(c.githubAuthMode || 'none') + '</span></div>' +
+          '<div class="settings-row stacked"><span class="label">Agent Command</span><span class="value settings-code" title="' + esc(c.agentCommandTemplate || '') + '">' + esc(c.agentCommandTemplate || '') + '</span></div>' +
           '</div>' +
           '<div class="settings-section"><h3>Features</h3>' +
           '<div class="settings-row"><span class="label">Observer</span>' + badge(c.features?.observer) + '</div>' +
@@ -3067,10 +3089,10 @@ export function dashboardHtml(config: AppConfig): string {
           '<div class="settings-row"><span class="label">Dry Run</span>' + badge(c.features?.dryRun) + '</div>' +
           '</div>' +
           '<div class="settings-section"><h3>Models</h3>' +
-          '<div class="settings-row"><span class="label">Default</span><span class="value">' + esc(c.models?.default || '') + '</span></div>' +
-          '<div class="settings-row"><span class="label">Plan Task</span><span class="value">' + esc(c.models?.planTask || '') + '</span></div>' +
-          '<div class="settings-row"><span class="label">Orchestrator</span><span class="value">' + esc(c.models?.orchestrator || '') + '</span></div>' +
-          '<div class="settings-row"><span class="label">Browser Verify</span><span class="value">' + esc(c.models?.browserVerify || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Default</span><span class="value compact">' + esc(c.models?.default || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Plan Task</span><span class="value compact">' + esc(c.models?.planTask || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Orchestrator</span><span class="value compact">' + esc(c.models?.orchestrator || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Browser Verify</span><span class="value compact">' + esc(c.models?.browserVerify || '') + '</span></div>' +
           '</div>' +
           '<div class="settings-section"><h3>Aggregate Stats</h3>' +
           '<div class="stat-grid">' +

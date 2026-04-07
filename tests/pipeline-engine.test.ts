@@ -43,7 +43,6 @@ function makeConfig(overrides?: Partial<AppConfig>): AppConfig {
     workspaceMaxAgeHours: 24,
     workspaceCleanupIntervalMinutes: 60,
     cemsEnabled: false,
-    mcpExtensions: [],
     pipelineFile: "pipelines/pipeline.yml",
     observerEnabled: false,
     observerAlertChannelId: "",
@@ -134,7 +133,7 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
 
 // ── Pipeline override validation ──
 
-test("PipelineEngine: tryLoadPipelineOverride rejects invalid names", async (t) => {
+test("PipelineEngine: instantiates correctly", async (t) => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-test-"));
   const workDir = path.join(tmpDir, "work");
   await mkdir(path.join(workDir, "test-run-001"), { recursive: true });
@@ -143,13 +142,6 @@ test("PipelineEngine: tryLoadPipelineOverride rejects invalid names", async (t) 
 
   const config = makeConfig({ workRoot: workDir });
   const engine = new PipelineEngine(config);
-  const run = makeRun();
-
-  // The pipeline override with path traversal should be rejected by validation
-  // We test this indirectly: a pipeline with "../evil" name should not load
-  // Since we can't call private methods directly, we test through execute()
-  // by creating a pipeline that sets repoConfigPipeline to an invalid value.
-  // For now, just verify the engine instantiates correctly.
   assert.ok(engine instanceof PipelineEngine);
 });
 
@@ -211,7 +203,7 @@ test("PipelineEngine: bypasses browser_verify fix loop for non-code failure clas
   const engine = new PipelineEngine(config);
   const run = makeRun({ id: "test-run-loop-bypass" });
   const ctx = new ContextBag();
-  ctx.set("browserVerifyFailureCode", "auth_required");
+  ctx.set("browserVerifyFailureCode", "auth_exhausted");
 
   const failedNode: NodeConfig = {
     id: "browser_verify",
@@ -240,16 +232,15 @@ test("PipelineEngine: bypasses browser_verify fix loop for non-code failure clas
     failedNode,
     failedResult,
     ctx,
-    deps,
-    { version: 1, name: "test", nodes: [] }
+    deps
   );
 
   assert.equal(loopResult.outcome, "completed_with_warnings");
   assert.ok(
-    loopResult.warnings.some((w: string) => w.includes("loop bypassed") && w.includes("auth_required")),
+    loopResult.warnings.some((w: string) => w.includes("loop bypassed") && w.includes("auth_exhausted")),
     "Expected a warning that the browser_verify loop was bypassed"
   );
 
   const log = await readFile(logFile, "utf8");
-  assert.ok(log.includes("browser_verify loop bypassed for auth_required"));
+  assert.ok(log.includes("browser_verify loop bypassed for auth_exhausted"));
 });

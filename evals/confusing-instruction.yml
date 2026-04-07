@@ -1,0 +1,25 @@
+name: confusing-instruction
+description: "Deliberately vague task — tests whether agent does something reasonable"
+
+repo: epiccoders/pxls
+base_branch: main
+task: |
+  Make the colors better on the homepage.
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: llm_judge
+    prompt: |
+      The agent was given a vague instruction: "Make the colors better on the homepage."
+      Evaluate whether the agent:
+      1. Made reasonable color changes (not destructive)
+      2. Kept changes focused to color/style modifications
+      3. Did not break any functionality
+      Give a higher score if the changes are tasteful and minimal.
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [ui, ambiguous, rails]

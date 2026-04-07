@@ -87,3 +87,57 @@ export function classifyTask(taskText: string): TaskType {
   }
   return "feature";
 }
+
+// ── Execution mode classification ──
+
+/**
+ * Execution mode determines agent autonomy and depth:
+ * - simple: single-pass fix, minimal context (hotfix, typo, config change)
+ * - standard: normal pipeline with validation loops (default)
+ * - research: deep exploration with extended timeouts and richer context
+ */
+export type ExecutionMode = "simple" | "standard" | "research";
+
+const SIMPLE_PATTERNS = [
+  /\btypo\b/i, /\bwording\b/i, /\bcopy\s+change/i,
+  /\bbump\s+version/i, /\bupdate\s+dep/i, /\bupgrade\b/i,
+  /\bconfig\s+change/i, /\benv\s+var/i,
+  /\brename\b/i, /\bremove\s+unused/i,
+];
+
+const RESEARCH_PATTERNS = [
+  /\brefactor.*(?:system|architecture|module)/i,
+  /\bmigrat(?:e|ion)\b/i, /\brewrite\b/i,
+  /\binvestigat(?:e|ion)\b/i, /\banalyze?\b/i,
+  /\bresearch\b/i, /\bexplore\b/i,
+  /\bperformance\s+(?:issue|problem|bottleneck)/i,
+  /\bsecurity\s+(?:audit|review|vulnerability)/i,
+  /\bdesign\s+(?:system|pattern)/i,
+  /\bmulti(?:ple)?\s+(?:file|module|component)/i,
+];
+
+/**
+ * Classify execution mode from task text.
+ * Can be overridden by exhaustion detection (escalate on repeated failures).
+ */
+export function classifyExecutionMode(taskText: string): ExecutionMode {
+  // Check research first — research patterns are more specific (multi-word)
+  // and should win over broad simple patterns like "rename"
+  for (const pattern of RESEARCH_PATTERNS) {
+    if (pattern.test(taskText)) return "research";
+  }
+  for (const pattern of SIMPLE_PATTERNS) {
+    if (pattern.test(taskText)) return "simple";
+  }
+  return "standard";
+}
+
+/**
+ * Escalate execution mode after consecutive failures.
+ * simple→standard after 1 failure, standard→research after 2 failures.
+ */
+export function escalateMode(currentMode: ExecutionMode, consecutiveFailures: number): ExecutionMode {
+  if (currentMode === "simple" && consecutiveFailures >= 1) return "standard";
+  if (currentMode === "standard" && consecutiveFailures >= 2) return "research";
+  return currentMode;
+}

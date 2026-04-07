@@ -1,0 +1,35 @@
+name: homepage-title
+description: "Change the homepage title text — simple UI change with clear expected outcome"
+
+repo: epiccoders/pxls
+base_branch: main
+task: |
+  Change the homepage h1 title from "Epic Pixels" to "Welcome to Epic Pixels"
+
+pipeline: ui-change
+enable_nodes: [browser_verify, scope_judge]
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: files_changed
+    expect_any:
+      - "app/views/landing/index.html.erb"
+      - "app/views/pages/home.html.erb"
+
+  - type: diff_contains
+    patterns:
+      - "Welcome to Epic Pixels"
+
+  - type: gate_verdict
+    gate: scope_judge
+    expect: pass
+
+  - type: browser_verdict
+    expect: pass
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [ui, simple, rails]

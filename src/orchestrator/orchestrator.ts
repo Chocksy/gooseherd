@@ -42,7 +42,7 @@ function buildTools(deps: HandleMessageDeps): ToolDefinition[] {
             },
             pipeline: {
               type: "string",
-              description: "Pipeline preset to use. Options: 'pipeline' (default, full), 'docs-only' (lightweight, no validation), 'ui-change' (with deploy preview + browser verify), 'hotfix' (minimal, fast), 'complex' (with planning + scope judge + extra validation). Omit to use the default."
+              description: "Pipeline preset name. Use 'pipeline' (default). Use skipNodes/enableNodes to customize behavior instead of preset names. Omit to use the default."
             }
           },
           required: ["repo", "task"]

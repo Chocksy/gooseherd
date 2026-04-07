@@ -19,6 +19,8 @@ import type { LearningStore } from "./observer/learning-store.js";
 import { SetupStore } from "./db/setup-store.js";
 import { wizardHtml } from "./dashboard/wizard-html.js";
 import { GitHubService } from "./github.js";
+import type { EvalStore } from "./eval/eval-store.js";
+import { loadScenariosFromDir } from "./eval/scenario-loader.js";
 
 /** Lean interface — dashboard only reads observer state, never mutates it. */
 export interface DashboardObserver {
@@ -294,7 +296,8 @@ export function startDashboardServer(
   pipelineStore?: PipelineStore,
   learningStore?: LearningStore,
   setupStore?: SetupStore,
-  onSetupComplete?: () => Promise<void>
+  onSetupComplete?: () => Promise<void>,
+  evalStore?: EvalStore,
 ): void {
   const server = createServer(async (req, res) => {
     try {
@@ -1143,6 +1146,38 @@ export function startDashboardServer(
         const repoLearnings = await learningStore.getRepoLearnings(slug);
         if (!repoLearnings) { sendJson(res, 404, { error: `No learnings for repo: ${slug}` }); return; }
         sendJson(res, 200, { learnings: repoLearnings });
+        return;
+      }
+
+      // ── Eval routes ──
+
+      if (req.method === "GET" && pathname === "/api/eval/results") {
+        if (!evalStore) { sendJson(res, 501, { error: "Eval store not available" }); return; }
+        const scenario = requestUrl.searchParams.get("scenario");
+        const limit = parseLimit(requestUrl.searchParams.get("limit"));
+        const results = scenario
+          ? await evalStore.getScenarioHistory(scenario, limit)
+          : await evalStore.getRecentResults(limit);
+        sendJson(res, 200, { results });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/eval/scenarios") {
+        try {
+          const scenarios = await loadScenariosFromDir("evals");
+          sendJson(res, 200, { scenarios: scenarios.map((s) => ({ name: s.name, description: s.description, tags: s.tags })) });
+        } catch {
+          sendJson(res, 200, { scenarios: [] });
+        }
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/eval/comparison") {
+        if (!evalStore) { sendJson(res, 501, { error: "Eval store not available" }); return; }
+        const scenario = requestUrl.searchParams.get("scenario");
+        if (!scenario) { sendJson(res, 400, { error: "Missing 'scenario' query param" }); return; }
+        const comparison = await evalStore.getComparison(scenario);
+        sendJson(res, 200, { comparison });
         return;
       }
 

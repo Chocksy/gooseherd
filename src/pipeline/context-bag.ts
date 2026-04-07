@@ -1,30 +1,8 @@
-import { readFile, writeFile, rename, mkdir, chmod } from "node:fs/promises";
-import path from "node:path";
-
-/** Keys that should never be serialized to checkpoint files */
-const SENSITIVE_KEYS = new Set([
-  "browserVerifyProviderResolution",
-  "browserVerifyCredentials",
-  "apiKey",
-  "githubToken",
-  "openrouterApiKey",
-  "anthropicApiKey",
-  "openaiApiKey",
-  "slackBotToken",
-  "slackAppToken",
-  "slackSigningSecret",
-  "sentryWebhookSecret",
-  "githubWebhookSecret",
-  "dashboardToken",
-]);
-
 /**
  * Typed key-value store passed between pipeline nodes.
- * Checkpointed to disk after each step for crash recovery.
  */
 export class ContextBag {
   private data: Map<string, unknown> = new Map();
-  private checkpointDir?: string;
 
   constructor(initial?: Record<string, unknown>) {
     if (initial) {
@@ -113,60 +91,6 @@ export class ContextBag {
       obj[key] = value;
     }
     return obj;
-  }
-
-  /** Get data as a plain object with sensitive keys filtered out (for checkpoints/serialization) */
-  toSafeObject(): Record<string, unknown> {
-    const obj: Record<string, unknown> = {};
-    for (const [key, value] of this.data.entries()) {
-      if (SENSITIVE_KEYS.has(key)) continue;
-      obj[key] = value;
-    }
-    return obj;
-  }
-
-  /** Set the directory for checkpoint files */
-  setCheckpointDir(dir: string): void {
-    this.checkpointDir = dir;
-  }
-
-  /** Checkpoint current state to disk (called after each node) */
-  async checkpoint(completedNodeId: string): Promise<void> {
-    if (!this.checkpointDir) return;
-
-    await mkdir(this.checkpointDir, { recursive: true });
-
-    const checkpoint = {
-      completedNodeId,
-      timestamp: new Date().toISOString(),
-      data: this.toSafeObject()
-    };
-
-    // Atomic write: write to temp file then rename to prevent corruption on crash
-    const filePath = path.join(this.checkpointDir, "checkpoint.json");
-    const tmpPath = path.join(this.checkpointDir, "checkpoint.json.tmp");
-    await writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), "utf8");
-    await rename(tmpPath, filePath);
-    // Restrict checkpoint file permissions (contains run state)
-    await chmod(filePath, 0o600).catch(() => {});
-  }
-
-  /** Resume from a checkpoint file. Returns the last completed node ID. */
-  static async resume(checkpointDir: string): Promise<{ ctx: ContextBag; lastCompletedNodeId: string } | undefined> {
-    const filePath = path.join(checkpointDir, "checkpoint.json");
-    try {
-      const raw = await readFile(filePath, "utf8");
-      const checkpoint = JSON.parse(raw) as {
-        completedNodeId: string;
-        data: Record<string, unknown>;
-      };
-
-      const ctx = new ContextBag(checkpoint.data);
-      ctx.setCheckpointDir(checkpointDir);
-      return { ctx, lastCompletedNodeId: checkpoint.completedNodeId };
-    } catch {
-      return undefined;
-    }
   }
 
   /**

@@ -147,10 +147,6 @@ export function applyRepoConfig(
   repoConfig: RepoConfig,
   ctx: { set: (key: string, value: unknown) => void; get: <T>(key: string) => T | undefined }
 ): void {
-  if (repoConfig.pipeline) {
-    ctx.set("repoConfigPipeline", repoConfig.pipeline);
-  }
-
   if (repoConfig.qualityGates?.diff_size?.profile) {
     ctx.set("repoConfigDiffProfile", repoConfig.qualityGates.diff_size.profile);
   }

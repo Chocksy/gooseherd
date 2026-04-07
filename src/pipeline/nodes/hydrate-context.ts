@@ -70,6 +70,12 @@ export async function hydrateContextNode(
 
   const taskType = ctx.get<string>("taskType") ?? "chore";
 
+  // Project profile — institutional knowledge from .gooseherd-profile.md
+  const repoProfile = ctx.get<string>("repoProfile");
+  if (repoProfile) {
+    sections.push("## Project Profile", "", repoProfile, "");
+  }
+
   // Build repo summary for codebase awareness
   const repoSummary = await buildRepoSummary(repoDir, deps.logFile, run.task);
   if (repoSummary) {
@@ -78,11 +84,13 @@ export async function hydrateContextNode(
 
   const implementationPlan = ctx.get<string>("implementationPlan");
 
+  const executionMode = ctx.get<string>("executionMode") ?? "standard";
+
   sections.push(
     "## Instructions",
-    "- Keep changes minimal and deterministic",
-    "- Preserve existing style and architecture",
-    "- If tests are configured, satisfy them before finishing",
+    `Execution mode: ${executionMode}`,
+    "",
+    ...getModeInstructions(executionMode),
     isFollowUp ? "- This is a follow-up run. Only address the feedback — do not refactor unrelated code." : "",
     "",
     `Task type: ${taskType}`,
@@ -226,6 +234,33 @@ export function getExpectedOutput(taskType: string): string[] {
   return TASK_TYPE_INSTRUCTIONS[taskType] ?? TASK_TYPE_INSTRUCTIONS["chore"]!;
 }
 
+// ── Execution mode instructions ──
+
+const MODE_INSTRUCTIONS: Record<string, string[]> = {
+  simple: [
+    "- Keep changes minimal and deterministic",
+    "- Single-pass fix — do not over-explore",
+    "- Preserve existing style and architecture",
+  ],
+  standard: [
+    "- Keep changes minimal and deterministic",
+    "- Preserve existing style and architecture",
+    "- If tests are configured, satisfy them before finishing",
+  ],
+  research: [
+    "- Explore the codebase thoroughly before making changes",
+    "- Read related files and understand the full call chain",
+    "- Consider edge cases and architectural implications",
+    "- Preserve existing style and architecture",
+    "- If tests are configured, satisfy them before finishing",
+    "- Document non-obvious decisions with brief comments",
+  ],
+};
+
+export function getModeInstructions(mode: string): string[] {
+  return MODE_INSTRUCTIONS[mode] ?? MODE_INSTRUCTIONS["standard"]!;
+}
+
 // ── Dynamic AGENTS.md builder ──
 
 /**
@@ -270,6 +305,15 @@ export function buildAgentsMd(
     parts.push("Relevant patterns and past solutions from your team's knowledge base:");
     parts.push("");
     parts.push(...hookSections);
+    parts.push("");
+  }
+
+  // Project profile (from .gooseherd-profile.md)
+  const repoProfile = ctx.get<string>("repoProfile");
+  if (repoProfile) {
+    parts.push("## Project Profile");
+    parts.push("");
+    parts.push(repoProfile);
     parts.push("");
   }
 

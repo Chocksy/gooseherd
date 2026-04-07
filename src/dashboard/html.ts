@@ -1346,6 +1346,10 @@ export function dashboardHtml(config: AppConfig): string {
           <span class="material-symbols-rounded">route</span>
           <span>Pipelines</span>
         </button>
+        <button class="top-btn" id="evals-btn">
+          <span class="material-symbols-rounded">science</span>
+          <span>Evals</span>
+        </button>
         <button class="top-btn" id="learnings-btn">
           <span class="material-symbols-rounded">insights</span>
           <span>Learnings</span>
@@ -1599,6 +1603,24 @@ export function dashboardHtml(config: AppConfig): string {
     </div>
   </div>
 
+  <!-- Evals slide-over -->
+  <div class="settings-overlay" id="evals-overlay">
+    <div class="settings-panel" style="width: 780px;">
+      <div class="settings-header">
+        <h2>Evals</h2>
+        <button class="settings-close" id="evals-close">&times;</button>
+      </div>
+      <div class="settings-body" style="padding: 16px;">
+        <div id="evals-scenarios" style="margin-bottom: 16px;">
+          <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;">Available Scenarios</div>
+          <div id="evals-scenario-list">Loading...</div>
+        </div>
+        <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;">Recent Results</div>
+        <div id="evals-results">Loading...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Learnings slide-over -->
   <div class="settings-overlay" id="learnings-overlay">
     <div class="settings-panel" style="width: 620px;">
@@ -1724,6 +1746,11 @@ export function dashboardHtml(config: AppConfig): string {
       nrError: document.getElementById('nr-error'),
       nrCancel: document.getElementById('nr-cancel'),
       nrSubmit: document.getElementById('nr-submit'),
+      evalsBtn: document.getElementById('evals-btn'),
+      evalsOverlay: document.getElementById('evals-overlay'),
+      evalsClose: document.getElementById('evals-close'),
+      evalsScenarioList: document.getElementById('evals-scenario-list'),
+      evalsResults: document.getElementById('evals-results'),
       learningsBtn: document.getElementById('learnings-btn'),
       learningsOverlay: document.getElementById('learnings-overlay'),
       learningsClose: document.getElementById('learnings-close'),
@@ -3543,6 +3570,84 @@ export function dashboardHtml(config: AppConfig): string {
         refreshPipelineList();
       } catch(e) {
         alert('Delete failed: ' + e.message);
+      }
+    }
+
+    // ── Evals Panel ──
+
+    el.evalsBtn.onclick = function() {
+      el.evalsOverlay.classList.add('open');
+      refreshEvals();
+    };
+    el.evalsClose.onclick = function() { el.evalsOverlay.classList.remove('open'); };
+    el.evalsOverlay.onclick = function(e) { if (e.target === el.evalsOverlay) el.evalsOverlay.classList.remove('open'); };
+
+    async function refreshEvals() {
+      try {
+        // Load scenarios
+        var scenRes = await fetchJson('/api/eval/scenarios');
+        var scenarios = scenRes.scenarios || [];
+        if (scenarios.length === 0) {
+          el.evalsScenarioList.innerHTML = '<div style="color: var(--muted); font-size: 12px; padding: 8px 0;">No scenarios found in evals/ directory.</div>';
+        } else {
+          var sHtml = '<div style="display: flex; gap: 8px; flex-wrap: wrap;">';
+          scenarios.forEach(function(s) {
+            var tags = (s.tags || []).map(function(t) {
+              return '<span style="background: var(--badge-bg); color: var(--badge-text); font-size: 10px; padding: 1px 6px; border-radius: 4px;">' + t + '</span>';
+            }).join(' ');
+            sHtml += '<div style="border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; background: var(--panel-3); min-width: 180px;">';
+            sHtml += '<div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">' + s.name + '</div>';
+            sHtml += '<div style="font-size: 11px; color: var(--muted); margin-bottom: 6px;">' + (s.description || '') + '</div>';
+            sHtml += '<div style="display: flex; gap: 4px;">' + tags + '</div>';
+            sHtml += '</div>';
+          });
+          sHtml += '</div>';
+          el.evalsScenarioList.innerHTML = sHtml;
+        }
+
+        // Load recent results
+        var resData = await fetchJson('/api/eval/results?limit=30');
+        var results = resData.results || [];
+        if (results.length === 0) {
+          el.evalsResults.innerHTML = '<div style="color: var(--muted); font-size: 12px; padding: 12px 0; text-align: center;">No eval results yet. Run <code>npm run eval</code> to get started.</div>';
+        } else {
+          var html = '<table style="width: 100%; border-collapse: collapse; font-size: 12px;">';
+          html += '<thead><tr style="border-bottom: 2px solid var(--border); text-align: left;">';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Scenario</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Result</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Score</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Duration</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Cost</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Judges</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Model</th>';
+          html += '<th style="padding: 6px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase;">Date</th>';
+          html += '</tr></thead><tbody>';
+          results.forEach(function(r) {
+            var passColor = r.overallPass ? 'var(--ok)' : 'var(--err)';
+            var passLabel = r.overallPass ? 'PASS' : 'FAIL';
+            var totalMs = r.durationMs || 0;
+            var durMin = Math.floor(totalMs / 60000);
+            var durSec = Math.floor((totalMs % 60000) / 1000);
+            var durStr = durMin > 0 ? durMin + 'm ' + durSec + 's' : durSec + 's';
+            var judges = r.judgeResults || [];
+            var passedJ = judges.filter(function(j) { return j.pass; }).length;
+            var modelShort = (r.model || '').split('/').pop() || '-';
+            html += '<tr style="border-bottom: 1px solid var(--border);">';
+            html += '<td style="padding: 6px 8px; font-family: var(--font-mono); font-size: 11px;">' + r.scenarioName + '</td>';
+            html += '<td style="padding: 6px 8px; color: ' + passColor + '; font-weight: 700;">' + passLabel + '</td>';
+            html += '<td style="padding: 6px 8px;">' + r.overallScore + '</td>';
+            html += '<td style="padding: 6px 8px;">' + durStr + '</td>';
+            html += '<td style="padding: 6px 8px;">$' + (r.costUsd || 0).toFixed(2) + '</td>';
+            html += '<td style="padding: 6px 8px;">' + passedJ + '/' + judges.length + '</td>';
+            html += '<td style="padding: 6px 8px; font-size: 11px; color: var(--muted);">' + modelShort + '</td>';
+            html += '<td style="padding: 6px 8px; color: var(--muted); font-size: 11px;">' + new Date(r.createdAt).toLocaleString() + '</td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table>';
+          el.evalsResults.innerHTML = html;
+        }
+      } catch(e) {
+        el.evalsResults.innerHTML = '<div style="color: var(--err); font-size: 12px;">Failed to load evals: ' + e.message + '</div>';
       }
     }
 

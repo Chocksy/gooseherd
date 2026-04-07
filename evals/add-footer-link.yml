@@ -1,0 +1,29 @@
+name: add-footer-link
+description: "Add a link to the footer — tests file discovery and HTML editing"
+
+repo: epiccoders/pxls
+base_branch: main
+task: |
+  Add a "Blog" link to the website footer that points to "/blog".
+  Place it next to the existing footer links.
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: diff_contains
+    patterns:
+      - "/blog"
+      - "Blog"
+
+  - type: pr_created
+
+  - type: llm_judge
+    prompt: |
+      Did the agent add a "Blog" link pointing to "/blog" in the footer?
+      Was the change minimal and focused (no unrelated modifications)?
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [ui, simple, rails]

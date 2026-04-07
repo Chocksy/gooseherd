@@ -200,6 +200,7 @@ export class RunManager {
   }
 
   private determineRunSource(run: RunRecord): string {
+    if (run.channelId === "eval") return "eval";
     if (run.channelId === "local") return "local";
     if (run.channelId === "dashboard") return "dashboard";
     if (run.channelId === "api") return "api";

@@ -128,6 +128,18 @@ export async function cloneNode(
     await appendLog(logFile, `\n[info] loaded .gooseherd.yml from ${resolvedBaseBranch}\n`);
   }
 
+  // Load .gooseherd-profile.md (from base branch for security — prevent PR self-injection)
+  const profileResult = await runShellCapture(
+    `git show ${shellEscape(`origin/${resolvedBaseBranch}:.gooseherd-profile.md`)} 2>/dev/null`,
+    { cwd: repoDir, logFile: "/dev/null" }
+  );
+  if (profileResult.code === 0 && profileResult.stdout.trim()) {
+    const MAX_PROFILE_CHARS = 6000;
+    const profileContent = profileResult.stdout.trim().slice(0, MAX_PROFILE_CHARS);
+    ctx.set("repoProfile", profileContent);
+    await appendLog(logFile, `\n[info] loaded .gooseherd-profile.md from ${resolvedBaseBranch} (${String(profileContent.length)} chars)\n`);
+  }
+
   return {
     outcome: "success",
     outputs: { repoDir, runDir, promptFile, resolvedBaseBranch, isFollowUp }

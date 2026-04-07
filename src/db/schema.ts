@@ -222,6 +222,31 @@ export const authCredentials = pgTable("auth_credentials", {
   loginSuccessful: boolean("login_successful").notNull().default(false),
 });
 
+// ── eval_results ──
+
+export const evalResults = pgTable(
+  "eval_results",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    scenarioName: text("scenario_name").notNull(),
+    runId: uuid("run_id").notNull(),
+    configLabel: text("config_label"),
+    pipeline: text("pipeline"),
+    model: text("model"),
+    overallPass: boolean("overall_pass").notNull(),
+    overallScore: integer("overall_score").notNull(),
+    judgeResults: jsonb("judge_results").notNull().$type<Array<{ judge: string; pass: boolean; score: number; reason: string }>>(),
+    durationMs: integer("duration_ms").notNull(),
+    costUsd: numeric("cost_usd", { precision: 10, scale: 4 }).notNull(),
+    tags: text("tags").array(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("eval_scenario_idx").on(t.scenarioName),
+    index("eval_created_at_idx").on(t.createdAt),
+  ]
+);
+
 // ── setup (single-row config) ──
 
 export const setup = pgTable("setup", {

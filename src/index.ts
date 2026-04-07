@@ -20,13 +20,13 @@ import { ContainerManager } from "./sandbox/container-manager.js";
 import { setSandboxManager } from "./pipeline/shell.js";
 import { RunSupervisor } from "./supervisor/run-supervisor.js";
 import { ConversationStore } from "./orchestrator/conversation-store.js";
-import { loadSkills } from "./pipeline/skill-registry.js";
 import { PipelineStore } from "./pipeline/pipeline-store.js";
 import { loadPlugins, getPluginDir } from "./plugins/plugin-loader.js";
 import { NODE_HANDLERS, VALID_ACTIONS } from "./pipeline/node-registry.js";
 import { SessionManager, createLLMPlanGoal, createLLMEvaluateProgress } from "./sessions/session-manager.js";
 import { callLLMForJSON, type LLMCallerConfig } from "./llm/caller.js";
 import { LearningStore } from "./observer/learning-store.js";
+import { EvalStore } from "./eval/eval-store.js";
 import { SetupStore } from "./db/setup-store.js";
 
 // ── Service container ──
@@ -41,6 +41,7 @@ interface Services {
   pipelineEngine: PipelineEngine;
   pipelineStore: PipelineStore;
   learningStore: LearningStore;
+  evalStore: EvalStore;
   webClient: import("@slack/web-api").WebClient | undefined;
   runManager: RunManager;
   conversationStore: ConversationStore;
@@ -93,6 +94,8 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
   const learningStore = new LearningStore(db);
   await learningStore.load();
 
+  const evalStore = new EvalStore(db);
+
   const { WebClient } = await import("@slack/web-api");
   const webClient = config.slackBotToken ? new WebClient(config.slackBotToken) : undefined;
 
@@ -104,7 +107,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
 
   return {
     config, store, githubService, memoryProvider, hooks, containerManager,
-    pipelineEngine, pipelineStore, learningStore, webClient, runManager, conversationStore,
+    pipelineEngine, pipelineStore, learningStore, evalStore, webClient, runManager, conversationStore,
   };
 }
 
@@ -135,8 +138,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   checkAgentDefault(config);
 
-  // 3. One-time registrations (skills + plugins)
-  await loadSkills(path.resolve("skills"));
+  // 3. One-time registrations (plugins)
   const pluginResult = await loadPlugins(getPluginDir());
   if (pluginResult.loaded.length > 0) {
     logInfo("Plugins loaded", { count: pluginResult.loaded.length, names: pluginResult.loaded });
@@ -241,7 +243,8 @@ async function main(): Promise<void> {
         logInfo("Setup wizard completed — restarting to apply new configuration");
         // Defer restart to let the HTTP response reach the client
         setTimeout(() => shutdown("WIZARD_COMPLETE"), 1000);
-      }
+      },
+      svc.evalStore,
     );
   }
 

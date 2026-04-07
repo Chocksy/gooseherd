@@ -535,7 +535,7 @@ describe("Per-Repo Config", () => {
   // through the public interface. Since validateRepoConfig is not exported,
   // we test via loadRepoConfig's behavior or test applyRepoConfig directly.
 
-  test("applyRepoConfig: sets pipeline override in context", async () => {
+  test("applyRepoConfig: accepts pipeline field without crashing", async () => {
     const { applyRepoConfig } = await import("../src/pipeline/repo-config.js");
     const ctx = new Map<string, unknown>();
     const mockCtx = {
@@ -543,8 +543,9 @@ describe("Per-Repo Config", () => {
       get: <T>(k: string) => ctx.get(k) as T | undefined
     };
 
+    // pipeline is stored in RepoConfig but consumed by the caller, not applyRepoConfig
     applyRepoConfig({ pipeline: "custom" }, mockCtx);
-    assert.equal(ctx.get("repoConfigPipeline"), "custom");
+    assert.equal(ctx.size, 0, "applyRepoConfig should not set context keys for pipeline-only config");
   });
 
   test("applyRepoConfig: sets diff profile override", async () => {

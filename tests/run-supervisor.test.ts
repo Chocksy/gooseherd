@@ -43,18 +43,18 @@ test("classifyFailureWithRetryability: agent_crash is retryable (full)", () => {
   assert.equal(result.retryStrategy, "full");
 });
 
-test("classifyFailureWithRetryability: push errors are retryable (from_checkpoint)", () => {
+test("classifyFailureWithRetryability: push errors are retryable (full)", () => {
   const result = classifyFailureWithRetryability("push was rejected by remote");
   assert.equal(result.category, "push");
   assert.equal(result.retryable, true);
-  assert.equal(result.retryStrategy, "from_checkpoint");
+  assert.equal(result.retryStrategy, "full");
 });
 
-test("classifyFailureWithRetryability: pr errors are retryable (from_checkpoint)", () => {
+test("classifyFailureWithRetryability: pr errors are retryable (full)", () => {
   const result = classifyFailureWithRetryability("create_pr failed: 502 Bad Gateway");
   assert.equal(result.category, "pr");
   assert.equal(result.retryable, true);
-  assert.equal(result.retryStrategy, "from_checkpoint");
+  assert.equal(result.retryStrategy, "full");
 });
 
 test("classifyFailureWithRetryability: unknown errors are NOT retryable", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyTask } from "../src/pipeline/quality-gates/task-classifier.js";
+import { classifyTask, classifyExecutionMode, escalateMode } from "../src/pipeline/quality-gates/task-classifier.js";
 import { parseDiffNumstat, evaluateDiffGate } from "../src/pipeline/quality-gates/diff-gate.js";
 import { checkForbiddenFiles, globToRegex } from "../src/pipeline/quality-gates/forbidden-files.js";
 import { scanDiffForSecrets, parseGitleaksReport } from "../src/pipeline/quality-gates/security-scan.js";
@@ -45,6 +45,65 @@ test("classifyTask: no match defaults to feature", () => {
 test("classifyTask: priority order — bugfix wins over feature", () => {
   // "fix" matches bugfix before "add" matches feature
   assert.equal(classifyTask("fix and add error handling"), "bugfix");
+});
+
+// ── Execution Mode Classifier ──
+
+test("classifyExecutionMode: simple tasks → simple", () => {
+  assert.equal(classifyExecutionMode("fix a typo in the readme"), "simple");
+  assert.equal(classifyExecutionMode("bump version to 2.0"), "simple");
+  assert.equal(classifyExecutionMode("update deps"), "simple");
+  assert.equal(classifyExecutionMode("rename the variable"), "simple");
+  assert.equal(classifyExecutionMode("config change for CI"), "simple");
+  assert.equal(classifyExecutionMode("remove unused import"), "simple");
+});
+
+test("classifyExecutionMode: research tasks → research", () => {
+  assert.equal(classifyExecutionMode("refactor the authentication system"), "research");
+  assert.equal(classifyExecutionMode("migrate from MySQL to Postgres"), "research");
+  assert.equal(classifyExecutionMode("investigate the memory leak"), "research");
+  assert.equal(classifyExecutionMode("security audit of the API"), "research");
+  assert.equal(classifyExecutionMode("rewrite the parser module"), "research");
+  assert.equal(classifyExecutionMode("analyze performance bottleneck in search"), "research");
+});
+
+test("classifyExecutionMode: normal tasks → standard", () => {
+  assert.equal(classifyExecutionMode("add a footer link to the homepage"), "standard");
+  assert.equal(classifyExecutionMode("fix the broken login button"), "standard");
+  assert.equal(classifyExecutionMode("create new API endpoint for users"), "standard");
+});
+
+test("classifyExecutionMode: empty string → standard", () => {
+  assert.equal(classifyExecutionMode(""), "standard");
+});
+
+test("classifyExecutionMode: research wins over simple when both match", () => {
+  // "upgrade" matches simple, but "migrate" makes it research — research checked first
+  assert.equal(classifyExecutionMode("upgrade and migrate the database"), "research");
+  // "remove unused" matches simple, but "refactor...module" makes it research
+  assert.equal(classifyExecutionMode("remove unused code and refactor the module"), "research");
+  // Pure simple still works when no research pattern present
+  assert.equal(classifyExecutionMode("rename the variable"), "simple");
+  assert.equal(classifyExecutionMode("remove unused import"), "simple");
+});
+
+// ── Mode Escalation ──
+
+test("escalateMode: simple → standard after 1 failure", () => {
+  assert.equal(escalateMode("simple", 0), "simple");
+  assert.equal(escalateMode("simple", 1), "standard");
+  assert.equal(escalateMode("simple", 2), "standard");
+});
+
+test("escalateMode: standard → research after 2 failures", () => {
+  assert.equal(escalateMode("standard", 0), "standard");
+  assert.equal(escalateMode("standard", 1), "standard");
+  assert.equal(escalateMode("standard", 2), "research");
+});
+
+test("escalateMode: research stays research", () => {
+  assert.equal(escalateMode("research", 0), "research");
+  assert.equal(escalateMode("research", 5), "research");
 });
 
 // ── Diff Size Gate ──

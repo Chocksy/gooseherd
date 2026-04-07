@@ -2,7 +2,7 @@ import { classifyError, type ClassifiedError } from "../run-manager.js";
 
 export interface ClassifiedFailure extends ClassifiedError {
   retryable: boolean;
-  retryStrategy: "full" | "from_checkpoint" | "none";
+  retryStrategy: "full" | "none";
 }
 
 /** Maps error categories to retry decisions. */
@@ -12,8 +12,8 @@ const RETRY_MAP: Record<string, { retryable: boolean; retryStrategy: ClassifiedF
   no_changes:  { retryable: false, retryStrategy: "none" },
   validation:  { retryable: false, retryStrategy: "none" },
   agent_crash: { retryable: true,  retryStrategy: "full" },
-  push:        { retryable: true,  retryStrategy: "from_checkpoint" },
-  pr:          { retryable: true,  retryStrategy: "from_checkpoint" },
+  push:        { retryable: true,  retryStrategy: "full" },
+  pr:          { retryable: true,  retryStrategy: "full" },
   unknown:     { retryable: false, retryStrategy: "none" }
 };
 

@@ -1,10 +1,10 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { classifyTask } from "./task-classifier.js";
+import { classifyTask, classifyExecutionMode } from "./task-classifier.js";
 
 /**
- * Classify task node: determine task type from run description.
- * Sets ctx.taskType for use by downstream gates (diff size, etc.).
+ * Classify task node: determine task type and execution mode from run description.
+ * Sets ctx.taskType and ctx.executionMode for downstream nodes.
  */
 export async function classifyTaskNode(
   _nodeConfig: NodeConfig,
@@ -13,11 +13,13 @@ export async function classifyTaskNode(
 ): Promise<NodeResult> {
   const taskText = deps.run.task;
   const taskType = classifyTask(taskText);
+  const executionMode = classifyExecutionMode(taskText);
 
   ctx.set("taskType", taskType);
+  ctx.set("executionMode", executionMode);
 
   return {
     outcome: "success",
-    outputs: { taskType }
+    outputs: { taskType, executionMode }
   };
 }

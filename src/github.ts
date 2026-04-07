@@ -30,6 +30,13 @@ export interface CICheckAnnotation {
   annotation_level: string;
 }
 
+export interface AccessibleRepository {
+  fullName: string;
+  private: boolean;
+  defaultBranch?: string;
+  htmlUrl?: string;
+}
+
 export function parseRepoSlug(repoSlug: string): { owner: string; repo: string } {
   const [owner, repo] = repoSlug.split("/");
   if (!owner || !repo) {
@@ -399,11 +406,28 @@ export class GitHubService {
   /**
    * List repos accessible with the current credentials.
    */
-  async listAccessibleRepos(perPage = 30): Promise<Array<{ fullName: string; private: boolean }>> {
+  async listAccessibleRepos(perPage = 100): Promise<AccessibleRepository[]> {
+    if (this.authMode === "app") {
+      const { data } = await this.octokit.apps.listReposAccessibleToInstallation({
+        per_page: perPage,
+      });
+      return data.repositories.map((r) => ({
+        fullName: r.full_name,
+        private: r.private,
+        defaultBranch: r.default_branch ?? undefined,
+        htmlUrl: r.html_url ?? undefined,
+      }));
+    }
+
     const { data } = await this.octokit.repos.listForAuthenticatedUser({
       per_page: perPage,
       sort: "updated",
     });
-    return data.map((r) => ({ fullName: r.full_name, private: r.private }));
+    return data.map((r) => ({
+      fullName: r.full_name,
+      private: r.private,
+      defaultBranch: r.default_branch ?? undefined,
+      htmlUrl: r.html_url ?? undefined,
+    }));
   }
 }

@@ -317,6 +317,15 @@ export function dashboardHtml(config: AppConfig): string {
     .modal select { cursor: pointer; }
     .modal textarea { min-height: 80px; resize: vertical; }
     .modal input:focus, .modal textarea:focus, .modal select:focus { border-color: var(--ring); }
+    .modal-subactions { display: flex; gap: 8px; justify-content: space-between; margin-top: 8px; flex-wrap: wrap; }
+    .modal-inline-btn {
+      border: 1px solid var(--border); background: var(--button-bg); color: var(--text);
+      border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 600;
+      cursor: pointer; font-family: var(--font-ui);
+    }
+    .modal-inline-btn:hover { background: var(--button-bg-hover); }
+    .modal-inline-btn:disabled { opacity: 0.6; cursor: default; }
+    .modal-help { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.4; }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
     .modal-btn {
       border: 1px solid var(--border); background: var(--button-bg); color: var(--text);
@@ -1642,8 +1651,21 @@ export function dashboardHtml(config: AppConfig): string {
   <div class="modal-overlay" id="new-run-overlay">
     <div class="modal">
       <h2>New Run</h2>
-      <label for="nr-repo">Repository (owner/repo)</label>
-      <input type="text" id="nr-repo" placeholder="yourorg/yourrepo" />
+      <div id="nr-repo-select-wrap">
+        <label for="nr-repo-select">Repository</label>
+        <select id="nr-repo-select">
+          <option value="">Loading repositories...</option>
+        </select>
+      </div>
+      <div id="nr-repo-custom-wrap" style="display: none;">
+        <label for="nr-repo">Repository (owner/repo)</label>
+        <input type="text" id="nr-repo" placeholder="yourorg/yourrepo" />
+      </div>
+      <div class="modal-subactions">
+        <button type="button" class="modal-inline-btn" id="nr-repo-custom-toggle">Use custom repository</button>
+        <button type="button" class="modal-inline-btn" id="nr-repo-refresh">Refresh repositories</button>
+      </div>
+      <div class="modal-help" id="nr-repo-meta">Select a repository from the GitHub App installation or switch to manual entry.</div>
       <label for="nr-branch">Base branch</label>
       <input type="text" id="nr-branch" placeholder="main" />
       <label for="nr-task">Task description</label>
@@ -1739,7 +1761,13 @@ export function dashboardHtml(config: AppConfig): string {
       filterPills: document.getElementById('filter-pills'),
       newRunBtn: document.getElementById('new-run-btn'),
       newRunOverlay: document.getElementById('new-run-overlay'),
+      nrRepoSelectWrap: document.getElementById('nr-repo-select-wrap'),
+      nrRepoSelect: document.getElementById('nr-repo-select'),
+      nrRepoCustomWrap: document.getElementById('nr-repo-custom-wrap'),
       nrRepo: document.getElementById('nr-repo'),
+      nrRepoCustomToggle: document.getElementById('nr-repo-custom-toggle'),
+      nrRepoRefresh: document.getElementById('nr-repo-refresh'),
+      nrRepoMeta: document.getElementById('nr-repo-meta'),
       nrBranch: document.getElementById('nr-branch'),
       nrTask: document.getElementById('nr-task'),
       nrPipeline: document.getElementById('nr-pipeline'),
@@ -3081,6 +3109,73 @@ export function dashboardHtml(config: AppConfig): string {
     };
 
     // ── New Run modal ──
+    var newRunRepoMode = 'select';
+
+    function setNewRunRepoMode(mode) {
+      newRunRepoMode = mode === 'custom' ? 'custom' : 'select';
+      var selectMode = newRunRepoMode === 'select';
+      el.nrRepoSelectWrap.style.display = selectMode ? 'block' : 'none';
+      el.nrRepoCustomWrap.style.display = selectMode ? 'none' : 'block';
+      el.nrRepoCustomToggle.textContent = selectMode ? 'Use custom repository' : 'Use installation repository';
+    }
+
+    function populateRepositoryOptions(repositories) {
+      var select = el.nrRepoSelect;
+      while (select.options.length > 0) select.remove(0);
+
+      var placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = repositories.length ? 'Select repository' : 'No repositories available';
+      select.appendChild(placeholder);
+
+      for (var i = 0; i < repositories.length; i++) {
+        var repo = repositories[i];
+        var opt = document.createElement('option');
+        opt.value = repo.fullName;
+        opt.textContent = repo.fullName + (repo.private ? '' : ' (public)');
+        if (repo.defaultBranch) opt.setAttribute('data-default-branch', repo.defaultBranch);
+        select.appendChild(opt);
+      }
+    }
+
+    function applySelectedRepositoryDefaults() {
+      if (newRunRepoMode !== 'select') return;
+      if (el.nrBranch.value.trim()) return;
+      var option = el.nrRepoSelect.options[el.nrRepoSelect.selectedIndex];
+      var defaultBranch = option ? option.getAttribute('data-default-branch') : '';
+      if (defaultBranch) {
+        el.nrBranch.value = defaultBranch;
+      }
+    }
+
+    async function loadRepositoryOptions(forceRefresh) {
+      el.nrRepoRefresh.disabled = true;
+      try {
+        var suffix = forceRefresh ? '?refresh=1' : '';
+        var res = await fetchJson('/api/github/repositories' + suffix);
+        var repositories = Array.isArray(res.repositories) ? res.repositories : [];
+        populateRepositoryOptions(repositories);
+        if (repositories.length > 0 && newRunRepoMode !== 'custom') {
+          setNewRunRepoMode('select');
+        } else if (repositories.length === 0) {
+          setNewRunRepoMode('custom');
+        }
+        if (res.stale) {
+          el.nrRepoMeta.textContent = 'Showing cached repositories because GitHub refresh failed. Manual entry is also available.';
+        } else if (repositories.length > 0) {
+          el.nrRepoMeta.textContent = 'Select a repository from the GitHub App installation or switch to manual entry.';
+        } else {
+          el.nrRepoMeta.textContent = 'No repositories returned by GitHub. Enter owner/repo manually.';
+        }
+      } catch (e) {
+        populateRepositoryOptions([]);
+        setNewRunRepoMode('custom');
+        el.nrRepoMeta.textContent = (e && e.message ? e.message + '. ' : '') + 'Enter owner/repo manually.';
+      } finally {
+        el.nrRepoRefresh.disabled = false;
+      }
+    }
+
     async function loadPipelineOptions() {
       try {
         var res = await fetchJson('/api/pipelines');
@@ -3102,15 +3197,36 @@ export function dashboardHtml(config: AppConfig): string {
     el.newRunBtn.onclick = () => {
       el.newRunOverlay.classList.add('open');
       el.nrError.style.display = 'none';
+      setNewRunRepoMode('select');
+      populateRepositoryOptions([]);
       el.nrRepo.value = '';
+      el.nrRepoSelect.value = '';
+      el.nrRepoMeta.textContent = 'Loading repositories...';
       el.nrBranch.value = '';
       el.nrTask.value = '';
       el.nrPipeline.value = '';
       loadPipelineOptions();
-      el.nrRepo.focus();
+      loadRepositoryOptions(false).then(function() {
+        if (newRunRepoMode === 'custom') {
+          el.nrRepo.focus();
+        } else {
+          el.nrRepoSelect.focus();
+        }
+      });
     };
     el.nrCancel.onclick = () => el.newRunOverlay.classList.remove('open');
     el.newRunOverlay.onclick = (e) => { if (e.target === el.newRunOverlay) el.newRunOverlay.classList.remove('open'); };
+    el.nrRepoCustomToggle.onclick = () => {
+      setNewRunRepoMode(newRunRepoMode === 'custom' ? 'select' : 'custom');
+      if (newRunRepoMode === 'custom') {
+        el.nrRepo.focus();
+      } else {
+        el.nrRepoSelect.focus();
+        applySelectedRepositoryDefaults();
+      }
+    };
+    el.nrRepoRefresh.onclick = () => { loadRepositoryOptions(true); };
+    el.nrRepoSelect.onchange = applySelectedRepositoryDefaults;
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') {
         el.settingsOverlay.classList.remove('open');
@@ -3119,7 +3235,7 @@ export function dashboardHtml(config: AppConfig): string {
       }
     });
     el.nrSubmit.onclick = async () => {
-      var repo = el.nrRepo.value.trim();
+      var repo = (newRunRepoMode === 'custom' ? el.nrRepo.value : el.nrRepoSelect.value).trim();
       var task = el.nrTask.value.trim();
       if (!repo || !task) {
         el.nrError.textContent = 'Repository and task are required.';

@@ -11,6 +11,7 @@ import { RunStore } from "../src/store.js";
 import { startDashboardServer } from "../src/dashboard-server.js";
 import type { PipelineStore, StoredPipeline } from "../src/pipeline/pipeline-store.js";
 import type { PipelineConfig } from "../src/pipeline/types.js";
+import { GitHubService } from "../src/github.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -211,8 +212,10 @@ async function waitForServer(port: number, maxMs = 3000): Promise<void> {
 describe("Dashboard Pipeline API routes", () => {
   const servers: http.Server[] = [];
   const tmpDirs: string[] = [];
+  const originalCreateGitHubService = GitHubService.create;
 
   afterEach(async () => {
+    GitHubService.create = originalCreateGitHubService;
     for (const dir of tmpDirs) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
@@ -250,6 +253,40 @@ describe("Dashboard Pipeline API routes", () => {
     assert.equal(pipelines.length, 2);
     assert.equal(pipelines[0]?.id, "default");
     assert.equal(pipelines[1]?.id, "custom");
+  });
+
+  test("GET /api/github/repositories returns 501 when GitHub integration is unavailable", async () => {
+    GitHubService.create = () => undefined;
+    const port = await startServer();
+    const res = await request(port, "GET", "/api/github/repositories");
+    assert.equal(res.status, 501);
+    assert.equal(res.data.error, "GitHub integration is not configured");
+  });
+
+  test("GET /api/github/repositories lists accessible repositories", async () => {
+    GitHubService.create = () => ({
+      listAccessibleRepos: async () => [
+        {
+          fullName: "acme/private-repo",
+          private: true,
+          defaultBranch: "main",
+          htmlUrl: "https://github.com/acme/private-repo",
+        },
+        {
+          fullName: "acme/public-repo",
+          private: false,
+          defaultBranch: "develop",
+          htmlUrl: "https://github.com/acme/public-repo",
+        },
+      ],
+    }) as GitHubService;
+
+    const port = await startServer();
+    const res = await request(port, "GET", "/api/github/repositories");
+    assert.equal(res.status, 200);
+    assert.equal((res.data.repositories as Array<{ fullName: string }>).length, 2);
+    assert.equal((res.data.repositories as Array<{ fullName: string }>)[0]?.fullName, "acme/private-repo");
+    assert.equal(res.data.cached, false);
   });
 
   test("GET /api/pipelines/:id returns a single pipeline", async () => {

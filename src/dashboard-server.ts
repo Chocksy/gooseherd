@@ -59,6 +59,17 @@ function parseLimit(value: string | null): number {
 
 /** Max request body size: 1 MB (matches webhook-server.ts) */
 const MAX_BODY_BYTES = 1024 * 1024;
+const GITHUB_REPOSITORIES_CACHE_TTL_MS = 60_000;
+
+interface CachedGitHubRepositories {
+  fetchedAt: number;
+  repositories: Array<{
+    fullName: string;
+    private: boolean;
+    defaultBranch?: string;
+    htmlUrl?: string;
+  }>;
+}
 
 async function readBody(req: IncomingMessage): Promise<string | null> {
   return new Promise((resolve, reject) => {
@@ -299,6 +310,9 @@ export function startDashboardServer(
   onSetupComplete?: () => Promise<void>,
   evalStore?: EvalStore,
 ): void {
+  const githubService = GitHubService.create(config);
+  let githubRepositoriesCache: CachedGitHubRepositories | undefined;
+
   const server = createServer(async (req, res) => {
     try {
       // Security headers — applied to all responses
@@ -575,6 +589,57 @@ export function startDashboardServer(
           },
           stats,
         });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/github/repositories") {
+        if (!githubService) {
+          sendJson(res, 501, { error: "GitHub integration is not configured" });
+          return;
+        }
+
+        const refresh = requestUrl.searchParams.get("refresh") === "1";
+        const now = Date.now();
+        const cachedRepositories = githubRepositoriesCache;
+        const cacheFresh = cachedRepositories && (now - cachedRepositories.fetchedAt) < GITHUB_REPOSITORIES_CACHE_TTL_MS;
+
+        if (!refresh && cacheFresh) {
+          sendJson(res, 200, {
+            repositories: cachedRepositories.repositories,
+            cached: true,
+            fetchedAt: new Date(cachedRepositories.fetchedAt).toISOString(),
+          });
+          return;
+        }
+
+        try {
+          const repositories = await githubService.listAccessibleRepos();
+          githubRepositoriesCache = {
+            repositories,
+            fetchedAt: now,
+          };
+          sendJson(res, 200, {
+            repositories,
+            cached: false,
+            fetchedAt: new Date(now).toISOString(),
+          });
+        } catch (error) {
+          logError("dashboard: failed to list github repositories", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          if (githubRepositoriesCache) {
+            sendJson(res, 200, {
+              repositories: githubRepositoriesCache.repositories,
+              cached: true,
+              stale: true,
+              fetchedAt: new Date(githubRepositoriesCache.fetchedAt).toISOString(),
+            });
+            return;
+          }
+
+          sendJson(res, 502, { error: "Failed to load repositories from GitHub" });
+        }
         return;
       }
 

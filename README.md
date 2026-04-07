@@ -9,22 +9,39 @@ Self-hosted AI coding agent orchestrator. Turn Slack messages into tested, revie
 ## Quick Start (Docker)
 
 ```bash
-docker pull ghcr.io/chocksy/gooseherd:latest
+git clone https://github.com/chocksy/gooseherd.git
+cd gooseherd
 cp .env.example .env   # edit with your tokens
 docker compose up -d
 open http://localhost:8787
 ```
 
+Or use `make docker` to build from source (includes sandbox image):
+
+```bash
+make docker
+```
+
 ## Quick Start (npm)
+
+Requires Node.js 22+ and PostgreSQL 15+.
 
 ```bash
 git clone https://github.com/chocksy/gooseherd.git
 cd gooseherd
 npm install
 cp .env.example .env   # edit with your tokens
+
+# Start PostgreSQL (if not already running):
+docker run -d --name gooseherd-pg -e POSTGRES_USER=gooseherd \
+  -e POSTGRES_PASSWORD=gooseherd -e POSTGRES_DB=gooseherd \
+  -p 5432:5432 postgres:17-alpine
+
 npm run dev
 open http://localhost:8787
 ```
+
+Add `DATABASE_URL=postgres://gooseherd:gooseherd@localhost:5432/gooseherd` to your `.env` when running outside Docker Compose.
 
 ## How It Works
 
@@ -78,7 +95,7 @@ Optional controls:
 | `{{run_id}}` | Unique run identifier |
 | `{{repo_slug}}` | `owner/repo` |
 
-Default uses `scripts/dummy-agent.sh` for safe testing. Switch to your agent:
+Default uses `scripts/dummy-agent.sh` — a safe no-op test stub that creates a file and a screenshot without touching real code. Switch to your agent for real runs:
 
 ```bash
 # Goose
@@ -110,6 +127,21 @@ See **[docs/deployment.md](docs/deployment.md)** for the full deployment guide �
 ## Architecture
 
 See **[docs/architecture.md](docs/architecture.md)** for the full system diagram — pipeline engine, 19 node handlers, YAML pipeline composition, and the observer auto-trigger system.
+
+## Sandbox (optional)
+
+Run each agent in an isolated Docker container:
+
+```bash
+# Build the sandbox image
+make docker-sandbox
+
+# Enable in .env
+SANDBOX_ENABLED=true
+SANDBOX_HOST_WORK_PATH=/absolute/path/to/.work
+```
+
+Or build everything at once with `make docker`.
 
 ## Testing
 

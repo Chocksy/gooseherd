@@ -29,6 +29,7 @@ test: ## Run type check, build, and tests
 	npm run build
 	npm test
 
-pull: ## Pull latest Docker images
+pull: ## Pull latest Docker images and tag sandbox for local use
 	docker pull ghcr.io/chocksy/gooseherd:latest
 	docker pull ghcr.io/chocksy/gooseherd-sandbox:latest
+	docker tag ghcr.io/chocksy/gooseherd-sandbox:latest gooseherd/sandbox:default

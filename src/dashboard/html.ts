@@ -3117,6 +3117,10 @@ export function dashboardHtml(config: AppConfig): string {
       el.nrRepoSelectWrap.style.display = selectMode ? 'block' : 'none';
       el.nrRepoCustomWrap.style.display = selectMode ? 'none' : 'block';
       el.nrRepoCustomToggle.textContent = selectMode ? 'Use custom repository' : 'Use installation repository';
+      el.nrBranch.disabled = selectMode;
+      if (selectMode) {
+        applySelectedRepositoryDefaults();
+      }
     }
 
     function populateRepositoryOptions(repositories) {
@@ -3140,12 +3144,9 @@ export function dashboardHtml(config: AppConfig): string {
 
     function applySelectedRepositoryDefaults() {
       if (newRunRepoMode !== 'select') return;
-      if (el.nrBranch.value.trim()) return;
       var option = el.nrRepoSelect.options[el.nrRepoSelect.selectedIndex];
       var defaultBranch = option ? option.getAttribute('data-default-branch') : '';
-      if (defaultBranch) {
-        el.nrBranch.value = defaultBranch;
-      }
+      el.nrBranch.value = defaultBranch || '';
     }
 
     async function loadRepositoryOptions(forceRefresh) {
@@ -3203,6 +3204,7 @@ export function dashboardHtml(config: AppConfig): string {
       el.nrRepoSelect.value = '';
       el.nrRepoMeta.textContent = 'Loading repositories...';
       el.nrBranch.value = '';
+      el.nrBranch.disabled = true;
       el.nrTask.value = '';
       el.nrPipeline.value = '';
       loadPipelineOptions();
@@ -3219,6 +3221,7 @@ export function dashboardHtml(config: AppConfig): string {
     el.nrRepoCustomToggle.onclick = () => {
       setNewRunRepoMode(newRunRepoMode === 'custom' ? 'select' : 'custom');
       if (newRunRepoMode === 'custom') {
+        el.nrBranch.disabled = false;
         el.nrRepo.focus();
       } else {
         el.nrRepoSelect.focus();

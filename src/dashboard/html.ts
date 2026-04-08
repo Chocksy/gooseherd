@@ -366,8 +366,10 @@ export function dashboardHtml(config: AppConfig): string {
     }
     .main {
       grid-area: main;
+      min-width: 0;
       padding: 16px;
       overflow-y: auto;
+      overflow-x: hidden;
     }
     .stack {
       display: grid;
@@ -380,6 +382,7 @@ export function dashboardHtml(config: AppConfig): string {
       display: grid;
       grid-template-columns: 1fr;
       gap: 12px;
+      min-width: 0;
     }
     .sidebar-head {
       display: flex;
@@ -539,6 +542,7 @@ export function dashboardHtml(config: AppConfig): string {
       50% { opacity: 0.5; }
     }
     .card {
+      min-width: 0;
       border: 1px solid var(--border);
       background: color-mix(in srgb, var(--panel) 92%, transparent);
       border-radius: var(--radius);
@@ -549,8 +553,14 @@ export function dashboardHtml(config: AppConfig): string {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      min-width: 0;
       gap: 10px;
       margin-bottom: 10px;
+    }
+    .toolbar > :first-child {
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .summary-actions {
       display: flex;
@@ -558,6 +568,7 @@ export function dashboardHtml(config: AppConfig): string {
       gap: 6px;
       flex-wrap: wrap;
       justify-content: flex-end;
+      max-width: 100%;
     }
     .summary-actions .action-btn {
       text-decoration: none;

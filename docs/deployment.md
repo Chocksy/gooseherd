@@ -194,6 +194,12 @@ SANDBOX_HOST_WORK_PATH=/absolute/path/to/work/dir
 
 Requires Docker socket access. The `SANDBOX_HOST_WORK_PATH` must be the **host-side** absolute path to your work directory (for bind mount resolution).
 
+The app runs inside the container as the `gooseherd` user (`uid=1001`). If you
+use a bind mount for `SANDBOX_HOST_WORK_PATH`, the host work directory should be
+owned by `1001:1001`, or otherwise be writable by `uid=1001`. A bind mount
+overrides the `.work` directory created in the image, so host-side ownership and
+permissions control whether runs can create `/app/.work/<run-id>`.
+
 Build the sandbox image before enabling:
 
 ```bash

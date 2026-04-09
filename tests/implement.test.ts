@@ -38,6 +38,18 @@ test("analyzeAgentOutput: no changes → verdict empty", async (t) => {
   assert.ok(result.signals.some(s => s.includes("no file changes")));
 });
 
+test("analyzeAgentOutput: AGENTS.md only → verdict empty", async (t) => {
+  const { dir, logFile, cleanup } = await makeGitRepo();
+  t.after(cleanup);
+
+  await writeFile(path.join(dir, "AGENTS.md"), "# AGENTS.md\n", "utf8");
+
+  const result = await analyzeAgentOutput(dir, "", "", logFile);
+  assert.equal(result.verdict, "empty");
+  assert.deepEqual(result.filesChanged, []);
+  assert.equal(result.diffStats.filesCount, 0);
+});
+
 test("analyzeAgentOutput: normal changes → verdict clean", async (t) => {
   const { dir, logFile, cleanup } = await makeGitRepo();
   t.after(cleanup);

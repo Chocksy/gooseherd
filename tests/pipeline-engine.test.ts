@@ -150,6 +150,50 @@ test("PipelineEngine: unified pipeline is the single pipeline file", () => {
   assert.equal(resolved, "pipelines/pipeline.yml");
 });
 
+test("PipelineEngine: passes CODEX_API_KEY into sandbox env", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-sandbox-env-"));
+  const workDir = path.join(tmpDir, "work");
+  const runId = "test-run-sandbox-env";
+  const runDir = path.join(workDir, runId);
+  const logFile = path.join(runDir, "run.log");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(logFile, "", "utf8");
+
+  const savedOpenAi = process.env.OPENAI_API_KEY;
+  const savedCodex = process.env.CODEX_API_KEY;
+  process.env.OPENAI_API_KEY = "sk-openai-test";
+  process.env.CODEX_API_KEY = "sk-codex-test";
+
+  t.after(async () => {
+    if (savedOpenAi === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedOpenAi;
+    if (savedCodex === undefined) delete process.env.CODEX_API_KEY;
+    else process.env.CODEX_API_KEY = savedCodex;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  let capturedEnv: Record<string, string> | undefined;
+  const fakeContainerManager = {
+    createSandbox: async (_runId: string, sandboxConfig: { env: Record<string, string> }) => {
+      capturedEnv = sandboxConfig.env;
+      return { containerId: "sandbox-1", containerName: "sandbox-1" };
+    }
+  };
+
+  const config = makeConfig({
+    workRoot: workDir,
+    sandboxEnabled: true,
+    sandboxHostWorkPath: workDir,
+  });
+  const engine = new PipelineEngine(config, undefined, undefined, fakeContainerManager as never);
+
+  await (engine as unknown as { buildAndCreateSandbox: (runId: string, image: string, logFile: string) => Promise<unknown> })
+    .buildAndCreateSandbox(runId, config.sandboxImage, logFile);
+
+  assert.equal(capturedEnv?.OPENAI_API_KEY, "sk-openai-test");
+  assert.equal(capturedEnv?.CODEX_API_KEY, "sk-codex-test");
+});
+
 test("PipelineEngine: auto-enables decide_recovery when browser_verify is enabled", async (t) => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-auto-enable-"));
   const workDir = path.join(tmpDir, "work");

@@ -12,6 +12,8 @@ export interface AgentAnalysis {
   signals: string[];
 }
 
+const INTERNAL_GENERATED_FILES = new Set(["AGENTS.md"]);
+
 /**
  * Implement node: run the coding agent.
  */
@@ -117,26 +119,31 @@ export async function analyzeAgentOutput(
   const filesChanged = namesResult.stdout.trim()
     ? namesResult.stdout.trim().split("\n")
     : [];
+  const meaningfulFilesChanged = filesChanged.filter((file) => !INTERNAL_GENERATED_FILES.has(file));
 
   // Parse numstat for added/removed lines
   let totalAdded = 0;
   let totalRemoved = 0;
   for (const line of numstatResult.stdout.trim().split("\n")) {
     const match = line.match(/^(\d+)\s+(\d+)\s+/);
+    const file = line.split("\t")[2];
+    if (file && INTERNAL_GENERATED_FILES.has(file)) {
+      continue;
+    }
     if (match) {
       totalAdded += parseInt(match[1]!, 10);
       totalRemoved += parseInt(match[2]!, 10);
     }
   }
 
-  const diffStats = { added: totalAdded, removed: totalRemoved, filesCount: filesChanged.length };
+  const diffStats = { added: totalAdded, removed: totalRemoved, filesCount: meaningfulFilesChanged.length };
 
   // 2. Garbage detection
-  if (filesChanged.length === 0) {
+  if (meaningfulFilesChanged.length === 0) {
     signals.push("no file changes detected");
     return {
       verdict: "empty",
-      filesChanged,
+      filesChanged: meaningfulFilesChanged,
       diffSummary: statResult.stdout.trim(),
       diffStats,
       signals
@@ -144,11 +151,11 @@ export async function analyzeAgentOutput(
   }
 
   // Mass deletion check: removed > 100 lines AND removed > 5x added AND > 5 files
-  if (totalRemoved > 100 && totalRemoved > totalAdded * 5 && filesChanged.length > 5) {
-    signals.push(`mass deletion detected: +${String(totalAdded)} -${String(totalRemoved)} across ${String(filesChanged.length)} files`);
+  if (totalRemoved > 100 && totalRemoved > totalAdded * 5 && meaningfulFilesChanged.length > 5) {
+    signals.push(`mass deletion detected: +${String(totalAdded)} -${String(totalRemoved)} across ${String(meaningfulFilesChanged.length)} files`);
     return {
       verdict: "suspect",
-      filesChanged,
+      filesChanged: meaningfulFilesChanged,
       diffSummary: statResult.stdout.trim(),
       diffStats,
       signals
@@ -172,7 +179,7 @@ export async function analyzeAgentOutput(
 
   return {
     verdict: "clean",
-    filesChanged,
+    filesChanged: meaningfulFilesChanged,
     diffSummary: statResult.stdout.trim(),
     diffStats,
     signals

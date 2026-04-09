@@ -273,3 +273,28 @@ export const configSections = pgTable("config_sections", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const agentProfiles = pgTable(
+  "agent_profiles",
+  {
+    id: uuid("id").primaryKey(),
+    name: text("name").notNull(),
+    description: text("description"),
+    runtime: text("runtime").notNull(),
+    provider: text("provider"),
+    model: text("model"),
+    tools: text("tools").array().notNull().default([]),
+    mode: text("mode"),
+    extensions: text("extensions").array().notNull().default([]),
+    extraArgs: text("extra_args"),
+    isBuiltIn: boolean("is_built_in").notNull().default(false),
+    isActive: boolean("is_active").notNull().default(false),
+    customCommandTemplate: text("custom_command_template"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("agent_profiles_active_idx").on(t.isActive),
+    index("agent_profiles_runtime_idx").on(t.runtime),
+  ]
+);

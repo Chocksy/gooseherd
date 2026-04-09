@@ -196,6 +196,7 @@ export interface AppConfig {
   gitAuthorEmail: string;
 
   agentCommandTemplate: string;
+  baseAgentCommandTemplate?: string;
   agentFollowUpTemplate?: string;
   validationCommand: string;
   lintFixCommand: string;
@@ -316,6 +317,15 @@ export interface AppConfig {
 
   databaseUrl: string;
   encryptionKey?: string;
+  activeAgentProfile?: {
+    id: string;
+    name: string;
+    runtime: string;
+    provider?: string;
+    model?: string;
+    commandTemplate: string;
+    source: "profile" | "env";
+  };
 }
 
 function parseRepoMap(value?: string): Map<string, string> {
@@ -433,6 +443,9 @@ export function loadConfig(): AppConfig {
     gitAuthorEmail: parsed.GIT_AUTHOR_EMAIL ?? `${appSlug}-bot@local`,
 
     agentCommandTemplate:
+      parsed.AGENT_COMMAND_TEMPLATE ??
+      "bash scripts/dummy-agent.sh {{repo_dir}} {{prompt_file}} {{run_id}}",
+    baseAgentCommandTemplate:
       parsed.AGENT_COMMAND_TEMPLATE ??
       "bash scripts/dummy-agent.sh {{repo_dir}} {{prompt_file}} {{run_id}}",
     agentFollowUpTemplate: parsed.AGENT_FOLLOW_UP_TEMPLATE?.trim() || undefined,

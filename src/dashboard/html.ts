@@ -3075,29 +3075,198 @@ export function dashboardHtml(config: AppConfig): string {
       refreshSelected().catch(console.error);
     };
     // ── Settings slide-over ──
-    el.settingsBtn.onclick = async () => {
-      el.settingsOverlay.classList.add('open');
+    function settingsBadge(on) {
+      return '<span class="settings-badge ' + (on ? 'on' : 'off') + '">' + (on ? 'On' : 'Off') + '</span>';
+    }
+
+    async function loadAgentModels(provider, modelSelect, statusEl, manualInput) {
+      if (!provider) {
+        modelSelect.innerHTML = '<option value="">Select provider first</option>';
+        return;
+      }
+      statusEl.textContent = 'Loading model catalog...';
+      try {
+        var data = await fetchJson('/api/agent-models?provider=' + encodeURIComponent(provider));
+        var models = Array.isArray(data.models) ? data.models : [];
+        modelSelect.innerHTML = '<option value="">Choose catalog model</option>';
+        for (var i = 0; i < models.length; i++) {
+          var opt = document.createElement('option');
+          opt.value = models[i];
+          opt.textContent = models[i];
+          modelSelect.appendChild(opt);
+        }
+        statusEl.textContent = models.length ? 'Loaded ' + models.length + ' models.' : 'Catalog returned no models. Manual entry still works.';
+        if (manualInput.value) {
+          modelSelect.value = manualInput.value;
+        }
+      } catch (err) {
+        modelSelect.innerHTML = '<option value="">Catalog unavailable</option>';
+        statusEl.textContent = 'Could not load live catalog. Enter model id manually.';
+      }
+    }
+
+    function collectAgentProfileForm() {
+      var providerSelect = document.getElementById('ap-provider');
+      var toolsInput = document.getElementById('ap-tools');
+      var extensionsInput = document.getElementById('ap-extensions');
+      return {
+        name: (document.getElementById('ap-name')?.value || '').trim(),
+        description: (document.getElementById('ap-description')?.value || '').trim(),
+        runtime: document.getElementById('ap-runtime')?.value || 'pi',
+        provider: providerSelect ? providerSelect.value || undefined : undefined,
+        model: (document.getElementById('ap-model-manual')?.value || document.getElementById('ap-model-select')?.value || '').trim(),
+        tools: (toolsInput?.value || '').split(',').map(function(v) { return v.trim(); }).filter(Boolean),
+        mode: (document.getElementById('ap-mode')?.value || '').trim() || undefined,
+        extensions: (extensionsInput?.value || '').split(',').map(function(v) { return v.trim(); }).filter(Boolean),
+        extraArgs: (document.getElementById('ap-extra-args')?.value || '').trim() || undefined,
+        customCommandTemplate: (document.getElementById('ap-custom-command')?.value || '').trim() || undefined,
+        isActive: !!document.getElementById('ap-is-active')?.checked
+      };
+    }
+
+    function buildProfileCard(profile, activeId) {
+      var meta = [profile.runtime, profile.provider, profile.model].filter(Boolean).join(' / ');
+      var actions = '<div style="display:flex; gap:8px; margin-top:10px;">';
+      if (profile.id !== activeId) {
+        actions += '<button class="action-btn" data-ap-activate="' + esc(profile.id) + '" style="font-size:11px; padding:5px 10px;">Set Active</button>';
+      } else {
+        actions += '<span class="settings-badge on">Active</span>';
+      }
+      if (!profile.isBuiltin) {
+        actions += '<button class="action-btn" data-ap-delete="' + esc(profile.id) + '" style="font-size:11px; padding:5px 10px;">Delete</button>';
+      }
+      actions += '</div>';
+      return '<div style="border:1px solid var(--border); border-radius:10px; background:var(--panel-3); padding:12px; margin-bottom:10px;">' +
+        '<div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">' +
+        '<div><div style="font-size:13px; font-weight:700;">' + esc(profile.name || '') + '</div>' +
+        '<div style="font-size:12px; color:var(--muted); margin-top:3px;">' + esc(profile.description || '') + '</div></div>' +
+        '<div style="font-size:11px; color:var(--muted); white-space:nowrap;">' + esc(meta || 'custom') + '</div>' +
+        '</div>' +
+        '<div style="margin-top:10px; font-size:12px; color:var(--muted);">Command preview</div>' +
+        '<div class="value settings-code" style="margin-top:4px;">' + esc(profile.customCommandTemplate || profile.commandTemplate || '') + '</div>' +
+        actions +
+        '</div>';
+    }
+
+    function bindSettingsAgentProfileActions() {
+      var providerSelect = document.getElementById('ap-provider');
+      var runtimeSelect = document.getElementById('ap-runtime');
+      var modelSelect = document.getElementById('ap-model-select');
+      var modelManual = document.getElementById('ap-model-manual');
+      var statusEl = document.getElementById('ap-model-status');
+      var customWrap = document.getElementById('ap-custom-wrap');
+      var structuredWrap = document.getElementById('ap-structured-wrap');
+      var previewEl = document.getElementById('ap-preview');
+      var submitBtn = document.getElementById('ap-save');
+      var previewBtn = document.getElementById('ap-preview-btn');
+      var refreshBtn = document.getElementById('ap-refresh-models');
+
+      async function refreshModels() {
+        if (providerSelect && modelSelect && statusEl && modelManual) {
+          await loadAgentModels(providerSelect.value, modelSelect, statusEl, modelManual);
+        }
+      }
+
+      function syncRuntimeUi() {
+        var isCustom = runtimeSelect && runtimeSelect.value === 'custom';
+        if (customWrap) customWrap.style.display = isCustom ? 'block' : 'none';
+        if (structuredWrap) structuredWrap.style.display = isCustom ? 'none' : 'block';
+      }
+
+      if (runtimeSelect) {
+        runtimeSelect.onchange = function() {
+          syncRuntimeUi();
+        };
+        syncRuntimeUi();
+      }
+      if (providerSelect) {
+        providerSelect.onchange = function() {
+          refreshModels().catch(console.error);
+        };
+      }
+      if (modelSelect && modelManual) {
+        modelSelect.onchange = function() {
+          if (modelSelect.value) modelManual.value = modelSelect.value;
+        };
+      }
+      if (refreshBtn) {
+        refreshBtn.onclick = function() {
+          refreshModels().catch(console.error);
+        };
+      }
+      if (previewBtn) {
+        previewBtn.onclick = async function() {
+          previewEl.textContent = 'Generating preview...';
+          var payload = collectAgentProfileForm();
+          try {
+            var result = await fetchJson('/api/agent-profiles/preview', { method: 'POST', body: JSON.stringify(payload) });
+            previewEl.textContent = (result.errors && result.errors.length ? 'Validation: ' + result.errors.join('; ') + '\\n\\n' : '') + (result.commandTemplate || '');
+          } catch (err) {
+            previewEl.textContent = 'Failed to build preview.';
+          }
+        };
+      }
+      if (submitBtn) {
+        submitBtn.onclick = async function() {
+          var payload = collectAgentProfileForm();
+          submitBtn.disabled = true;
+          try {
+            await fetchJson('/api/agent-profiles', { method: 'POST', body: JSON.stringify(payload) });
+            await refreshSettingsPanel();
+          } catch (err) {
+            previewEl.textContent = err && err.message ? err.message : 'Failed to save profile.';
+          } finally {
+            submitBtn.disabled = false;
+          }
+        };
+      }
+
+      el.settingsBody.querySelectorAll('[data-ap-activate]').forEach(function(btn) {
+        btn.onclick = async function() {
+          var id = btn.getAttribute('data-ap-activate');
+          if (!id) return;
+          await fetchJson('/api/agent-profiles/' + encodeURIComponent(id) + '/activate', { method: 'POST' });
+          await refreshSettingsPanel();
+        };
+      });
+      el.settingsBody.querySelectorAll('[data-ap-delete]').forEach(function(btn) {
+        btn.onclick = async function() {
+          var id = btn.getAttribute('data-ap-delete');
+          if (!id || !confirm('Delete this profile?')) return;
+          await fetchJson('/api/agent-profiles/' + encodeURIComponent(id), { method: 'DELETE' });
+          await refreshSettingsPanel();
+        };
+      });
+
+      refreshModels().catch(function() {});
+    }
+
+    async function refreshSettingsPanel() {
       el.settingsBody.textContent = 'Loading...';
       try {
         var data = await fetchJson('/api/settings');
         var c = data.config || {};
         var s = data.stats || {};
-        var badge = (on) => '<span class="settings-badge ' + (on ? 'on' : 'off') + '">' + (on ? 'On' : 'Off') + '</span>';
         el.settingsBody.innerHTML =
           '<div class="settings-section"><h3>Configuration</h3>' +
           '<div class="settings-row"><span class="label">App Name</span><span class="value compact">' + esc(c.appName || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Pipeline</span><span class="value compact">' + esc(c.pipelineFile || '') + '</span></div>' +
-          '<div class="settings-row"><span class="label">Slack</span><span class="value">' + badge(c.slackConnected) + '</span></div>' +
+          '<div class="settings-row"><span class="label">Slack</span><span class="value">' + settingsBadge(c.slackConnected) + '</span></div>' +
           '<div class="settings-row"><span class="label">GitHub Auth</span><span class="value compact">' + esc(c.githubAuthMode || 'none') + '</span></div>' +
-          '<div class="settings-row stacked"><span class="label">Agent Command</span><span class="value settings-code" title="' + esc(c.agentCommandTemplate || '') + '">' + esc(c.agentCommandTemplate || '') + '</span></div>' +
+          '<div class="settings-row stacked">' +
+          '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">' +
+          '<span class="label">Agent Command</span>' +
+          '<a href="/agent-profiles" class="top-btn" style="padding:6px 12px;">Edit</a>' +
+          '</div>' +
+          '<span class="value settings-code" title="' + esc(c.agentCommandTemplate || '') + '">' + esc(c.agentCommandTemplate || '') + '</span></div>' +
           '</div>' +
           '<div class="settings-section"><h3>Features</h3>' +
-          '<div class="settings-row"><span class="label">Observer</span>' + badge(c.features?.observer) + '</div>' +
-          '<div class="settings-row"><span class="label">Sandbox</span>' + badge(c.features?.sandbox) + '</div>' +
-          '<div class="settings-row"><span class="label">Browser Verify</span>' + badge(c.features?.browserVerify) + '</div>' +
-          '<div class="settings-row"><span class="label">Scope Judge</span>' + badge(c.features?.scopeJudge) + '</div>' +
-          '<div class="settings-row"><span class="label">CI Wait</span>' + badge(c.features?.ciWait) + '</div>' +
-          '<div class="settings-row"><span class="label">Dry Run</span>' + badge(c.features?.dryRun) + '</div>' +
+          '<div class="settings-row"><span class="label">Observer</span>' + settingsBadge(c.features?.observer) + '</div>' +
+          '<div class="settings-row"><span class="label">Sandbox</span>' + settingsBadge(c.features?.sandbox) + '</div>' +
+          '<div class="settings-row"><span class="label">Browser Verify</span>' + settingsBadge(c.features?.browserVerify) + '</div>' +
+          '<div class="settings-row"><span class="label">Scope Judge</span>' + settingsBadge(c.features?.scopeJudge) + '</div>' +
+          '<div class="settings-row"><span class="label">CI Wait</span>' + settingsBadge(c.features?.ciWait) + '</div>' +
+          '<div class="settings-row"><span class="label">Dry Run</span>' + settingsBadge(c.features?.dryRun) + '</div>' +
           '</div>' +
           '<div class="settings-section"><h3>Models</h3>' +
           '<div class="settings-row"><span class="label">Default</span><span class="value compact">' + esc(c.models?.default || '') + '</span></div>' +
@@ -3116,9 +3285,15 @@ export function dashboardHtml(config: AppConfig): string {
           '<div class="settings-section" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #22314f;">' +
           '<a href="/setup?reconfig=1" style="display: inline-block; padding: 8px 16px; background: #1e293b; color: #94a3b8; border-radius: 8px; text-decoration: none; font-size: 13px; font-weight: 600;">Reconfigure</a>' +
           '</div>';
+        bindSettingsAgentProfileActions();
       } catch (e) {
         el.settingsBody.textContent = 'Failed to load settings.';
       }
+    }
+
+    el.settingsBtn.onclick = async () => {
+      el.settingsOverlay.classList.add('open');
+      await refreshSettingsPanel();
     };
     el.settingsClose.onclick = () => el.settingsOverlay.classList.remove('open');
     el.settingsOverlay.onclick = (e) => { if (e.target === el.settingsOverlay) el.settingsOverlay.classList.remove('open'); };

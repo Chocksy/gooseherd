@@ -628,7 +628,7 @@ export class PipelineEngine {
 
     // Pass through agent-relevant env vars
     for (const key of [
-      "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY",
       "XAI_API_KEY", "GEMINI_API_KEY",
       "CEMS_API_URL", "CEMS_API_KEY",
       "OPENROUTER_PROVIDER_PREFERENCES"

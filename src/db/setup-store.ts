@@ -245,6 +245,7 @@ export class SetupStore {
       const apiKey = stringOrUndefined(llm.secrets.apiKey);
       setEnvValue("ANTHROPIC_API_KEY", provider === "anthropic" ? apiKey : undefined);
       setEnvValue("OPENAI_API_KEY", provider === "openai" ? apiKey : undefined);
+      setEnvValue("CODEX_API_KEY", provider === "openai" ? apiKey : undefined);
       setEnvValue("OPENROUTER_API_KEY", provider === "openrouter" ? apiKey : undefined);
       setEnvValue("DEFAULT_LLM_MODEL", stringOrUndefined(llm.config.defaultModel));
     }

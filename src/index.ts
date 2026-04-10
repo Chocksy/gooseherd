@@ -28,12 +28,14 @@ import { callLLMForJSON, type LLMCallerConfig } from "./llm/caller.js";
 import { LearningStore } from "./observer/learning-store.js";
 import { EvalStore } from "./eval/eval-store.js";
 import { SetupStore } from "./db/setup-store.js";
+import { AgentProfileStore } from "./db/agent-profile-store.js";
 
 // ── Service container ──
 
 interface Services {
   config: AppConfig;
   store: RunStore;
+  agentProfileStore: AgentProfileStore;
   githubService: GitHubService | undefined;
   memoryProvider: CemsProvider | undefined;
   hooks: RunLifecycleHooks;
@@ -50,6 +52,8 @@ interface Services {
 async function createServices(config: AppConfig, db: Database): Promise<Services> {
   const store = new RunStore(db);
   await store.init();
+  const agentProfileStore = new AgentProfileStore(db, config);
+  await agentProfileStore.init();
 
   const githubService = GitHubService.create(config);
   const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
@@ -106,7 +110,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
   conversationStore.startCleanupTimer();
 
   return {
-    config, store, githubService, memoryProvider, hooks, containerManager,
+    config, store, agentProfileStore, githubService, memoryProvider, hooks, containerManager,
     pipelineEngine, pipelineStore, learningStore, evalStore, webClient, runManager, conversationStore,
   };
 }
@@ -136,7 +140,6 @@ async function main(): Promise<void> {
 
   // 2. Load config (reads env vars, including any injected by wizard)
   const config = loadConfig();
-  checkAgentDefault(config);
 
   // 3. One-time registrations (plugins)
   const pluginResult = await loadPlugins(getPluginDir());
@@ -150,6 +153,28 @@ async function main(): Promise<void> {
 
   // 4. Create core services
   const svc = await createServices(config, db);
+  const activeAgentProfile = await svc.agentProfileStore.getActive();
+  if (activeAgentProfile) {
+    config.agentCommandTemplate = await svc.agentProfileStore.getEffectiveCommandTemplate(config.baseAgentCommandTemplate ?? config.agentCommandTemplate);
+    config.activeAgentProfile = {
+      id: activeAgentProfile.id,
+      name: activeAgentProfile.name,
+      runtime: activeAgentProfile.runtime,
+      provider: activeAgentProfile.provider,
+      model: activeAgentProfile.model,
+      commandTemplate: config.agentCommandTemplate,
+      source: "profile",
+    };
+  } else {
+    config.activeAgentProfile = {
+      id: "env-template",
+      name: "Raw AGENT_COMMAND_TEMPLATE",
+      runtime: "custom",
+      commandTemplate: config.agentCommandTemplate,
+      source: "env",
+    };
+  }
+  checkAgentDefault(config);
 
   // 5. Recover stale in-progress runs from before restart
   const recoveredRuns = await svc.store.recoverInProgressRuns(
@@ -245,6 +270,7 @@ async function main(): Promise<void> {
         setTimeout(() => shutdown("WIZARD_COMPLETE"), 1000);
       },
       svc.evalStore,
+      svc.agentProfileStore,
     );
   }
 

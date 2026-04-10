@@ -18,9 +18,20 @@ import type { PipelineStore } from "./pipeline/pipeline-store.js";
 import type { LearningStore } from "./observer/learning-store.js";
 import { SetupStore } from "./db/setup-store.js";
 import { wizardHtml } from "./dashboard/wizard-html.js";
+import { agentProfileWizardHtml } from "./dashboard/agent-profile-wizard-html.js";
+import { agentProfileListHtml } from "./dashboard/agent-profile-list-html.js";
 import { GitHubService } from "./github.js";
 import type { EvalStore } from "./eval/eval-store.js";
 import { loadScenariosFromDir } from "./eval/scenario-loader.js";
+import { AgentProfileStore } from "./db/agent-profile-store.js";
+import {
+  getAvailableProviders,
+  renderAgentProfileTemplate,
+  sanitizeAgentProfileInput,
+  validateAgentProfile,
+  type AgentProvider,
+  type AgentProfileInput,
+} from "./agent-profile.js";
 
 /** Lean interface — dashboard only reads observer state, never mutates it. */
 export interface DashboardObserver {
@@ -298,6 +309,85 @@ async function computeRunStats(store: RunStore) {
   return { totalRuns, completedRuns, failedRuns, successRate, totalCostUsd, avgCostUsd, runsLast24h };
 }
 
+async function syncActiveAgentProfileConfig(config: AppConfig, agentProfileStore: AgentProfileStore): Promise<void> {
+  const fallbackTemplate = config.baseAgentCommandTemplate ?? config.agentCommandTemplate;
+  const active = await agentProfileStore.getActive();
+  if (!active) {
+    config.agentCommandTemplate = fallbackTemplate;
+    config.activeAgentProfile = {
+      id: "env-template",
+      name: "Raw AGENT_COMMAND_TEMPLATE",
+      runtime: "custom",
+      commandTemplate: fallbackTemplate,
+      source: "env",
+    };
+    return;
+  }
+
+  const commandTemplate = await agentProfileStore.getEffectiveCommandTemplate(fallbackTemplate);
+  config.agentCommandTemplate = commandTemplate;
+  config.activeAgentProfile = {
+    id: active.id,
+    name: active.name,
+    runtime: active.runtime,
+    provider: active.provider,
+    model: active.model,
+    commandTemplate,
+    source: "profile",
+  };
+}
+
+async function loadProviderModels(config: AppConfig, provider: AgentProvider): Promise<string[]> {
+  const unique = (values: string[]) => [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+  if (provider === "openai") {
+    if (!config.openaiApiKey) throw new Error("OPENAI_API_KEY is not configured");
+    const response = await fetch("https://api.openai.com/v1/models", {
+      headers: { Authorization: `Bearer ${config.openaiApiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw new Error(`OpenAI returned ${String(response.status)}`);
+    }
+    const data = await response.json() as { data?: Array<{ id?: string }> };
+    return unique((data.data ?? []).map((entry) => entry.id?.trim()).filter((entry): entry is string => Boolean(entry)));
+  }
+
+  if (provider === "anthropic") {
+    if (!config.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
+    const response = await fetch("https://api.anthropic.com/v1/models", {
+      headers: {
+        "x-api-key": config.anthropicApiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw new Error(`Anthropic returned ${String(response.status)}`);
+    }
+    const data = await response.json() as { data?: Array<{ id?: string }> };
+    return unique((data.data ?? []).map((entry) => entry.id?.trim()).filter((entry): entry is string => Boolean(entry)));
+  }
+
+  if (!config.openrouterApiKey) throw new Error("OPENROUTER_API_KEY is not configured");
+  const response = await fetch("https://openrouter.ai/api/v1/models", {
+    headers: { Authorization: `Bearer ${config.openrouterApiKey}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(`OpenRouter returned ${String(response.status)}`);
+  }
+  const data = await response.json() as { data?: Array<{ id?: string }> };
+  return unique((data.data ?? []).map((entry) => entry.id?.trim()).filter((entry): entry is string => Boolean(entry)));
+}
+
+function decorateAgentProfile(profile: AgentProfileInput & { id?: string; isBuiltin?: boolean; isActive?: boolean; createdAt?: string; updatedAt?: string }): Record<string, unknown> {
+  return {
+    ...profile,
+    commandTemplate: renderAgentProfileTemplate(profile),
+  };
+}
+
 export function startDashboardServer(
   config: AppConfig,
   store: RunStore,
@@ -309,6 +399,7 @@ export function startDashboardServer(
   setupStore?: SetupStore,
   onSetupComplete?: () => Promise<void>,
   evalStore?: EvalStore,
+  agentProfileStore?: AgentProfileStore,
 ): void {
   const githubService = GitHubService.create(config);
   let githubRepositoriesCache: CachedGitHubRepositories | undefined;
@@ -346,6 +437,16 @@ export function startDashboardServer(
       if (req.method === "GET" && pathname === "/setup") {
         const reconfig = requestUrl.searchParams.get("reconfig") === "1";
         sendText(res, 200, wizardHtml(config.appName, reconfig), "text/html");
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/agent-profiles") {
+        sendText(res, 200, agentProfileListHtml(config.appName), "text/html");
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/agent-profiles/new") {
+        sendText(res, 200, agentProfileWizardHtml(config.appName), "text/html");
         return;
       }
 
@@ -557,6 +658,7 @@ export function startDashboardServer(
       if (req.method === "GET" && pathname === "/api/settings") {
         const githubAuthMode = resolveGitHubAuthMode(config);
         const stats = await computeRunStats(store);
+        const profiles = agentProfileStore ? (await agentProfileStore.list()).map((profile) => decorateAgentProfile(profile)) : [];
 
         sendJson(res, 200, {
           config: {
@@ -584,9 +686,86 @@ export function startDashboardServer(
               browserVerify: config.browserVerifyModel,
             },
             agentCommandTemplate: config.agentCommandTemplate,
+            activeAgentProfile: config.activeAgentProfile,
+            agentProfiles: profiles,
           },
           stats,
         });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/agent-providers") {
+        sendJson(res, 200, {
+          providers: getAvailableProviders(config),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/agent-models") {
+        const provider = requestUrl.searchParams.get("provider") as AgentProvider | null;
+        if (!provider) {
+          sendJson(res, 400, { error: "provider is required" });
+          return;
+        }
+        try {
+          const models = await loadProviderModels(config, provider);
+          sendJson(res, 200, { provider, models });
+        } catch (error) {
+          sendJson(res, 502, { error: error instanceof Error ? error.message : "Failed to load models", models: [] });
+        }
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/api/agent-profiles/preview") {
+        const raw = await readBody(req);
+        if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+        let parsed: AgentProfileInput;
+        try {
+          parsed = JSON.parse(raw) as AgentProfileInput;
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        const profile = sanitizeAgentProfileInput(parsed);
+        const validation = validateAgentProfile(profile, config);
+        sendJson(res, 200, {
+          ok: validation.ok,
+          errors: validation.errors,
+          commandTemplate: renderAgentProfileTemplate(profile),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/agent-profiles") {
+        if (!agentProfileStore) {
+          sendJson(res, 501, { error: "Agent profiles are unavailable" });
+          return;
+        }
+        sendJson(res, 200, { profiles: (await agentProfileStore.list()).map((profile) => decorateAgentProfile(profile)) });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/api/agent-profiles") {
+        if (!agentProfileStore) {
+          sendJson(res, 501, { error: "Agent profiles are unavailable" });
+          return;
+        }
+        const raw = await readBody(req);
+        if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+        let parsed: AgentProfileInput;
+        try {
+          parsed = JSON.parse(raw) as AgentProfileInput;
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        try {
+          const profile = await agentProfileStore.save(parsed);
+          await syncActiveAgentProfileConfig(config, agentProfileStore);
+          sendJson(res, 201, { ok: true, profile: decorateAgentProfile(profile) });
+        } catch (error) {
+          sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to save agent profile" });
+        }
         return;
       }
 
@@ -710,6 +889,52 @@ export function startDashboardServer(
       }
 
       const parts = pathname.split("/").filter(Boolean);
+      if (parts[0] === "api" && parts[1] === "agent-profiles" && parts[2]) {
+        if (!agentProfileStore) {
+          sendJson(res, 501, { error: "Agent profiles are unavailable" });
+          return;
+        }
+        const profileId = decodeURIComponent(parts[2]);
+
+        if (parts.length === 3 && req.method === "PUT") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: AgentProfileInput;
+          try {
+            parsed = JSON.parse(raw) as AgentProfileInput;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          try {
+            const profile = await agentProfileStore.save(parsed, profileId);
+            await syncActiveAgentProfileConfig(config, agentProfileStore);
+            sendJson(res, 200, { ok: true, profile: decorateAgentProfile(profile) });
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to update agent profile" });
+          }
+          return;
+        }
+
+        if (parts.length === 3 && req.method === "DELETE") {
+          const deleted = await agentProfileStore.delete(profileId);
+          await syncActiveAgentProfileConfig(config, agentProfileStore);
+          sendJson(res, deleted ? 200 : 404, deleted ? { ok: true } : { error: "Profile not found or cannot be deleted" });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "activate" && req.method === "POST") {
+          const profile = await agentProfileStore.setActive(profileId);
+          if (!profile) {
+            sendJson(res, 404, { error: "Profile not found" });
+            return;
+          }
+          await syncActiveAgentProfileConfig(config, agentProfileStore);
+          sendJson(res, 200, { ok: true, profile: decorateAgentProfile(profile) });
+          return;
+        }
+      }
+
       if (parts[0] === "api" && parts[1] === "runs" && parts[2]) {
         const id = decodeURIComponent(parts[2]);
         const run = await store.findRunByIdentifier(id);

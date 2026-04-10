@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { runArtifacts, runCompletions, runEvents, runPayloads, runTokens, runs } from "../db/schema.js";
 import type {
@@ -204,6 +204,17 @@ export class ControlPlaneStore {
     const rows = await this.db.select().from(runPayloads).where(eq(runPayloads.runId, runId)).limit(1);
     const row = rows[0];
     return row ? toRunEnvelope(row) : null;
+  }
+
+  async getLatestCompletion(runId: string): Promise<RunCompletionRecord | null> {
+    const rows = await this.db
+      .select()
+      .from(runCompletions)
+      .where(eq(runCompletions.runId, runId))
+      .orderBy(desc(runCompletions.createdAt), desc(runCompletions.id))
+      .limit(1);
+    const row = rows[0];
+    return row ? toCompletionRecord(row) : null;
   }
 
   async getCancellationState(runId: string): Promise<{ cancelRequested: boolean }> {

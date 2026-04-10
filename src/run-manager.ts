@@ -140,7 +140,7 @@ function isRetryableStatus(status: RunRecord["status"]): boolean {
   return status === "failed" || status === "completed";
 }
 
-export type RunTerminalCallback = (runId: string, status: string) => void;
+export type RunTerminalCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
 type EnqueueRunInput = Omit<NewRunInput, "runtime"> & { runtime?: NewRunInput["runtime"] };
 
 export class RunManager {
@@ -259,10 +259,10 @@ export class RunManager {
     this.terminalCallbacks.push(cb);
   }
 
-  private fireTerminalCallbacks(runId: string, status: string): void {
+  private fireTerminalCallbacks(runId: string, status: string, runtime: RunRecord["runtime"]): void {
     for (const cb of this.terminalCallbacks) {
       try {
-        cb(runId, status);
+        cb(runId, status, runtime);
       } catch {
         // Swallow errors from callbacks to avoid disrupting the run manager
       }
@@ -580,7 +580,7 @@ export class RunManager {
       this.hooks?.onRunComplete(run, result);
 
       // Notify terminal listeners (observer learning loop)
-      this.fireTerminalCallbacks(run.id, "completed");
+      this.fireTerminalCallbacks(run.id, "completed", run.runtime);
     } catch (error) {
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);
@@ -604,7 +604,7 @@ export class RunManager {
       logError("Run failed", { runId: failed.id, error: message });
 
       // Notify terminal listeners (observer learning loop)
-      this.fireTerminalCallbacks(failed.id, "failed");
+      this.fireTerminalCallbacks(failed.id, "failed", failed.runtime);
     }
   }
 

@@ -12,6 +12,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "runner": "tsx src/runner/index.ts",
     "check": "tsc --noEmit",
     "test": "node --test --test-force-exit --import tsx tests/*.test.ts",
     "local:trigger": "tsx src/local-trigger.ts",

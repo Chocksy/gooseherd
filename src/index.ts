@@ -35,6 +35,7 @@ import type { RuntimeRegistry } from "./runtime/backend.js";
 import { ControlPlaneStore } from "./runtime/control-plane-store.js";
 import { FileArtifactStore } from "./runtime/file-artifact-store.js";
 import type { RunnerArtifactStore } from "./runtime/control-plane-router.js";
+import { RuntimeReconciler } from "./runtime/reconciler.js";
 import {
   hasSandboxRuntimeHotReloadChange,
   preflightSandboxRuntime
@@ -122,8 +123,31 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
   const { WebClient } = await import("@slack/web-api");
   const webClient = config.slackBotToken ? new WebClient(config.slackBotToken) : undefined;
 
-  const runManager = new RunManager(config, store, runtimeRegistry, webClient, hooks, pipelineStore, learningStore);
   const controlPlaneStore = new ControlPlaneStore(db);
+  const runtimeReconciler = new RuntimeReconciler(
+    controlPlaneStore,
+    {
+      getTerminalFact: async (runId: string) => {
+        const run = await store.getRun(runId);
+        if (!run) return "missing";
+        if (run.status === "completed") return "succeeded";
+        if (run.status === "failed") return "failed";
+        return "running";
+      }
+    },
+    store
+  );
+  const runManager = new RunManager(config, store, runtimeRegistry, webClient, hooks, pipelineStore, learningStore);
+  runManager.onRunTerminal((runId, _status, runtime) => {
+    if (runtime !== "kubernetes") {
+      return;
+    }
+
+    runtimeReconciler.reconcileRun(runId).catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown";
+      logError("Failed to reconcile terminal kubernetes run", { runId, error: message });
+    });
+  });
   const publicBaseUrl = config.dashboardPublicUrl ?? `http://${config.dashboardHost}:${String(config.dashboardPort)}`;
   const runnerArtifactStore: RunnerArtifactStore = new FileArtifactStore(
     config.workRoot,

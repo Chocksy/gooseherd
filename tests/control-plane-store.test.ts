@@ -4,6 +4,8 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "./helpers/test-db.js";
 import { runArtifacts, runCompletions, runEvents, runTokens } from "../src/db/schema.js";
 import { ControlPlaneStore } from "../src/runtime/control-plane-store.js";
+import { RuntimeReconciler } from "../src/runtime/reconciler.js";
+import { RunStore } from "../src/store.js";
 
 test("control-plane store issues one run token and deduplicates completion by idempotency key", async () => {
   const { db, cleanup } = await createTestDb();
@@ -92,5 +94,80 @@ test("control-plane store deduplicates events by eventId within a run", async ()
   assert.equal(eventRows[0]?.eventId, "evt-1");
   assert.equal(eventRows[0]?.sequence, 1);
   assert.equal(eventRows[0]?.eventType, "run.phase_changed");
+  await cleanup();
+});
+
+test("reconciler finalizes failed when job is terminal and no completion arrives in time", async () => {
+  const { db, cleanup } = await createTestDb();
+  const controlPlaneStore = new ControlPlaneStore(db);
+  const runStore = new RunStore(db);
+  await runStore.init();
+
+  const run = await runStore.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "reconcile terminal-without-completion",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "kubernetes",
+    },
+    "gooseherd",
+  );
+
+  const fakeRuntimeFacts = {
+    getTerminalFact: async () => "failed" as const,
+  };
+
+  const reconciler = new RuntimeReconciler(controlPlaneStore, fakeRuntimeFacts, runStore);
+  await reconciler.reconcileRun(run.id);
+  const updated = await runStore.getRun(run.id);
+
+  assert.equal(updated?.status, "failed");
+  assert.equal(updated?.phase, "failed");
+  assert.equal(updated?.error, "completion missing after terminal runtime state");
+  await cleanup();
+});
+
+test("reconciler finalizes completed when completion exists and runtime reports succeeded", async () => {
+  const { db, cleanup } = await createTestDb();
+  const controlPlaneStore = new ControlPlaneStore(db);
+  const runStore = new RunStore(db);
+  await runStore.init();
+
+  const run = await runStore.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "reconcile completed-with-completion",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "kubernetes",
+    },
+    "gooseherd",
+  );
+
+  await controlPlaneStore.recordCompletion(run.id, {
+    idempotencyKey: "completion-1",
+    status: "success",
+    artifactState: "complete",
+    commitSha: "abc123",
+    changedFiles: ["a.ts"],
+    title: "Complete run",
+  });
+
+  const fakeRuntimeFacts = {
+    getTerminalFact: async () => "succeeded" as const,
+  };
+
+  const reconciler = new RuntimeReconciler(controlPlaneStore, fakeRuntimeFacts, runStore);
+  await reconciler.reconcileRun(run.id);
+  const updated = await runStore.getRun(run.id);
+
+  assert.equal(updated?.status, "completed");
+  assert.equal(updated?.phase, "completed");
+  assert.ok(updated?.finishedAt);
   await cleanup();
 });

@@ -3247,6 +3247,9 @@ export function dashboardHtml(config: AppConfig): string {
         var data = await fetchJson('/api/settings');
         var c = data.config || {};
         var s = data.stats || {};
+        var sandboxStatus = c.sandboxStatus && c.sandboxStatus.enabled === false
+          ? ' <span class="settings-badge off">Disabled</span>'
+          : ' ' + settingsBadge(Boolean(c.sandboxStatus && c.sandboxStatus.enabled));
         el.settingsBody.innerHTML =
           '<div class="settings-section"><h3>Configuration</h3>' +
           '<div class="settings-row"><span class="label">App Name</span><span class="value compact">' + esc(c.appName || '') + '</span></div>' +
@@ -3262,7 +3265,7 @@ export function dashboardHtml(config: AppConfig): string {
           '</div>' +
           '<div class="settings-section"><h3>Features</h3>' +
           '<div class="settings-row"><span class="label">Observer</span>' + settingsBadge(c.features?.observer) + '</div>' +
-          '<div class="settings-row"><span class="label">Sandbox</span>' + settingsBadge(c.features?.sandbox) + '</div>' +
+          '<div class="settings-row"><span class="label">Sandbox Runtime</span><span class="value compact">' + esc(c.sandboxRuntime || '') + sandboxStatus + '</span></div>' +
           '<div class="settings-row"><span class="label">Browser Verify</span>' + settingsBadge(c.features?.browserVerify) + '</div>' +
           '<div class="settings-row"><span class="label">Scope Judge</span>' + settingsBadge(c.features?.scopeJudge) + '</div>' +
           '<div class="settings-row"><span class="label">CI Wait</span>' + settingsBadge(c.features?.ciWait) + '</div>' +

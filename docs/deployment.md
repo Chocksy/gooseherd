@@ -188,7 +188,7 @@ SCOPE_JUDGE_MIN_PASS_SCORE=60
 Runs each agent in an isolated Docker container.
 
 ```env
-SANDBOX_ENABLED=true
+SANDBOX_RUNTIME=docker
 SANDBOX_HOST_WORK_PATH=/absolute/path/to/work/dir
 ```
 

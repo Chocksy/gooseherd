@@ -9,6 +9,7 @@ type RunRow = typeof runs.$inferSelect;
 function rowToRecord(row: RunRow): RunRecord {
   return {
     id: row.id,
+    runtime: row.runtime as RunRecord["runtime"],
     status: row.status as RunStatus,
     phase: row.phase as RunRecord["phase"],
     repoSlug: row.repoSlug,
@@ -81,6 +82,7 @@ export class RunStore {
 
     await this.db.insert(runs).values({
       id,
+      runtime: input.runtime,
       status: "queued",
       phase: "queued",
       repoSlug: input.repoSlug,

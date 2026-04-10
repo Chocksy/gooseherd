@@ -332,6 +332,7 @@ describe("team tagging", () => {
       requestedBy: "U123",
       channelId: "C123",
       threadTs: "1234.5678",
+      runtime: "local",
       teamId: "platform"
     }, "gooseherd");
 
@@ -355,7 +356,8 @@ describe("team tagging", () => {
       baseBranch: "main",
       requestedBy: "U123",
       channelId: "C123",
-      threadTs: "1234.5678"
+      threadTs: "1234.5678",
+      runtime: "local"
     }, "gooseherd");
 
     assert.equal(run.teamId, undefined);
@@ -375,6 +377,7 @@ describe("team tagging", () => {
       requestedBy: "U1",
       channelId: "C1",
       threadTs: "1.1",
+      runtime: "local",
       teamId: "platform"
     }, "gooseherd");
 
@@ -385,6 +388,7 @@ describe("team tagging", () => {
       requestedBy: "U2",
       channelId: "C2",
       threadTs: "2.2",
+      runtime: "local",
       teamId: "product"
     }, "gooseherd");
 
@@ -394,7 +398,8 @@ describe("team tagging", () => {
       baseBranch: "main",
       requestedBy: "U3",
       channelId: "C3",
-      threadTs: "3.3"
+      threadTs: "3.3",
+      runtime: "local"
       // No teamId
     }, "gooseherd");
 

@@ -55,6 +55,25 @@ function makeDeps(overrides: Partial<NodeDeps> = {}): NodeDeps {
 // ═══════════════════════════════════════════════════════
 
 describe("setupSandboxNode", () => {
+  test("returns runtime_disabled and skips requestSandbox for non-docker runtime", async () => {
+    const ctx = new ContextBag();
+    let requested = false;
+    const deps = makeDeps({
+      config: {
+        sandboxRuntime: "local",
+        sandboxEnabled: true,
+        sandboxImage: "gooseherd/sandbox:default"
+      } as AppConfig,
+      requestSandbox: async () => { requested = true; }
+    });
+
+    const result = await setupSandboxNode(makeNodeConfig(), ctx, deps);
+    assert.equal(result.outcome, "success");
+    assert.equal(result.outputs?.sandboxImage, "none");
+    assert.equal(result.outputs?.sandboxSource, "runtime_disabled");
+    assert.equal(requested, false);
+  });
+
   test("returns success with disabled source when sandbox is off", async () => {
     const ctx = new ContextBag();
     const deps = makeDeps({

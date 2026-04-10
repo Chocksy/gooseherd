@@ -134,6 +134,7 @@ function buildHandleMessageDeps(
         requestedBy: "orchestrator",
         channelId: "",
         threadTs: "",
+        runtime: config.sandboxRuntime,
         skipNodes: opts.skipNodes,
         enableNodes: opts.enableNodes,
         pipelineHint: opts.pipeline,
@@ -418,6 +419,7 @@ export async function startSlackApp(
       requestedBy: userId,
       channelId: payload.channelId,
       threadTs: payload.threadTs,
+      runtime: config.sandboxRuntime,
       teamId: resolveTeamFromChannel(payload.channelId, config.teamChannelMap)
     });
 
@@ -672,6 +674,7 @@ export async function startSlackApp(
           requestedBy: event.user!,
           channelId: event.channel,
           threadTs: replyThreadTs,
+          runtime: config.sandboxRuntime,
           skipNodes: opts.skipNodes,
           enableNodes: opts.enableNodes,
           pipelineHint: opts.pipeline,

@@ -10,8 +10,11 @@ import { resolveRepoSandboxImage } from "../../sandbox/image-resolver.js";
  * Must be placed AFTER clone (needs repoDir) and BEFORE any node that
  * requires sandbox execution.
  *
- * When sandbox is disabled (config.sandboxEnabled === false), this node
- * is a no-op that returns success.
+ * When sandbox runtime is non-docker (config.sandboxRuntime !== "docker"), this
+ * node is a no-op that returns success with sandboxSource "runtime_disabled".
+ *
+ * When sandbox is disabled (config.sandboxEnabled === false), this node is also
+ * a no-op that returns success.
  */
 export async function setupSandboxNode(
   _nodeConfig: NodeConfig,
@@ -19,6 +22,11 @@ export async function setupSandboxNode(
   deps: NodeDeps
 ): Promise<NodeResult> {
   const logFile = deps.logFile;
+
+  if (deps.config.sandboxRuntime && deps.config.sandboxRuntime !== "docker") {
+    await appendLog(logFile, `[setup_sandbox] runtime=${deps.config.sandboxRuntime}, skipping\n`);
+    return { outcome: "success", outputs: { sandboxImage: "none", sandboxSource: "runtime_disabled" } };
+  }
 
   if (!deps.config.sandboxEnabled) {
     await appendLog(logFile, "[setup_sandbox] sandbox disabled, skipping\n");

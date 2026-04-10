@@ -664,6 +664,10 @@ export function startDashboardServer(
           config: {
             appName: config.appName,
             pipelineFile: config.pipelineFile,
+            sandboxRuntime: config.sandboxRuntime,
+            sandboxStatus: {
+              enabled: config.sandboxEnabled,
+            },
             slackConnected: Boolean(config.slackBotToken),
             githubAuthMode,
             configOverrides: {
@@ -673,7 +677,6 @@ export function startDashboardServer(
             },
             features: {
               observer: config.observerEnabled,
-              sandbox: config.sandboxEnabled,
               browserVerify: config.browserVerifyEnabled,
               scopeJudge: config.scopeJudgeEnabled,
               ciWait: config.ciWaitEnabled,
@@ -859,6 +862,7 @@ export function startDashboardServer(
           requestedBy: "dashboard",
           channelId: "dashboard",
           threadTs: `dash-${Date.now()}`,
+          runtime: config.sandboxRuntime,
           pipelineHint: parsed.pipeline?.trim() || undefined,
         });
         sendJson(res, 201, { ok: true, run: newRun });

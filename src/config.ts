@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveSandboxRuntime, type SandboxRuntime } from "./runtime/runtime-mode.js";
 
 const envSchema = z.object({
   APP_NAME: z.string().optional(),
@@ -121,6 +122,7 @@ const envSchema = z.object({
 
   TEAM_CHANNEL_MAP: z.string().optional(),
 
+  SANDBOX_RUNTIME: z.string().optional(),
   SANDBOX_ENABLED: z.string().optional(),
   SANDBOX_IMAGE: z.string().optional(),
   SANDBOX_HOST_WORK_PATH: z.string().optional(),
@@ -300,6 +302,8 @@ export interface AppConfig {
   /** Team → channel IDs mapping. JSON format: {"team1":["C123","C456"]} */
   teamChannelMap: Map<string, string[]>;
 
+  sandboxRuntime: SandboxRuntime;
+  sandboxRuntimeExplicit: boolean;
   sandboxEnabled: boolean;
   sandboxImage: string;
   /** Host-side path that maps to workRoot. Required when sandboxEnabled=true for DooD volume mounts. */
@@ -409,6 +413,8 @@ function parseProviderPreferences(value?: string): Record<string, unknown> | und
 
 export function loadConfig(): AppConfig {
   const parsed = envSchema.parse(process.env);
+  const sandboxRuntime = resolveSandboxRuntime(parsed);
+  const sandboxRuntimeExplicit = parsed.SANDBOX_RUNTIME !== undefined;
 
   const appName = parsed.APP_NAME?.trim() || "Gooseherd";
   const appSlug = appName.toLowerCase().replace(/\s+/g, "-");
@@ -540,7 +546,9 @@ export function loadConfig(): AppConfig {
 
     teamChannelMap: parseTeamChannelMap(parsed.TEAM_CHANNEL_MAP),
 
-    sandboxEnabled: parseBoolean(parsed.SANDBOX_ENABLED, false),
+    sandboxRuntime,
+    sandboxRuntimeExplicit,
+    sandboxEnabled: sandboxRuntime === "docker",
     sandboxImage: parsed.SANDBOX_IMAGE?.trim() || "gooseherd/sandbox:default",
     sandboxHostWorkPath: parsed.SANDBOX_HOST_WORK_PATH?.trim() || "",
     sandboxCpus: parseInteger(parsed.SANDBOX_CPUS, 2),

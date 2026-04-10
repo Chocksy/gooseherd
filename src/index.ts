@@ -29,6 +29,13 @@ import { LearningStore } from "./observer/learning-store.js";
 import { EvalStore } from "./eval/eval-store.js";
 import { SetupStore } from "./db/setup-store.js";
 import { AgentProfileStore } from "./db/agent-profile-store.js";
+import { DockerExecutionBackend } from "./runtime/docker-backend.js";
+import { LocalExecutionBackend } from "./runtime/local-backend.js";
+import type { RuntimeRegistry } from "./runtime/backend.js";
+import {
+  hasSandboxRuntimeHotReloadChange,
+  preflightSandboxRuntime
+} from "./runtime/runtime-mode.js";
 
 // ── Service container ──
 
@@ -66,26 +73,28 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
 
   // Sandbox container manager (Docker-out-of-Docker)
   let containerManager: ContainerManager | undefined;
-  if (config.sandboxEnabled) {
-    if (!config.sandboxHostWorkPath) {
-      logWarn("SANDBOX_HOST_WORK_PATH is required when SANDBOX_ENABLED=true — sandbox disabled");
-      config.sandboxEnabled = false;
-    } else {
-      containerManager = new ContainerManager();
-      const dockerOk = await containerManager.ping();
-      if (!dockerOk) {
-        logWarn("Docker daemon not reachable — sandbox disabled. Mount the Docker socket or set SANDBOX_ENABLED=false");
-        containerManager = undefined;
-        config.sandboxEnabled = false;
-      } else {
-        const orphans = await containerManager.cleanupOrphans();
-        if (orphans > 0) {
-          logInfo("Cleaned up orphaned sandbox containers", { count: orphans });
-        }
-        setSandboxManager(containerManager, config.workRoot);
-        logInfo("Sandbox mode enabled", { image: config.sandboxImage, hostWorkPath: config.sandboxHostWorkPath });
-      }
+  const sandboxPreflight = await preflightSandboxRuntime(config, {
+    pingDocker: async () => {
+      containerManager ??= new ContainerManager();
+      return containerManager.ping();
     }
+  });
+  if (!sandboxPreflight.sandboxEnabled) {
+    if (sandboxPreflight.fallbackReason === "missing_host_work_path") {
+      logWarn("SANDBOX_HOST_WORK_PATH is required when SANDBOX_RUNTIME=docker — sandbox disabled");
+    }
+    if (sandboxPreflight.fallbackReason === "docker_unreachable") {
+      logWarn("Docker daemon not reachable — sandbox disabled. Mount the Docker socket or set SANDBOX_RUNTIME=local");
+    }
+    containerManager = undefined;
+    config.sandboxEnabled = false;
+  } else if (containerManager) {
+    const orphans = await containerManager.cleanupOrphans();
+    if (orphans > 0) {
+      logInfo("Cleaned up orphaned sandbox containers", { count: orphans });
+    }
+    setSandboxManager(containerManager, config.workRoot);
+    logInfo("Sandbox mode enabled", { image: config.sandboxImage, hostWorkPath: config.sandboxHostWorkPath });
   }
 
   const pipelineStore = new PipelineStore(db);
@@ -94,6 +103,11 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
 
   const pipelineEngine = new PipelineEngine(config, githubService, hooks, containerManager);
   logInfo("Pipeline engine ready", { pipelineFile: config.pipelineFile });
+  const runtimeRegistry: RuntimeRegistry = {
+    local: new LocalExecutionBackend(pipelineEngine),
+    docker: new DockerExecutionBackend(pipelineEngine),
+    kubernetes: undefined
+  };
 
   const learningStore = new LearningStore(db);
   await learningStore.load();
@@ -103,7 +117,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
   const { WebClient } = await import("@slack/web-api");
   const webClient = config.slackBotToken ? new WebClient(config.slackBotToken) : undefined;
 
-  const runManager = new RunManager(config, store, pipelineEngine, webClient, hooks, pipelineStore, learningStore);
+  const runManager = new RunManager(config, store, runtimeRegistry, webClient, hooks, pipelineStore, learningStore);
 
   const conversationStore = new ConversationStore({ db });
   await conversationStore.load();
@@ -175,6 +189,7 @@ async function main(): Promise<void> {
     };
   }
   checkAgentDefault(config);
+  globalRefs.config = config;
 
   // 5. Recover stale in-progress runs from before restart
   const recoveredRuns = await svc.store.recoverInProgressRuns(
@@ -306,7 +321,12 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-const globalRefs: { observer?: ObserverDaemon; supervisor?: RunSupervisor; rulesWatcher?: FSWatcher } = {};
+const globalRefs: {
+  observer?: ObserverDaemon;
+  supervisor?: RunSupervisor;
+  rulesWatcher?: FSWatcher;
+  config?: AppConfig;
+} = {};
 
 process.on("SIGINT", () => { shutdown("SIGINT"); });
 process.on("SIGTERM", () => { shutdown("SIGTERM"); });
@@ -317,12 +337,20 @@ process.on("SIGHUP", () => {
   try {
     dotenv.config({ override: true });
     const newConfig = loadConfig();
+    if (globalRefs.config && hasSandboxRuntimeHotReloadChange(globalRefs.config, newConfig)) {
+      logWarn("Sandbox runtime config changes require restart; ignoring hot reload", {
+        currentRuntime: globalRefs.config.sandboxRuntime,
+        nextRuntime: newConfig.sandboxRuntime
+      });
+      return;
+    }
     if (globalRefs.observer) {
       globalRefs.observer.reload(newConfig).catch((err) => {
         const msg = err instanceof Error ? err.message : "unknown";
         logError("Config hot-reload failed for observer", { error: msg });
       });
     }
+    globalRefs.config = newConfig;
     logInfo("Configuration reloaded successfully");
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown";

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { loadConfig } from "../src/config.js";
 
 // Test the config loading indirectly by verifying type shapes
 // (loadConfig() reads process.env directly, so we test the helper logic)
@@ -61,4 +62,89 @@ test("DEFAULT_LLM_MODEL: feature models fall back to default", () => {
   assert.equal(resolveModel(undefined, undefined), "anthropic/claude-sonnet-4-6");
   // Empty strings fall through
   assert.equal(resolveModel("", ""), "anthropic/claude-sonnet-4-6");
+});
+
+test("SANDBOX_RUNTIME: loadConfig preserves explicit runtime mode", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      SANDBOX_RUNTIME: "docker",
+      SANDBOX_ENABLED: "false"
+    };
+    const config = loadConfig();
+    assert.equal(config.sandboxRuntime, "docker");
+    assert.equal(config.sandboxEnabled, true);
+    assert.equal(config.sandboxRuntimeExplicit, true);
+
+    process.env = {
+      ...originalEnv,
+      SANDBOX_RUNTIME: "docker"
+    };
+    const configWithoutLegacy = loadConfig();
+    assert.equal(configWithoutLegacy.sandboxRuntime, "docker");
+    assert.equal(configWithoutLegacy.sandboxEnabled, true);
+    assert.equal(configWithoutLegacy.sandboxRuntimeExplicit, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("SANDBOX_RUNTIME: loadConfig lets explicit local override legacy enabled", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      SANDBOX_RUNTIME: "local",
+      SANDBOX_ENABLED: "true"
+    };
+    const config = loadConfig();
+    assert.equal(config.sandboxRuntime, "local");
+    assert.equal(config.sandboxEnabled, false);
+    assert.equal(config.sandboxRuntimeExplicit, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("SANDBOX_RUNTIME: loadConfig preserves kubernetes without enabling sandbox", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      SANDBOX_RUNTIME: "kubernetes"
+    };
+    const config = loadConfig();
+    assert.equal(config.sandboxRuntime, "kubernetes");
+    assert.equal(config.sandboxEnabled, false);
+    assert.equal(config.sandboxRuntimeExplicit, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("SANDBOX_RUNTIME: loadConfig throws for invalid explicit value", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      SANDBOX_RUNTIME: "invalid"
+    };
+    assert.throws(() => loadConfig(), /Invalid SANDBOX_RUNTIME value: invalid/);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("SANDBOX_RUNTIME: loadConfig throws for blank explicit value", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      SANDBOX_RUNTIME: "   "
+    };
+    assert.throws(() => loadConfig(), /Invalid SANDBOX_RUNTIME value:/);
+  } finally {
+    process.env = originalEnv;
+  }
 });

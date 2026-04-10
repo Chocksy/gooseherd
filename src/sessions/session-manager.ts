@@ -278,6 +278,7 @@ export class SessionManager {
       requestedBy: session.requestedBy,
       channelId: session.channelId,
       threadTs: session.threadTs,
+      runtime: "local",
     };
 
     const run = await this.runEnqueuer.enqueueRun(input);

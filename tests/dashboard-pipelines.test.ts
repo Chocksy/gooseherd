@@ -9,6 +9,7 @@ import http from "node:http";
 import type { AppConfig } from "../src/config.js";
 import { RunStore } from "../src/store.js";
 import { startDashboardServer } from "../src/dashboard-server.js";
+import { dashboardHtml } from "../src/dashboard/html.js";
 import type { PipelineStore, StoredPipeline } from "../src/pipeline/pipeline-store.js";
 import type { PipelineConfig } from "../src/pipeline/types.js";
 import { GitHubService } from "../src/github.js";
@@ -93,6 +94,8 @@ function makeConfig(port: number, dataDir: string): AppConfig {
     ciCheckFilter: [],
     ciMaxFixRounds: 3,
     teamChannelMap: new Map(),
+    sandboxRuntime: "local",
+    sandboxRuntimeExplicit: false,
     sandboxEnabled: false,
     sandboxImage: "node:20-slim",
     sandboxHostWorkPath: "",
@@ -172,6 +175,24 @@ function createMockPipelineStore(pipelines: StoredPipeline[] = [SAMPLE_STORED, S
   } as unknown as PipelineStore;
 }
 
+function createMockRunDatabase() {
+  const query = {
+    where() { return this; },
+    orderBy() { return this; },
+    limit() { return Promise.resolve([]); },
+  };
+
+  return {
+    select() {
+      return {
+        from() {
+          return query;
+        },
+      };
+    },
+  };
+}
+
 async function request(port: number, method: string, path: string, body?: unknown): Promise<{ status: number; data: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const bodyStr = body ? JSON.stringify(body) : undefined;
@@ -222,20 +243,49 @@ describe("Dashboard Pipeline API routes", () => {
     tmpDirs.length = 0;
   });
 
-  async function startServer(pipelineStore?: PipelineStore): Promise<number> {
+  async function startServer(
+    pipelineStore?: PipelineStore,
+    configOverrides: Partial<AppConfig> = {}
+  ): Promise<number> {
     const port = getPort();
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gooseherd-dash-pipe-"));
     tmpDirs.push(tmpDir);
     const dataDir = path.join(tmpDir, "data");
     const { mkdir } = await import("node:fs/promises");
     await mkdir(dataDir, { recursive: true });
-    const config = makeConfig(port, dataDir);
-    const store = new RunStore(dataDir);
+    const config = { ...makeConfig(port, dataDir), ...configOverrides } as AppConfig;
+    const store = new RunStore(createMockRunDatabase() as never);
     await store.init();
     startDashboardServer(config, store, undefined, undefined, undefined, pipelineStore);
     await waitForServer(port);
     return port;
   }
+
+  test("GET /api/settings returns sandboxRuntime instead of sandboxEnabled flag", async () => {
+    const port = await startServer(undefined, {
+      sandboxRuntime: "docker",
+      sandboxEnabled: false,
+    });
+    const res = await request(port, "GET", "/api/settings");
+    assert.equal(res.status, 200);
+    assert.equal((res.data.config as any).sandboxRuntime, "docker");
+    assert.equal((res.data.config as any).sandboxStatus?.enabled, false);
+    assert.equal((res.data.config as any).features?.sandbox, undefined);
+  });
+
+  test("dashboard HTML surfaces sandbox runtime in the settings panel", async () => {
+    const port = getPort();
+    const html = dashboardHtml({
+      ...makeConfig(port, "/tmp"),
+      sandboxRuntime: "docker",
+      sandboxEnabled: false,
+      sandboxRuntimeExplicit: true,
+      dashboardPort: port,
+    } as AppConfig);
+    assert.match(html, /Sandbox Runtime/);
+    assert.match(html, /c\.sandboxStatus && c\.sandboxStatus\.enabled === false/);
+    assert.match(html, /Disabled/);
+  });
 
   test("GET /api/pipelines returns 501 when pipeline store not available", async () => {
     const port = await startServer(undefined);

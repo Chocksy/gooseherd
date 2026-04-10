@@ -38,6 +38,7 @@ export async function composeRunInput(
     requestedBy: `observer:${event.source}`,
     channelId,
     threadTs,
+    runtime: config.sandboxRuntime,
     pipelineHint: event.pipelineHint ?? rule.pipeline
   };
 }

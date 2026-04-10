@@ -145,8 +145,12 @@ Run each agent in an isolated Docker container:
 # Build the sandbox image
 make docker-sandbox
 
-# Enable in .env
-SANDBOX_ENABLED=true
+# Runtime mode in .env
+SANDBOX_RUNTIME=local
+# or
+SANDBOX_RUNTIME=docker
+# reserved for future Kubernetes support; rejected at startup today
+SANDBOX_RUNTIME=kubernetes
 SANDBOX_HOST_WORK_PATH=/absolute/path/to/.work
 ```
 

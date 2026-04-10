@@ -10,6 +10,10 @@ import { CemsProvider } from "./memory/cems-provider.js";
 import { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { ContainerManager } from "./sandbox/container-manager.js";
 import { setSandboxManager } from "./pipeline/shell.js";
+import { preflightSandboxRuntime } from "./runtime/runtime-mode.js";
+import { DockerExecutionBackend } from "./runtime/docker-backend.js";
+import { LocalExecutionBackend } from "./runtime/local-backend.js";
+import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
 
 function parseArgs(args: string[]): { repoSlug: string; baseBranch?: string; task: string } {
   if (args.length < 2) {
@@ -40,6 +44,29 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const { repoSlug, baseBranch, task } = parseArgs(process.argv.slice(2));
 
+  // Sandbox container manager (Docker-out-of-Docker)
+  let containerManager: ContainerManager | undefined;
+  const sandboxPreflight = await preflightSandboxRuntime(config, {
+    pingDocker: async () => {
+      containerManager ??= new ContainerManager();
+      return containerManager.ping();
+    }
+  });
+  if (!sandboxPreflight.sandboxEnabled) {
+    if (sandboxPreflight.fallbackReason === "missing_host_work_path") {
+      logWarn("SANDBOX_HOST_WORK_PATH is required when SANDBOX_RUNTIME=docker — sandbox disabled");
+    }
+    if (sandboxPreflight.fallbackReason === "docker_unreachable") {
+      logWarn("Docker daemon not reachable — sandbox disabled. Mount the Docker socket or set SANDBOX_RUNTIME=local");
+    }
+    containerManager = undefined;
+    config.sandboxEnabled = false;
+  } else if (containerManager) {
+    await containerManager.cleanupOrphans();
+    setSandboxManager(containerManager, config.workRoot);
+    logInfo("Sandbox mode enabled", { image: config.sandboxImage });
+  }
+
   const db = await initDatabase(config.databaseUrl);
   const store = new RunStore(db);
   await store.init();
@@ -51,7 +78,8 @@ async function main(): Promise<void> {
       baseBranch: baseBranch ?? config.defaultBaseBranch,
       requestedBy: "local-trigger",
       channelId: "local",
-      threadTs: "local"
+      threadTs: "local",
+      runtime: config.sandboxRuntime
     },
     config.branchPrefix
   );
@@ -62,28 +90,12 @@ async function main(): Promise<void> {
     : undefined;
   const hooks = new RunLifecycleHooks(memoryProvider);
 
-  // Sandbox container manager (Docker-out-of-Docker)
-  let containerManager: ContainerManager | undefined;
-  if (config.sandboxEnabled) {
-    if (!config.sandboxHostWorkPath) {
-      logWarn("SANDBOX_HOST_WORK_PATH is required when SANDBOX_ENABLED=true — sandbox disabled");
-      config.sandboxEnabled = false;
-    } else {
-      containerManager = new ContainerManager();
-      const dockerOk = await containerManager.ping();
-      if (!dockerOk) {
-        logWarn("Docker daemon not reachable — sandbox disabled. Mount the Docker socket or set SANDBOX_ENABLED=false");
-        containerManager = undefined;
-        config.sandboxEnabled = false;
-      } else {
-        await containerManager.cleanupOrphans();
-        setSandboxManager(containerManager, config.workRoot);
-        logInfo("Sandbox mode enabled", { image: config.sandboxImage });
-      }
-    }
-  }
-
   const pipelineEngine = new PipelineEngine(config, githubService, hooks, containerManager);
+  const runtimeRegistry: RuntimeRegistry = {
+    local: new LocalExecutionBackend(pipelineEngine),
+    docker: new DockerExecutionBackend(pipelineEngine),
+    kubernetes: undefined
+  };
 
   await store.updateRun(run.id, {
     status: "running",
@@ -100,10 +112,14 @@ async function main(): Promise<void> {
   });
 
   try {
-    const result = await pipelineEngine.execute(run, async (phase) => {
-      const status = mapPhaseToRunStatus(phase);
-      await store.updateRun(run.id, { status, phase });
-    }, config.pipelineFile);
+    const backend = getRuntimeBackend(runtimeRegistry, run.runtime);
+    const result = await backend.execute(run, {
+      onPhase: async (phase) => {
+        const status = mapPhaseToRunStatus(phase);
+        await store.updateRun(run.id, { status, phase });
+      },
+      pipelineFile: config.pipelineFile
+    });
 
     await store.updateRun(run.id, {
       status: "completed",

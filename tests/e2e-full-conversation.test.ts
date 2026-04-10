@@ -28,6 +28,8 @@ import dotenv from "dotenv";
 import { loadConfig, resolveGitHubAuthMode, type AppConfig } from "../src/config.js";
 import { PipelineEngine } from "../src/pipeline/pipeline-engine.js";
 import { GitHubService } from "../src/github.js";
+import { DockerExecutionBackend } from "../src/runtime/docker-backend.js";
+import { LocalExecutionBackend } from "../src/runtime/local-backend.js";
 import { RunStore } from "../src/store.js";
 import { RunManager } from "../src/run-manager.js";
 import { handleMessage } from "../src/orchestrator/orchestrator.js";
@@ -122,6 +124,7 @@ function buildDeps(
         requestedBy: "e2e-test",
         channelId: threadChannelId,
         threadTs,
+        runtime: config.sandboxRuntime,
         skipNodes: opts.skipNodes,
         enableNodes: opts.enableNodes
       });
@@ -275,8 +278,13 @@ test("E2E Full Conversation: question → execute → verify", async (t) => {
 
     const githubService = GitHubService.create(config);
     const pipelineEngine = new PipelineEngine(config, githubService);
+    const runtimeRegistry = {
+      local: new LocalExecutionBackend(pipelineEngine),
+      docker: new DockerExecutionBackend(pipelineEngine),
+      kubernetes: undefined
+    };
     const slackClient = stubWebClient();
-    const runManager = new RunManager(config, store, pipelineEngine, slackClient as any);
+    const runManager = new RunManager(config, store, runtimeRegistry, slackClient as any);
 
     const llmConfig = buildLLMConfig(config);
     const systemContext = buildSystemContext(config);

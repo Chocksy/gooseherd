@@ -6,12 +6,12 @@ import type { Block, KnownBlock } from "@slack/types";
 import { writeFile, mkdir } from "node:fs/promises";
 import type { AppConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
-import type { PipelineEngine } from "./pipeline/pipeline-engine.js";
 import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunStore, mapPhaseToRunStatus } from "./store.js";
 import type { ExecutionResult, NewRunInput, RunRecord } from "./types.js";
 import type { PipelineStore } from "./pipeline/pipeline-store.js";
 import type { LearningStore } from "./observer/learning-store.js";
+import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -141,6 +141,7 @@ function isRetryableStatus(status: RunRecord["status"]): boolean {
 }
 
 export type RunTerminalCallback = (runId: string, status: string) => void;
+type EnqueueRunInput = Omit<NewRunInput, "runtime"> & { runtime?: NewRunInput["runtime"] };
 
 export class RunManager {
   private readonly queue: PQueue;
@@ -151,7 +152,7 @@ export class RunManager {
   constructor(
     private readonly config: AppConfig,
     private readonly store: RunStore,
-    private readonly pipelineEngine: PipelineEngine,
+    private readonly runtimeRegistry: RuntimeRegistry,
     private readonly slackClient: WebClient | undefined,
     private readonly hooks?: RunLifecycleHooks,
     private readonly pipelineStore?: PipelineStore,
@@ -167,6 +168,10 @@ export class RunManager {
         });
       });
     }
+  }
+
+  private getBackend(runtime: RunRecord["runtime"]) {
+    return getRuntimeBackend(this.runtimeRegistry, runtime);
   }
 
   private async recordLearningOutcome(runId: string, status: string): Promise<void> {
@@ -264,8 +269,10 @@ export class RunManager {
     }
   }
 
-  async enqueueRun(input: NewRunInput): Promise<RunRecord> {
-    const record = await this.store.createRun(input, this.config.branchPrefix);
+  async enqueueRun(input: EnqueueRunInput): Promise<RunRecord> {
+    const runtime = input.runtime ?? this.config.sandboxRuntime;
+    this.getBackend(runtime);
+    const record = await this.store.createRun({ ...input, runtime }, this.config.branchPrefix);
 
     this.queue.add(async () => {
       await this.processRun(record.id);
@@ -302,6 +309,7 @@ export class RunManager {
       requestedBy,
       channelId: original.channelId,
       threadTs: original.threadTs,
+      runtime: this.config.sandboxRuntime,
       skipNodes: original.skipNodes,
       enableNodes: original.enableNodes
     });
@@ -317,6 +325,8 @@ export class RunManager {
       return undefined;
     }
 
+    const runtime = this.config.sandboxRuntime;
+    this.getBackend(runtime);
     const input: NewRunInput = {
       repoSlug: parent.repoSlug,
       task: feedbackNote,
@@ -324,6 +334,7 @@ export class RunManager {
       requestedBy,
       channelId: parent.channelId,
       threadTs: parent.threadTs,
+      runtime,
       parentRunId: parent.id,
       feedbackNote
     };
@@ -528,7 +539,13 @@ export class RunManager {
       const pipelineFile = await this.resolvePipeline(run.pipelineHint, run.id);
       const abortController = new AbortController();
       this.runAbortControllers.set(stableRunId, abortController);
-      const result = await this.pipelineEngine.execute(run, phaseCallback, pipelineFile, onDetail, run.skipNodes, run.enableNodes, abortController.signal);
+      const backend = this.getBackend(run.runtime);
+      const result = await backend.execute(run, {
+        onPhase: phaseCallback,
+        onDetail,
+        abortSignal: abortController.signal,
+        pipelineFile
+      });
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);
 

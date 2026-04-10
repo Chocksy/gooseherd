@@ -21,7 +21,8 @@ test("createRun stores queued phase and metadata updates persist", async (t) => 
       baseBranch: "main",
       requestedBy: "U123",
       channelId: "C123",
-      threadTs: "123.456"
+      threadTs: "123.456",
+      runtime: "local"
     },
     "gooseherd"
   );
@@ -58,7 +59,8 @@ test("listRuns returns newest first and feedback is saved", async (t) => {
       baseBranch: "main",
       requestedBy: "U1",
       channelId: "C1",
-      threadTs: "1"
+      threadTs: "1",
+      runtime: "local"
     },
     "gooseherd"
   );
@@ -70,7 +72,8 @@ test("listRuns returns newest first and feedback is saved", async (t) => {
       baseBranch: "main",
       requestedBy: "U1",
       channelId: "C1",
-      threadTs: "1"
+      threadTs: "1",
+      runtime: "local"
     },
     "gooseherd"
   );
@@ -110,7 +113,8 @@ test("recoverInProgressRuns requeues interrupted runs", async (t) => {
       baseBranch: "main",
       requestedBy: "U1",
       channelId: "C1",
-      threadTs: "1"
+      threadTs: "1",
+      runtime: "local"
     },
     "gooseherd"
   );

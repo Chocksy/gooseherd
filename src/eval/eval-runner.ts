@@ -42,6 +42,7 @@ export class EvalRunner {
         requestedBy: "eval-harness",
         channelId: "eval",
         threadTs,
+        runtime: "local",
         pipelineHint: scenario.pipeline,
         skipNodes: scenario.skipNodes,
         enableNodes: scenario.enableNodes,

@@ -3,7 +3,7 @@ import test from "node:test";
 import { RunManager, classifyError } from "../src/run-manager.js";
 import { RunStore } from "../src/store.js";
 import type { AppConfig } from "../src/config.js";
-import type { PipelineEngine } from "../src/pipeline/pipeline-engine.js";
+import type { RuntimeRegistry } from "../src/runtime/backend.js";
 import type { RunRecord, ExecutionResult } from "../src/types.js";
 import { createTestDb, type TestDb } from "./helpers/test-db.js";
 
@@ -50,6 +50,9 @@ function makeConfig(overrides?: Partial<AppConfig>): AppConfig {
     observerRulesFile: "",
     observerRepoMap: new Map(),
     observerSentryPollIntervalSeconds: 300,
+    sandboxRuntime: "local",
+    sandboxRuntimeExplicit: false,
+    sandboxEnabled: false,
     ...overrides
   } as AppConfig;
 }
@@ -82,33 +85,41 @@ function makeMockSlackClient(): MockSlackClient {
   };
 }
 
-function makeMockPipelineEngine(result?: Partial<ExecutionResult>): PipelineEngine {
+function makeMockPipelineEngine(result?: Partial<ExecutionResult>): RuntimeRegistry {
+  const execute = async (_run: RunRecord, { onPhase }: { onPhase: (phase: string) => Promise<void> }) => {
+    await onPhase("cloning");
+    await onPhase("agent");
+    await onPhase("committing");
+    await onPhase("pushing");
+    return {
+      branchName: "testherd/test-branch",
+      logsPath: "/tmp/test-work/test-run/run.log",
+      commitSha: "abc1234def5678",
+      changedFiles: ["src/index.ts", "src/config.ts"],
+      prUrl: "https://github.com/org/repo/pull/42",
+      ...result
+    } as ExecutionResult;
+  };
+
   return {
-    execute: async (_run: RunRecord, phaseCallback: (phase: string) => Promise<void>) => {
-      await phaseCallback("cloning");
-      await phaseCallback("agent");
-      await phaseCallback("committing");
-      await phaseCallback("pushing");
-      return {
-        branchName: "testherd/test-branch",
-        logsPath: "/tmp/test-work/test-run/run.log",
-        commitSha: "abc1234def5678",
-        changedFiles: ["src/index.ts", "src/config.ts"],
-        prUrl: "https://github.com/org/repo/pull/42",
-        ...result
-      } as ExecutionResult;
-    }
-  } as unknown as PipelineEngine;
+    local: { runtime: "local", execute },
+    docker: { runtime: "docker", execute },
+    kubernetes: undefined
+  };
 }
 
-function makeMockPipelineEngineFailing(errorMessage: string): PipelineEngine {
+function makeMockPipelineEngineFailing(errorMessage: string): RuntimeRegistry {
+  const execute = async (_run: RunRecord, { onPhase }: { onPhase: (phase: string) => Promise<void> }) => {
+    await onPhase("cloning");
+    await onPhase("agent");
+    throw new Error(errorMessage);
+  };
+
   return {
-    execute: async (_run: RunRecord, phaseCallback: (phase: string) => Promise<void>) => {
-      await phaseCallback("cloning");
-      await phaseCallback("agent");
-      throw new Error(errorMessage);
-    }
-  } as unknown as PipelineEngine;
+    local: { runtime: "local", execute },
+    docker: { runtime: "docker", execute },
+    kubernetes: undefined
+  };
 }
 
 // ── Test helpers ────────────────────────────────────────
@@ -147,7 +158,8 @@ test("enqueueRun creates a run record and returns it", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   assert.ok(run.id, "Run should have an ID");
@@ -176,7 +188,8 @@ test("retryRun creates a new run from a completed run", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   // Wait for background processRun to complete first
@@ -210,7 +223,8 @@ test("retryRun returns undefined for queued/running run", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: "local"
   }, "testherd");
 
   // Run is in "queued" status — retry should be blocked
@@ -250,7 +264,8 @@ test("continueRun creates a chained run with parentRunId", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   const continued = await manager.continueRun(parent.id, "fix the tests too", "U1234");
@@ -298,7 +313,8 @@ test("processRun posts status card and summary on success", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);
@@ -337,7 +353,8 @@ test("processRun posts failure summary on error", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);
@@ -370,7 +387,8 @@ test("processRun with local channel skips Slack posts and still completes", asyn
     baseBranch: "main",
     requestedBy: "local-trigger",
     channelId: "local",
-    threadTs: "local"
+    threadTs: "local",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);
@@ -399,7 +417,8 @@ test("postOrUpdateRunCard includes username on postMessage", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);
@@ -464,7 +483,8 @@ test("getLatestRunForThread returns the most recent run", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   const second = await manager.enqueueRun({
@@ -473,7 +493,8 @@ test("getLatestRunForThread returns the most recent run", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   const latest = await manager.getLatestRunForThread("C1234", "1234567890.000000");
@@ -501,7 +522,8 @@ test("getRunChain returns all runs in a thread sorted by creation", async () => 
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   const second = await manager.enqueueRun({
@@ -510,7 +532,8 @@ test("getRunChain returns all runs in a thread sorted by creation", async () => 
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   const chain = await manager.getRunChain("C1234", "1234567890.000000");
@@ -544,7 +567,8 @@ test("summary includes task preview when task is long", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);
@@ -572,7 +596,8 @@ test("summary limits displayed files to 10", async () => {
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);
@@ -684,7 +709,8 @@ test("failure summary shows classified error with suggestion for known patterns"
     baseBranch: "main",
     requestedBy: "U1234",
     channelId: "C1234",
-    threadTs: "1234567890.000000"
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime
   });
 
   await waitForRunDone(store, run.id);

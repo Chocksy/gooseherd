@@ -35,6 +35,7 @@ export const runs = pgTable(
   "runs",
   {
     id: uuid("id").primaryKey(),
+    runtime: text("runtime").notNull().default("local"),
     status: text("status").notNull(),
     phase: text("phase"),
     repoSlug: text("repo_slug").notNull(),
@@ -70,6 +71,7 @@ export const runs = pgTable(
     teamId: text("team_id"),
   },
   (t) => [
+    index("runs_runtime_idx").on(t.runtime),
     index("runs_status_idx").on(t.status),
     index("runs_channel_thread_idx").on(t.channelId, t.threadTs),
     index("runs_repo_slug_idx").on(t.repoSlug),

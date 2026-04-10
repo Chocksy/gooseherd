@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gooseherd
+  namespace: gooseherd
+spec:
+  selector:
+    app.kubernetes.io/name: gooseherd
+  ports:
+    - name: dashboard
+      port: 8787
+      targetPort: 8787
+    - name: observer
+      port: 9090
+      targetPort: 9090

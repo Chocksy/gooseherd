@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gooseherd-config
+  namespace: gooseherd
+data:
+  DASHBOARD_HOST: 0.0.0.0
+  DASHBOARD_PORT: "8787"
+  WORK_ROOT: /app/.work
+  DATA_DIR: /app/data
+  SANDBOX_RUNTIME: kubernetes
+  KUBERNETES_NAMESPACE: gooseherd
+  KUBERNETES_RUNNER_IMAGE: gooseherd/k8s-runner:dev
+  KUBERNETES_INTERNAL_BASE_URL: http://gooseherd.gooseherd.svc.cluster.local:8787

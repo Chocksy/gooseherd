@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gooseherd
+  namespace: gooseherd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gooseherd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gooseherd
+    spec:
+      securityContext:
+        fsGroup: 1000
+      serviceAccountName: gooseherd
+      containers:
+        - name: gooseherd
+          image: gooseherd/app:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8787
+            - containerPort: 9090
+          envFrom:
+            - secretRef:
+                name: gooseherd-env
+            - configMapRef:
+                name: gooseherd-config
+          volumeMounts:
+            - name: work
+              mountPath: /app/.work
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8787
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8787
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: data
+          emptyDir: {}

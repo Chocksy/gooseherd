@@ -19,10 +19,16 @@ Use this guide when you want a full in-cluster deployment:
 - Dashboard/API exposed through a cluster `Service` and optionally an `Ingress`
 - Gooseherd worker runs executed as Kubernetes `Job` resources
 
+This same deployment model is also the right direction for local `minikube` work.
+For local development, treat `minikube` as a lightweight Kubernetes cluster and run Gooseherd inside it.
+Do not treat `docker compose up gooseherd` as the primary local path for Kubernetes runtime mode.
+
 This guide is based on the current repository state, especially:
 
 - `docker-compose.yml`
 - `.env.example`
+- `kubernetes/app.Dockerfile`
+- `kubernetes/local/*`
 - `src/config.ts`
 - `src/index.ts`
 - `src/runtime/kubernetes-backend.ts`
@@ -132,6 +138,34 @@ Your deployment should provide at least:
   - `pods`
   - `secrets`
 
+## Local Minikube Interpretation
+
+If you are validating Kubernetes mode locally with `minikube`, aim for the same shape as production:
+
+- PostgreSQL deployed into `minikube` or otherwise reachable from Gooseherd inside `minikube`
+- Gooseherd deployed into `minikube`
+- Gooseherd pod authenticating to the Kubernetes API through its pod identity
+- runner jobs calling Gooseherd through cluster DNS
+- local browser access handled separately through `kubectl port-forward` or `minikube service`
+
+This avoids the main local mismatch of `docker compose`:
+
+- a compose container does not automatically inherit Kubernetes API credentials
+- a compose container does not automatically get cluster DNS
+- `host.minikube.internal` is convenient for smoke tests, but not the right steady-state service path for a full local Kubernetes deployment
+
+The repository now includes a minimal local deployment bundle for this shape:
+
+- `kubernetes/local/namespace.yaml`
+- `kubernetes/local/postgres.yaml`
+- `kubernetes/local/gooseherd-rbac.yaml`
+- `kubernetes/local/gooseherd-configmap.yaml`
+- `kubernetes/local/gooseherd-deployment.yaml`
+- `kubernetes/local/gooseherd-service.yaml`
+- `scripts/kubernetes/local-up.sh`
+- `scripts/kubernetes/local-down.sh`
+- `scripts/kubernetes/local-status.sh`
+
 ## Images
 
 Two images matter in Kubernetes mode:
@@ -150,6 +184,10 @@ That means your production deployment for the main Gooseherd app must provide:
 - Kubernetes API credentials available to the process
 - network reachability from the app pod to the Kubernetes API server
 - RBAC that allows the app service account to manage Gooseherd runner resources
+
+For the local `minikube` bundle in this repository, the helper script builds a lighter local app image from `kubernetes/app.Dockerfile`.
+That local image is optimized for Kubernetes control-plane duties only and avoids the heavier browser/sandbox dependencies from the top-level Docker image.
+The same helper also bootstraps the setup wizard locally so the dashboard is usable immediately after `npm run k8s:local-up`.
 
 ### 2. Runner image
 
@@ -557,6 +595,20 @@ This is easy to miss. The control-plane process now talks to the Kubernetes API 
 
 If the process cannot load in-cluster config or another valid kubeconfig, Kubernetes runtime mode will fail even if RBAC is correct.
 
+For real in-cluster deployment, the preferred model is:
+
+- Gooseherd runs inside Kubernetes
+- the app pod uses its `ServiceAccount`
+- the Node client loads in-cluster credentials automatically
+
+For local `minikube` verification, the model is different:
+
+- if Gooseherd runs on the host, host `kubectl`/`kubeconfig` access is enough
+- if Gooseherd runs in a local Docker container, that container must be given a valid kubeconfig plus the referenced `minikube` certificates
+
+The current `docker-compose.yml` in this repo does not mount `~/.kube` or `~/.minikube` by default.
+So `docker compose up gooseherd` alone is not sufficient to make the app container Kubernetes-aware.
+
 ### 2. `KUBERNETES_INTERNAL_BASE_URL` should usually be cluster DNS
 
 Recommended pattern:
@@ -604,6 +656,31 @@ Recommended rollout sequence:
 2. verify dashboard, database, GitHub auth, and Kubernetes job creation
 3. verify runner can call back into Gooseherd
 4. switch to `DRY_RUN=false`
+
+### 6. Local `minikube` smoke checks are valid, but they are not identical to in-cluster deployment
+
+Local `minikube` is good for verifying the API-native execution path:
+
+- Gooseherd talks to the Kubernetes API
+- Gooseherd creates `Secret` and `Job`
+- the runner pod starts
+- the runner reports events and completion
+- Gooseherd reconciles terminal state and cleans up resources
+
+But local `minikube` does not prove production-specific concerns such as:
+
+- EKS IAM / IRSA
+- private registry auth conventions
+- ingress/load balancer behavior
+- cluster policies, quotas, and admission controls
+
+For local `minikube`, runner jobs typically reach Gooseherd through:
+
+```text
+http://host.minikube.internal:8787
+```
+
+For in-cluster deployment, prefer cluster DNS instead of `host.minikube.internal`.
 
 ## Post-Deploy Smoke Checklist
 

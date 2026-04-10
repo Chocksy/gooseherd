@@ -6,7 +6,7 @@
 - A GitHub PAT or GitHub App credentials
 - An LLM API key (OpenRouter, Anthropic, or OpenAI)
 
-## 1. Quick Deploy (Docker)
+## 1. Quick Deploy (Docker: `local` or `docker` runtime)
 
 ```bash
 git clone https://github.com/chocksy/gooseherd.git
@@ -18,6 +18,21 @@ open http://localhost:8787
 ```
 
 Docker Compose includes PostgreSQL automatically — no extra setup needed. On first launch, the setup wizard guides you through password, GitHub, and LLM configuration.
+
+This is the recommended local path when Gooseherd runs in:
+
+- `SANDBOX_RUNTIME=local`
+- `SANDBOX_RUNTIME=docker`
+
+For a real Kubernetes local deployment path, run Gooseherd inside `minikube` instead and use [docs/installation-kubernetes.md](docs/installation-kubernetes.md).
+
+The repo now includes local `minikube` helpers:
+
+```bash
+npm run k8s:local-up
+npm run k8s:local-status
+npm run k8s:local-down
+```
 
 To build from source (includes sandbox image): `make docker`.
 

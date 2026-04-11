@@ -71,6 +71,7 @@ export const runs = pgTable(
     title: text("title"),
     tokenUsage: jsonb("token_usage"),
     teamId: text("team_id"),
+    workItemId: uuid("work_item_id"),
   },
   (t) => [
     index("runs_runtime_idx").on(t.runtime),
@@ -78,6 +79,9 @@ export const runs = pgTable(
     index("runs_channel_thread_idx").on(t.channelId, t.threadTs),
     index("runs_repo_slug_idx").on(t.repoSlug),
     index("runs_created_at_idx").on(t.createdAt),
+    index("runs_work_item_id_idx")
+      .on(t.workItemId)
+      .where(sql`work_item_id IS NOT NULL`),
     index("runs_team_id_idx")
       .on(t.teamId)
       .where(sql`team_id IS NOT NULL`),
@@ -283,6 +287,230 @@ export const pipelines = pgTable("pipelines", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── work item identity ──
+
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey(),
+    slackUserId: text("slack_user_id"),
+    githubLogin: text("github_login"),
+    jiraAccountId: text("jira_account_id"),
+    displayName: text("display_name").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("users_slack_user_id_idx")
+      .on(t.slackUserId)
+      .where(sql`slack_user_id IS NOT NULL`),
+    uniqueIndex("users_github_login_idx")
+      .on(t.githubLogin)
+      .where(sql`github_login IS NOT NULL`),
+    uniqueIndex("users_jira_account_id_idx")
+      .on(t.jiraAccountId)
+      .where(sql`jira_account_id IS NOT NULL`),
+  ]
+);
+
+export const teams = pgTable(
+  "teams",
+  {
+    id: uuid("id").primaryKey(),
+    name: text("name").notNull(),
+    slackChannelId: text("slack_channel_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("teams_name_idx").on(t.name),
+    uniqueIndex("teams_slack_channel_id_idx").on(t.slackChannelId),
+  ]
+);
+
+export const teamMembers = pgTable(
+  "team_members",
+  {
+    teamId: uuid("team_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    functionalRoles: text("functional_roles").array().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.teamId],
+      foreignColumns: [teams.id],
+      name: "team_members_team_id_teams_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.userId],
+      foreignColumns: [users.id],
+      name: "team_members_user_id_users_id_fk",
+    }).onDelete("cascade"),
+    primaryKey({ columns: [t.teamId, t.userId] }),
+  ]
+);
+
+export const orgRoleAssignments = pgTable(
+  "org_role_assignments",
+  {
+    userId: uuid("user_id").notNull(),
+    orgRole: text("org_role").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.userId],
+      foreignColumns: [users.id],
+      name: "org_role_assignments_user_id_users_id_fk",
+    }).onDelete("cascade"),
+    primaryKey({ columns: [t.userId, t.orgRole] }),
+  ]
+);
+
+// ── work items ──
+
+export const workItems = pgTable(
+  "work_items",
+  {
+    id: uuid("id").primaryKey(),
+    workflow: text("workflow").notNull(),
+    state: text("state").notNull(),
+    substate: text("substate"),
+    flags: text("flags").array().notNull().default([]),
+    title: text("title").notNull(),
+    summary: text("summary").notNull().default(""),
+    ownerTeamId: uuid("owner_team_id").notNull(),
+    homeChannelId: text("home_channel_id").notNull(),
+    homeThreadTs: text("home_thread_ts").notNull(),
+    originChannelId: text("origin_channel_id"),
+    originThreadTs: text("origin_thread_ts"),
+    jiraIssueKey: text("jira_issue_key"),
+    githubPrNumber: integer("github_pr_number"),
+    githubPrUrl: text("github_pr_url"),
+    sourceWorkItemId: uuid("source_work_item_id"),
+    createdByUserId: uuid("created_by_user_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.ownerTeamId],
+      foreignColumns: [teams.id],
+      name: "work_items_owner_team_id_teams_id_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.createdByUserId],
+      foreignColumns: [users.id],
+      name: "work_items_created_by_user_id_users_id_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.sourceWorkItemId],
+      foreignColumns: [t.id],
+      name: "work_items_source_work_item_id_work_items_id_fk",
+    }).onDelete("set null"),
+    index("work_items_workflow_state_idx").on(t.workflow, t.state),
+    index("work_items_owner_team_idx").on(t.ownerTeamId),
+    index("work_items_created_at_idx").on(t.createdAt),
+    uniqueIndex("work_items_feature_delivery_jira_issue_key_idx")
+      .on(t.jiraIssueKey)
+      .where(sql`jira_issue_key IS NOT NULL AND workflow = 'feature_delivery'`),
+    uniqueIndex("work_items_github_pr_number_idx")
+      .on(t.githubPrNumber)
+      .where(sql`github_pr_number IS NOT NULL`),
+  ]
+);
+
+export const reviewRequests = pgTable(
+  "review_requests",
+  {
+    id: uuid("id").primaryKey(),
+    workItemId: uuid("work_item_id").notNull(),
+    reviewRound: integer("review_round").notNull().default(1),
+    type: text("type").notNull(),
+    targetType: text("target_type").notNull(),
+    targetRef: jsonb("target_ref").notNull().$type<Record<string, unknown>>().default({}),
+    status: text("status").notNull(),
+    outcome: text("outcome"),
+    title: text("title").notNull(),
+    requestMessage: text("request_message").notNull().default(""),
+    focusPoints: jsonb("focus_points").notNull().$type<string[]>().default([]),
+    requestedByUserId: uuid("requested_by_user_id").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workItemId],
+      foreignColumns: [workItems.id],
+      name: "review_requests_work_item_id_work_items_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.requestedByUserId],
+      foreignColumns: [users.id],
+      name: "review_requests_requested_by_user_id_users_id_fk",
+    }).onDelete("restrict"),
+    index("review_requests_work_item_round_idx").on(t.workItemId, t.reviewRound),
+    index("review_requests_status_idx").on(t.status),
+  ]
+);
+
+export const reviewRequestComments = pgTable(
+  "review_request_comments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    reviewRequestId: uuid("review_request_id").notNull(),
+    authorUserId: uuid("author_user_id"),
+    source: text("source").notNull(),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.reviewRequestId],
+      foreignColumns: [reviewRequests.id],
+      name: "review_request_comments_review_request_id_review_requests_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.authorUserId],
+      foreignColumns: [users.id],
+      name: "review_request_comments_author_user_id_users_id_fk",
+    }).onDelete("set null"),
+    index("review_request_comments_review_request_id_idx").on(t.reviewRequestId),
+  ]
+);
+
+export const workItemEvents = pgTable(
+  "work_item_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    workItemId: uuid("work_item_id").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>().default({}),
+    actorUserId: uuid("actor_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workItemId],
+      foreignColumns: [workItems.id],
+      name: "work_item_events_work_item_id_work_items_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.actorUserId],
+      foreignColumns: [users.id],
+      name: "work_item_events_actor_user_id_users_id_fk",
+    }).onDelete("set null"),
+    index("work_item_events_work_item_id_created_at_idx").on(t.workItemId, t.createdAt),
+  ]
+);
 
 // ── sessions ──
 

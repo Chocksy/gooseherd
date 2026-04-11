@@ -105,6 +105,15 @@ export function dashboardHtml(config: AppConfig): string {
         "sidebar main";
       gap: 0;
     }
+    .app.board-mode {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "top"
+        "main";
+    }
+    .app.board-mode .sidebar {
+      display: none;
+    }
     .topbar {
       grid-area: top;
       display: flex;
@@ -149,6 +158,30 @@ export function dashboardHtml(config: AppConfig): string {
       gap: 8px;
       flex-wrap: wrap;
       justify-content: flex-end;
+    }
+    .view-switch {
+      display: flex;
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 999px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .view-btn {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font-ui);
+    }
+    .view-btn.active {
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
     }
     .top-meta {
       color: var(--muted);
@@ -377,6 +410,322 @@ export function dashboardHtml(config: AppConfig): string {
       min-width: 0;
       width: 100%;
       max-width: none;
+    }
+    .board-view {
+      display: none;
+      min-width: 0;
+    }
+    .board-view.active {
+      display: block;
+    }
+    .board-shell {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .board-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      gap: 12px;
+      min-width: 0;
+      align-items: start;
+    }
+    .board-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .board-toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .board-toolbar label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .board-toolbar select {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: var(--font-ui);
+      min-width: 220px;
+    }
+    .board-columns {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(260px, 1fr);
+      gap: 12px;
+      overflow-x: auto;
+      align-items: start;
+      padding-bottom: 8px;
+    }
+    .board-column {
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      border-radius: 14px;
+      min-height: 240px;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .board-column-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .board-column-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .board-column-count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .board-column-items {
+      display: grid;
+      gap: 10px;
+    }
+    .board-card {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 12px;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+    }
+    .board-card:hover {
+      transform: translateY(-1px);
+      border-color: var(--border-strong);
+    }
+    .board-card.selected {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 45%, transparent), var(--shadow);
+    }
+    .board-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .board-card-key {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--badge-text);
+      background: var(--badge-bg);
+      border: 1px solid color-mix(in srgb, var(--badge-text) 35%, var(--border));
+      border-radius: 999px;
+      padding: 3px 8px;
+      white-space: nowrap;
+    }
+    .board-card-title {
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .board-card-summary {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .board-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .board-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .board-flags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .board-empty {
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 14px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      background: color-mix(in srgb, var(--panel-3) 88%, transparent);
+    }
+    .board-detail {
+      position: sticky;
+      top: 0;
+      display: grid;
+      gap: 12px;
+    }
+    .board-detail-title {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .board-detail-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .board-detail-flags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .board-detail-section {
+      display: grid;
+      gap: 8px;
+    }
+    .board-detail-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .board-detail-empty {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      background: color-mix(in srgb, var(--panel-3) 88%, transparent);
+    }
+    .board-review-item,
+    .board-event-item {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 10px;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .board-review-head,
+    .board-event-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .board-review-title {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .board-review-message,
+    .board-event-payload {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .board-review-focus {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .board-review-comments {
+      display: grid;
+      gap: 6px;
+    }
+    .board-review-comment {
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--panel-2) 78%, transparent);
+      border-radius: 8px;
+      padding: 8px;
+      display: grid;
+      gap: 4px;
+    }
+    .board-review-comment-meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .board-review-comment-body {
+      font-size: 12px;
+      color: var(--text);
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .board-detail-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .board-detail-form {
+      display: grid;
+      gap: 8px;
+    }
+    .board-detail-form label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .board-detail-form input,
+    .board-detail-form select,
+    .board-detail-form textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: var(--font-ui);
+      outline: none;
+    }
+    .board-detail-form textarea {
+      min-height: 76px;
+      resize: vertical;
+    }
+    .board-inline-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .board-status-message {
+      min-height: 18px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .board-status-message.error {
+      color: var(--err);
+    }
+    .board-status-message.ok {
+      color: var(--ok);
     }
     .stack-top {
       display: grid;
@@ -1348,6 +1697,12 @@ export function dashboardHtml(config: AppConfig): string {
         border-right: 0;
         border-bottom: 1px solid var(--border);
       }
+      .board-layout {
+        grid-template-columns: 1fr;
+      }
+      .board-detail {
+        position: static;
+      }
     }
     @media (max-width: 700px) {
       .topbar {
@@ -1369,7 +1724,7 @@ export function dashboardHtml(config: AppConfig): string {
   </style>
 </head>
 <body>
-  <div class="app">
+  <div class="app" id="app-root">
     <header class="topbar">
       <div class="brand">
         <span class="brand-dot"></span>
@@ -1380,6 +1735,10 @@ export function dashboardHtml(config: AppConfig): string {
       </div>
       <div class="top-controls">
         <div class="top-meta" id="top-meta">0 runs</div>
+        <div class="view-switch" id="view-switch">
+          <button class="view-btn active" data-view="runs">Runs</button>
+          <button class="view-btn" data-view="board">Board</button>
+        </div>
         <button class="top-btn" id="new-run-btn">
           <span class="material-symbols-rounded">add</span>
           <span>New Run</span>
@@ -1422,7 +1781,7 @@ export function dashboardHtml(config: AppConfig): string {
     </header>
     <aside class="sidebar">
       <div class="sidebar-head">
-        <div class="sidebar-title">Runs</div>
+        <div class="sidebar-title" id="sidebar-title">Runs</div>
         <div class="meta" id="meta">Loading...</div>
       </div>
       <div class="sidebar-search">
@@ -1437,7 +1796,7 @@ export function dashboardHtml(config: AppConfig): string {
       <div id="runs"></div>
     </aside>
     <main class="main">
-      <div class="stack">
+      <div class="stack" id="runs-view">
         <div class="stack-top">
           <div class="card">
             <div class="toolbar">
@@ -1590,6 +1949,87 @@ export function dashboardHtml(config: AppConfig): string {
           <div class="meta" id="chat-status"></div>
         </div>
       </div>
+      <div class="board-view" id="board-view">
+        <div class="board-shell">
+          <div class="card">
+            <div class="board-toolbar">
+              <div class="board-toolbar-left">
+                <div>
+                  <div class="card-title">Work Item Board</div>
+                  <div class="card-subtitle">Workflow-specific Kanban view for managed automation.</div>
+                </div>
+                <div>
+                  <label for="board-workflow">Workflow</label>
+                  <select id="board-workflow">
+                    <option value="product_discovery">Product Discovery</option>
+                    <option value="feature_delivery">Feature Delivery</option>
+                  </select>
+                </div>
+              </div>
+              <div class="meta" id="board-meta">Loading work items...</div>
+            </div>
+          </div>
+          <div class="board-layout">
+            <div class="board-columns" id="board-columns"></div>
+            <div class="card board-detail" id="board-detail">
+              <div>
+                <div class="card-title">Work Item Detail</div>
+                <div class="card-subtitle" id="board-detail-subtitle">Select a card to inspect workflow context, review requests and actions.</div>
+              </div>
+              <div class="board-detail-title" id="board-detail-title">No work item selected</div>
+              <div class="board-detail-meta" id="board-detail-meta"></div>
+              <div class="board-detail-flags" id="board-detail-flags"></div>
+              <div class="board-detail-section">
+                <div class="board-detail-section-title">Summary</div>
+                <div class="board-detail-empty" id="board-detail-summary">Choose a work item from the board to see details.</div>
+              </div>
+              <div class="board-detail-section">
+                <div class="board-detail-section-title">Workflow Actions</div>
+                <div class="board-detail-actions">
+                  <button class="top-btn" id="board-stop-processing" disabled>
+                    <span class="material-symbols-rounded">pause_circle</span>
+                    <span>Stop Processing</span>
+                  </button>
+                  <button class="top-btn" id="board-confirm-approve" disabled>
+                    <span class="material-symbols-rounded">task_alt</span>
+                    <span>PM Approve</span>
+                  </button>
+                  <button class="top-btn" id="board-confirm-rework" disabled>
+                    <span class="material-symbols-rounded">undo</span>
+                    <span>Return To In Progress</span>
+                  </button>
+                </div>
+              </div>
+              <div class="board-detail-section">
+                <div class="board-detail-section-title">Review Requests</div>
+                <div id="board-detail-reviews" class="board-detail-empty">No review requests loaded.</div>
+              </div>
+              <div class="board-detail-section">
+                <div class="board-detail-section-title">Guarded Override</div>
+                <div class="board-detail-form">
+                  <label for="board-override-state">State</label>
+                  <select id="board-override-state"></select>
+                  <label for="board-override-substate">Substate</label>
+                  <input type="text" id="board-override-substate" placeholder="Optional substate" />
+                  <label for="board-override-reason">Reason</label>
+                  <textarea id="board-override-reason" placeholder="Explain why this override is needed"></textarea>
+                  <div class="board-inline-actions">
+                    <button class="top-btn" id="board-override-submit" disabled>
+                      <span class="material-symbols-rounded">sync_alt</span>
+                      <span>Apply Override</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="board-detail-section">
+                <div class="board-detail-section-title">Events</div>
+                <div id="board-detail-events" class="board-detail-empty">No events loaded.</div>
+              </div>
+              <div class="board-status-message" id="board-status-message"></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -1718,9 +2158,18 @@ export function dashboardHtml(config: AppConfig): string {
   <script>
     const state = {
       runs: [],
+      workItems: [],
+      selectedWorkItemId: null,
+      selectedWorkItem: null,
+      selectedWorkItemReviewRequests: [],
+      selectedWorkItemReviewComments: {},
+      selectedWorkItemEvents: [],
       selectedId: null,
       interval: null,
       themePreference: 'system',
+      viewMode: 'runs',
+      boardWorkflow: 'product_discovery',
+      boardActorUserId: '',
     };
 
     var logStreamState = { runId: null, offset: 0 };
@@ -1732,9 +2181,33 @@ export function dashboardHtml(config: AppConfig): string {
     var lastRenderedEventCount = -1;
 
     const el = {
+      appRoot: document.getElementById('app-root'),
       meta: document.getElementById('meta'),
       topMeta: document.getElementById('top-meta'),
+      sidebarTitle: document.getElementById('sidebar-title'),
       runs: document.getElementById('runs'),
+      viewSwitch: document.getElementById('view-switch'),
+      runsView: document.getElementById('runs-view'),
+      boardView: document.getElementById('board-view'),
+      boardWorkflow: document.getElementById('board-workflow'),
+      boardMeta: document.getElementById('board-meta'),
+      boardColumns: document.getElementById('board-columns'),
+      boardDetail: document.getElementById('board-detail'),
+      boardDetailSubtitle: document.getElementById('board-detail-subtitle'),
+      boardDetailTitle: document.getElementById('board-detail-title'),
+      boardDetailMeta: document.getElementById('board-detail-meta'),
+      boardDetailFlags: document.getElementById('board-detail-flags'),
+      boardDetailSummary: document.getElementById('board-detail-summary'),
+      boardDetailReviews: document.getElementById('board-detail-reviews'),
+      boardDetailEvents: document.getElementById('board-detail-events'),
+      boardStopProcessing: document.getElementById('board-stop-processing'),
+      boardConfirmApprove: document.getElementById('board-confirm-approve'),
+      boardConfirmRework: document.getElementById('board-confirm-rework'),
+      boardOverrideState: document.getElementById('board-override-state'),
+      boardOverrideSubstate: document.getElementById('board-override-substate'),
+      boardOverrideReason: document.getElementById('board-override-reason'),
+      boardOverrideSubmit: document.getElementById('board-override-submit'),
+      boardStatusMessage: document.getElementById('board-status-message'),
       summary: document.getElementById('summary'),
       summarySubtitle: document.getElementById('summary-subtitle'),
       retryRun: document.getElementById('retry-run'),
@@ -1856,8 +2329,98 @@ export function dashboardHtml(config: AppConfig): string {
       return response.json();
     }
 
+    var BOARD_COLUMNS = {
+      product_discovery: [
+        'backlog',
+        'in_progress',
+        'waiting_for_review',
+        'waiting_for_pm_confirmation',
+        'done',
+        'cancelled',
+      ],
+      feature_delivery: [
+        'backlog',
+        'in_progress',
+        'auto_review',
+        'engineering_review',
+        'qa_preparation',
+        'product_review',
+        'qa_review',
+        'ready_for_merge',
+        'done',
+        'cancelled',
+      ],
+    };
+
+    function titleCaseWorkItemState(value) {
+      return String(value || '')
+        .split('_')
+        .filter(Boolean)
+        .map(function(part) {
+          return part.charAt(0).toUpperCase() + part.slice(1);
+        })
+        .join(' ');
+    }
+
+    function workItemDisplayId(item) {
+      return item.jiraIssueKey || shortId(item.id);
+    }
+
+    function workflowStates(workflow) {
+      return BOARD_COLUMNS[workflow] || [];
+    }
+
+    function setBoardStatusMessage(message, tone) {
+      if (!el.boardStatusMessage) return;
+      el.boardStatusMessage.textContent = message || '';
+      el.boardStatusMessage.className = 'board-status-message' + (tone ? ' ' + tone : '');
+    }
+
+    function populateOverrideStateOptions(workflow, selectedState) {
+      if (!el.boardOverrideState) return;
+      while (el.boardOverrideState.options.length > 0) {
+        el.boardOverrideState.remove(0);
+      }
+      workflowStates(workflow).forEach(function(stateValue) {
+        var option = document.createElement('option');
+        option.value = stateValue;
+        option.textContent = titleCaseWorkItemState(stateValue);
+        if (stateValue === selectedState) {
+          option.selected = true;
+        }
+        el.boardOverrideState.appendChild(option);
+      });
+    }
+
+    function updateDashboardChrome() {
+      var boardMode = state.viewMode === 'board';
+      el.appRoot.classList.toggle('board-mode', boardMode);
+      el.runsView.style.display = boardMode ? 'none' : '';
+      el.boardView.classList.toggle('active', boardMode);
+      if (el.sidebarTitle) {
+        el.sidebarTitle.textContent = boardMode ? 'Work Items' : 'Runs';
+      }
+      if (el.viewSwitch) {
+        el.viewSwitch.querySelectorAll('[data-view]').forEach(function(button) {
+          var isActive = button.getAttribute('data-view') === state.viewMode;
+          button.classList.toggle('active', isActive);
+        });
+      }
+    }
+
     function shortId(id) {
       return id.slice(0, 8);
+    }
+
+    function currentHashTarget() {
+      var hash = window.location.hash || '';
+      if (hash.startsWith('#run/')) {
+        return { type: 'run', prefix: hash.slice(5) };
+      }
+      if (hash.startsWith('#work-item/')) {
+        return { type: 'workItem', prefix: decodeURIComponent(hash.slice(11)) };
+      }
+      return null;
     }
 
     function branchRefForUrl(value) {
@@ -2904,10 +3467,9 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedId = null;
       }
       if (!state.selectedId && state.runs.length > 0) {
-        // Check URL hash for permalink
-        var hash = window.location.hash;
-        if (hash && hash.startsWith('#run/')) {
-          var prefix = hash.slice(5);
+        var hashTarget = currentHashTarget();
+        if (hashTarget && hashTarget.type === 'run') {
+          var prefix = hashTarget.prefix;
           var match = state.runs.find(function(r) { return r.id.startsWith(prefix); });
           if (match) { state.selectedId = match.id; }
           else { state.selectedId = state.runs[0].id; }
@@ -2918,8 +3480,476 @@ export function dashboardHtml(config: AppConfig): string {
       renderRuns();
     }
 
+    async function loadWorkItems() {
+      var workflow = state.boardWorkflow || 'product_discovery';
+      var data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow));
+      state.workItems = Array.isArray(data.workItems) ? data.workItems : [];
+      var hashTarget = currentHashTarget();
+      if (hashTarget && hashTarget.type === 'workItem') {
+        var hashMatch = state.workItems.find(function(item) {
+          return item.id === hashTarget.prefix || item.id.startsWith(hashTarget.prefix);
+        });
+        if (hashMatch) {
+          state.selectedWorkItemId = hashMatch.id;
+          state.viewMode = 'board';
+          updateDashboardChrome();
+        }
+      }
+      if (state.selectedWorkItemId && !state.workItems.some(function(item) { return item.id === state.selectedWorkItemId; })) {
+        state.selectedWorkItemId = null;
+        state.selectedWorkItem = null;
+        state.selectedWorkItemReviewRequests = [];
+        state.selectedWorkItemEvents = [];
+      }
+      if (!state.selectedWorkItemId && state.workItems.length > 0) {
+        state.selectedWorkItemId = state.workItems[0].id;
+      }
+      if (el.boardMeta) {
+        el.boardMeta.textContent = state.workItems.length + ' work items';
+      }
+      if (state.viewMode === 'board' && el.topMeta) {
+        el.topMeta.textContent = state.workItems.length + ' work items';
+      }
+      renderBoard();
+      if (state.selectedWorkItemId) {
+        await refreshSelectedWorkItem();
+      } else {
+        renderBoardDetail();
+      }
+    }
+
     function canRetry(run) {
       return run.status === 'failed' || run.status === 'completed';
+    }
+
+    function renderBoard() {
+      if (!el.boardColumns) return;
+      el.boardColumns.innerHTML = '';
+
+      var workflow = state.boardWorkflow || 'product_discovery';
+      var columns = BOARD_COLUMNS[workflow] || [];
+
+      for (var i = 0; i < columns.length; i++) {
+        var columnState = columns[i];
+        var items = state.workItems.filter(function(item) {
+          return item.state === columnState;
+        });
+
+        var column = document.createElement('section');
+        column.className = 'board-column';
+
+        var head = document.createElement('div');
+        head.className = 'board-column-head';
+
+        var title = document.createElement('div');
+        title.className = 'board-column-title';
+        title.textContent = titleCaseWorkItemState(columnState);
+
+        var count = document.createElement('div');
+        count.className = 'board-column-count';
+        count.textContent = String(items.length);
+
+        head.appendChild(title);
+        head.appendChild(count);
+        column.appendChild(head);
+
+        var list = document.createElement('div');
+        list.className = 'board-column-items';
+
+        if (items.length === 0) {
+          var empty = document.createElement('div');
+          empty.className = 'board-empty';
+          empty.textContent = 'No work items in this state.';
+          list.appendChild(empty);
+        }
+
+        for (var j = 0; j < items.length; j++) {
+          var item = items[j];
+          var card = document.createElement('article');
+          card.className = 'board-card' + (state.selectedWorkItemId === item.id ? ' selected' : '');
+          card.onclick = (function(workItemId) {
+            return function() {
+              state.selectedWorkItemId = workItemId;
+              window.location.hash = '#work-item/' + encodeURIComponent(workItemId.slice(0, 8));
+              renderBoard();
+              refreshSelectedWorkItem().catch(function(error) {
+                setBoardStatusMessage(error.message || 'Failed to load work item detail', 'error');
+              });
+            };
+          })(item.id);
+
+          var top = document.createElement('div');
+          top.className = 'board-card-top';
+
+          var key = document.createElement('span');
+          key.className = 'board-card-key';
+          key.textContent = workItemDisplayId(item);
+          top.appendChild(key);
+
+          if (item.substate) {
+            var substate = document.createElement('span');
+            substate.className = 'board-chip';
+            substate.textContent = titleCaseWorkItemState(item.substate);
+            top.appendChild(substate);
+          }
+
+          var titleNode = document.createElement('div');
+          titleNode.className = 'board-card-title';
+          titleNode.textContent = item.title || '(untitled work item)';
+
+          var summary = document.createElement('div');
+          summary.className = 'board-card-summary';
+          summary.textContent = truncateTask(item.summary || '', 180);
+
+          var meta = document.createElement('div');
+          meta.className = 'board-card-meta';
+          meta.textContent = 'Updated ' + timeAgo(item.updatedAt);
+
+          card.appendChild(top);
+          card.appendChild(titleNode);
+          card.appendChild(summary);
+          card.appendChild(meta);
+
+          if (Array.isArray(item.flags) && item.flags.length > 0) {
+            var flags = document.createElement('div');
+            flags.className = 'board-flags';
+            item.flags.slice(0, 4).forEach(function(flag) {
+              var chip = document.createElement('span');
+              chip.className = 'board-chip';
+              chip.textContent = titleCaseWorkItemState(flag);
+              flags.appendChild(chip);
+            });
+            if (item.flags.length > 4) {
+              var moreChip = document.createElement('span');
+              moreChip.className = 'board-chip';
+              moreChip.textContent = '+' + String(item.flags.length - 4) + ' more';
+              flags.appendChild(moreChip);
+            }
+            card.appendChild(flags);
+          }
+
+          list.appendChild(card);
+        }
+
+        column.appendChild(list);
+        el.boardColumns.appendChild(column);
+      }
+    }
+
+    async function refreshSelectedWorkItem() {
+      if (!state.selectedWorkItemId) {
+        state.selectedWorkItem = null;
+        state.selectedWorkItemReviewRequests = [];
+        state.selectedWorkItemReviewComments = {};
+        state.selectedWorkItemEvents = [];
+        renderBoardDetail();
+        return;
+      }
+
+      var encodedId = encodeURIComponent(state.selectedWorkItemId);
+      var results = await Promise.all([
+        fetchJson('/api/work-items/' + encodedId),
+        fetchJson('/api/work-items/' + encodedId + '/review-requests').catch(function() { return { reviewRequests: [] }; }),
+        fetchJson('/api/work-items/' + encodedId + '/events').catch(function() { return { events: [] }; }),
+      ]);
+
+      state.selectedWorkItem = results[0].workItem || null;
+      state.selectedWorkItemReviewRequests = Array.isArray(results[1].reviewRequests) ? results[1].reviewRequests : [];
+      state.selectedWorkItemEvents = Array.isArray(results[2].events) ? results[2].events : [];
+      state.selectedWorkItemReviewComments = {};
+      if (state.selectedWorkItemReviewRequests.length > 0) {
+        var commentResults = await Promise.all(state.selectedWorkItemReviewRequests.map(function(request) {
+          return fetchJson('/api/work-items/' + encodedId + '/review-requests/' + encodeURIComponent(request.id) + '/comments')
+            .then(function(payload) {
+              return [request.id, Array.isArray(payload.comments) ? payload.comments : []];
+            })
+            .catch(function() {
+              return [request.id, []];
+            });
+        }));
+        commentResults.forEach(function(entry) {
+          state.selectedWorkItemReviewComments[entry[0]] = entry[1];
+        });
+      }
+      renderBoard();
+      renderBoardDetail();
+    }
+
+    function renderBoardDetail() {
+      var item = state.selectedWorkItem;
+      if (!item) {
+        el.boardDetailTitle.textContent = 'No work item selected';
+        el.boardDetailSubtitle.textContent = 'Select a card to inspect workflow context, review requests and actions.';
+        el.boardDetailMeta.innerHTML = '';
+        el.boardDetailFlags.innerHTML = '';
+        el.boardDetailSummary.className = 'board-detail-empty';
+        el.boardDetailSummary.textContent = 'Choose a work item from the board to see details.';
+        el.boardDetailReviews.className = 'board-detail-empty';
+        el.boardDetailReviews.textContent = 'No review requests loaded.';
+        el.boardDetailEvents.className = 'board-detail-empty';
+        el.boardDetailEvents.textContent = 'No events loaded.';
+        el.boardStopProcessing.disabled = true;
+        el.boardConfirmApprove.disabled = true;
+        el.boardConfirmRework.disabled = true;
+        el.boardOverrideSubmit.disabled = true;
+        if (el.boardOverrideSubstate) el.boardOverrideSubstate.value = '';
+        if (el.boardOverrideReason) el.boardOverrideReason.value = '';
+        populateOverrideStateOptions(state.boardWorkflow || 'product_discovery');
+        return;
+      }
+
+      el.boardDetailTitle.textContent = item.title || '(untitled work item)';
+      el.boardDetailSubtitle.textContent = workItemDisplayId(item) + ' · ' + titleCaseWorkItemState(item.workflow);
+      el.boardDetailSummary.className = 'board-card-summary';
+      el.boardDetailSummary.textContent = item.summary || 'No summary provided.';
+
+      el.boardDetailMeta.innerHTML = '';
+      [
+        titleCaseWorkItemState(item.state),
+        item.substate ? titleCaseWorkItemState(item.substate) : null,
+        item.jiraIssueKey ? 'Jira ' + item.jiraIssueKey : null,
+        item.githubPrNumber ? 'PR #' + item.githubPrNumber : null,
+        'Updated ' + timeAgo(item.updatedAt),
+      ].filter(Boolean).forEach(function(value) {
+        var chip = document.createElement('span');
+        chip.className = 'board-chip';
+        chip.textContent = value;
+        el.boardDetailMeta.appendChild(chip);
+      });
+
+      el.boardDetailFlags.innerHTML = '';
+      if (Array.isArray(item.flags) && item.flags.length > 0) {
+        item.flags.forEach(function(flag) {
+          var chip = document.createElement('span');
+          chip.className = 'board-chip';
+          chip.textContent = titleCaseWorkItemState(flag);
+          el.boardDetailFlags.appendChild(chip);
+        });
+      }
+
+      populateOverrideStateOptions(item.workflow, item.state);
+      if (el.boardOverrideSubstate) {
+        el.boardOverrideSubstate.value = item.substate || '';
+      }
+      el.boardStopProcessing.disabled = item.state === 'done' || item.state === 'cancelled';
+      el.boardOverrideSubmit.disabled = false;
+
+      var canConfirmDiscovery = item.workflow === 'product_discovery' && item.state === 'waiting_for_pm_confirmation';
+      el.boardConfirmApprove.disabled = !canConfirmDiscovery;
+      el.boardConfirmRework.disabled = !canConfirmDiscovery;
+
+      renderBoardReviewRequests(item);
+      renderBoardEvents();
+    }
+
+    function renderBoardReviewRequests(item) {
+      var reviewRequests = state.selectedWorkItemReviewRequests || [];
+      if (!reviewRequests.length) {
+        el.boardDetailReviews.className = 'board-detail-empty';
+        el.boardDetailReviews.textContent = 'No review requests for this work item yet.';
+        return;
+      }
+
+      var container = document.createElement('div');
+      container.className = 'board-detail-section';
+
+      reviewRequests.forEach(function(request) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'board-review-item';
+
+        var head = document.createElement('div');
+        head.className = 'board-review-head';
+
+        var title = document.createElement('div');
+        title.className = 'board-review-title';
+        title.textContent = request.title || '(untitled review request)';
+
+        var status = document.createElement('span');
+        status.className = 'board-chip';
+        status.textContent = titleCaseWorkItemState(request.status) + (request.outcome ? ' · ' + titleCaseWorkItemState(request.outcome) : '');
+
+        head.appendChild(title);
+        head.appendChild(status);
+        wrapper.appendChild(head);
+
+        if (request.requestMessage) {
+          var message = document.createElement('div');
+          message.className = 'board-review-message';
+          message.textContent = request.requestMessage;
+          wrapper.appendChild(message);
+        }
+
+        if (Array.isArray(request.focusPoints) && request.focusPoints.length > 0) {
+          var focus = document.createElement('div');
+          focus.className = 'board-review-focus';
+          request.focusPoints.forEach(function(point) {
+            var chip = document.createElement('span');
+            chip.className = 'board-chip';
+            chip.textContent = point;
+            focus.appendChild(chip);
+          });
+          wrapper.appendChild(focus);
+        }
+
+        var meta = document.createElement('div');
+        meta.className = 'board-card-meta';
+        meta.textContent = 'Round ' + request.reviewRound + ' · ' + titleCaseWorkItemState(request.type) + ' · ' + describeReviewRequestTarget(request, item) + ' · Requested ' + timeAgo(request.requestedAt);
+        wrapper.appendChild(meta);
+
+        if (request.outcome && request.resolvedAt) {
+          var resolution = document.createElement('div');
+          resolution.className = 'board-card-meta';
+          resolution.textContent = 'Resolved ' + timeAgo(request.resolvedAt);
+          wrapper.appendChild(resolution);
+        }
+
+        var comments = state.selectedWorkItemReviewComments[request.id] || [];
+        if (comments.length > 0) {
+          var commentsWrap = document.createElement('div');
+          commentsWrap.className = 'board-review-comments';
+
+          comments.forEach(function(commentRecord) {
+            var commentNode = document.createElement('div');
+            commentNode.className = 'board-review-comment';
+
+            var commentMeta = document.createElement('div');
+            commentMeta.className = 'board-review-comment-meta';
+            commentMeta.textContent = describeReviewComment(commentRecord) + ' · ' + timeAgo(commentRecord.createdAt);
+            commentNode.appendChild(commentMeta);
+
+            var commentBody = document.createElement('div');
+            commentBody.className = 'board-review-comment-body';
+            commentBody.textContent = commentRecord.body || '';
+            commentNode.appendChild(commentBody);
+
+            commentsWrap.appendChild(commentNode);
+          });
+
+          wrapper.appendChild(commentsWrap);
+        }
+
+        if (request.status === 'pending') {
+          var actions = document.createElement('div');
+          actions.className = 'board-inline-actions';
+
+          var approveBtn = document.createElement('button');
+          approveBtn.className = 'top-btn';
+          approveBtn.textContent = 'Approve';
+          approveBtn.onclick = function() {
+            var comment = window.prompt('Optional approval note', '') || '';
+            respondToReviewRequest(request.id, 'approved', comment).catch(console.error);
+          };
+
+          var changesBtn = document.createElement('button');
+          changesBtn.className = 'top-btn';
+          changesBtn.textContent = 'Request Changes';
+          changesBtn.onclick = function() {
+            var comment = window.prompt('What should change?', '') || '';
+            respondToReviewRequest(request.id, 'changes_requested', comment).catch(console.error);
+          };
+
+          actions.appendChild(approveBtn);
+          actions.appendChild(changesBtn);
+          wrapper.appendChild(actions);
+        }
+
+        container.appendChild(wrapper);
+      });
+
+      el.boardDetailReviews.className = '';
+      el.boardDetailReviews.innerHTML = '';
+      el.boardDetailReviews.appendChild(container);
+    }
+
+    function renderBoardEvents() {
+      var events = state.selectedWorkItemEvents || [];
+      if (!events.length) {
+        el.boardDetailEvents.className = 'board-detail-empty';
+        el.boardDetailEvents.textContent = 'No events recorded for this work item yet.';
+        return;
+      }
+
+      var container = document.createElement('div');
+      container.className = 'board-detail-section';
+
+      events.slice(0, 12).forEach(function(eventRecord) {
+        var item = document.createElement('div');
+        item.className = 'board-event-item';
+
+        var head = document.createElement('div');
+        head.className = 'board-event-head';
+
+        var type = document.createElement('div');
+        type.className = 'board-review-title';
+        type.textContent = eventRecord.eventType;
+
+        var time = document.createElement('span');
+        time.className = 'board-chip';
+        time.textContent = timeAgo(eventRecord.createdAt);
+
+        head.appendChild(type);
+        head.appendChild(time);
+        item.appendChild(head);
+
+        var payload = document.createElement('div');
+        payload.className = 'board-event-payload';
+        payload.textContent = JSON.stringify(eventRecord.payload || {}, null, 2);
+        item.appendChild(payload);
+
+        container.appendChild(item);
+      });
+
+      el.boardDetailEvents.className = '';
+      el.boardDetailEvents.innerHTML = '';
+      el.boardDetailEvents.appendChild(container);
+    }
+
+    function describeReviewRequestTarget(request, workItem) {
+      if (!request || !request.targetType) return 'Unknown target';
+      var ref = request.targetRef || {};
+      if (request.targetType === 'user') {
+        return 'User ' + (ref.userId || 'unknown');
+      }
+      if (request.targetType === 'team') {
+        return 'Team ' + (ref.teamId || workItem.ownerTeamId || 'unknown');
+      }
+      if (request.targetType === 'team_role') {
+        var teamRole = ref.role || ref.teamRole || 'unknown';
+        var teamId = ref.teamId || workItem.ownerTeamId || 'owner team';
+        return 'Team role ' + teamRole + ' on ' + teamId;
+      }
+      if (request.targetType === 'org_role') {
+        return 'Org role ' + (ref.role || ref.orgRole || 'unknown');
+      }
+      return titleCaseWorkItemState(request.targetType);
+    }
+
+    function describeReviewComment(commentRecord) {
+      var parts = [];
+      if (commentRecord.source) {
+        parts.push(titleCaseWorkItemState(commentRecord.source));
+      }
+      if (commentRecord.authorUserId) {
+        parts.push('User ' + commentRecord.authorUserId);
+      }
+      return parts.length > 0 ? parts.join(' · ') : 'System';
+    }
+
+    function ensureBoardActorUserId(defaultUserId, promptLabel) {
+      if (state.boardActorUserId) {
+        return state.boardActorUserId;
+      }
+      var suggested = defaultUserId || '';
+      var value = window.prompt(promptLabel || 'Actor user id', suggested);
+      if (value === null) {
+        return null;
+      }
+      value = String(value || '').trim();
+      if (!value) {
+        return null;
+      }
+      state.boardActorUserId = value;
+      return value;
     }
 
     async function refreshSelected() {
@@ -3305,6 +4335,182 @@ export function dashboardHtml(config: AppConfig): string {
     // ── Search and filter ──
     var currentStatusFilter = 'all';
     var currentSearchQuery = '';
+
+    if (el.viewSwitch) {
+      el.viewSwitch.onclick = function(e) {
+        var button = e.target.closest('[data-view]');
+        if (!button) return;
+        state.viewMode = button.getAttribute('data-view') === 'board' ? 'board' : 'runs';
+        updateDashboardChrome();
+        if (state.viewMode === 'board') {
+          loadWorkItems().catch(console.error);
+        } else if (el.topMeta) {
+          el.topMeta.textContent = state.runs.length + ' runs';
+        }
+      };
+    }
+
+    if (el.boardWorkflow) {
+      el.boardWorkflow.onchange = function() {
+        state.boardWorkflow = el.boardWorkflow.value || 'product_discovery';
+        setBoardStatusMessage('');
+        loadWorkItems().catch(console.error);
+      };
+    }
+
+    async function respondToReviewRequest(reviewRequestId, outcome, comment) {
+      if (!reviewRequestId) return;
+      var request = (state.selectedWorkItemReviewRequests || []).find(function(entry) { return entry.id === reviewRequestId; }) || null;
+      var defaultActorUserId = request && request.targetType === 'user' && request.targetRef
+        ? request.targetRef.userId
+        : (state.selectedWorkItem && state.selectedWorkItem.createdByUserId) || '';
+      var authorUserId = ensureBoardActorUserId(defaultActorUserId, 'Reviewer user id');
+      if (!authorUserId) {
+        setBoardStatusMessage('Reviewer user id is required to respond from the board.', 'error');
+        return;
+      }
+      setBoardStatusMessage('Saving review response...');
+      try {
+        await fetchJson('/api/review-requests/' + encodeURIComponent(reviewRequestId) + '/respond', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            outcome: outcome,
+            comment: comment || undefined,
+            authorUserId: authorUserId,
+          }),
+        });
+        await loadWorkItems();
+        setBoardStatusMessage('Review response saved.', 'ok');
+      } catch (error) {
+        setBoardStatusMessage(error.message || 'Failed to save review response', 'error');
+      }
+    }
+
+    if (el.boardConfirmApprove) {
+      el.boardConfirmApprove.onclick = async function() {
+        if (!state.selectedWorkItemId) return;
+        var item = state.selectedWorkItem;
+        var actorUserId = ensureBoardActorUserId(item && item.createdByUserId, 'PM user id');
+        if (!actorUserId) {
+          setBoardStatusMessage('PM user id is required to approve discovery.', 'error');
+          return;
+        }
+        var jiraIssueKey = item && item.jiraIssueKey ? item.jiraIssueKey : '';
+        if (!jiraIssueKey) {
+          jiraIssueKey = String(window.prompt('Jira issue key', '') || '').trim();
+          if (!jiraIssueKey) {
+            setBoardStatusMessage('Jira issue key is required before discovery can be approved.', 'error');
+            return;
+          }
+        }
+        setBoardStatusMessage('Applying PM approval...');
+        try {
+          await fetchJson('/api/work-items/' + encodeURIComponent(state.selectedWorkItemId) + '/confirm-discovery', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ approved: true, actorUserId: actorUserId, jiraIssueKey: jiraIssueKey }),
+          });
+          await loadWorkItems();
+          setBoardStatusMessage('Discovery approved.', 'ok');
+        } catch (error) {
+          setBoardStatusMessage(error.message || 'Failed to approve discovery', 'error');
+        }
+      };
+    }
+
+    if (el.boardConfirmRework) {
+      el.boardConfirmRework.onclick = async function() {
+        if (!state.selectedWorkItemId) return;
+        var item = state.selectedWorkItem;
+        var actorUserId = ensureBoardActorUserId(item && item.createdByUserId, 'PM user id');
+        if (!actorUserId) {
+          setBoardStatusMessage('PM user id is required to return discovery to rework.', 'error');
+          return;
+        }
+        setBoardStatusMessage('Returning item to in_progress...');
+        try {
+          await fetchJson('/api/work-items/' + encodeURIComponent(state.selectedWorkItemId) + '/confirm-discovery', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ approved: false, actorUserId: actorUserId }),
+          });
+          await loadWorkItems();
+          setBoardStatusMessage('Discovery returned to in_progress.', 'ok');
+        } catch (error) {
+          setBoardStatusMessage(error.message || 'Failed to update discovery', 'error');
+        }
+      };
+    }
+
+    if (el.boardStopProcessing) {
+      el.boardStopProcessing.onclick = async function() {
+        if (!state.selectedWorkItemId) return;
+        var item = state.selectedWorkItem;
+        var actorUserId = ensureBoardActorUserId(item && item.createdByUserId, 'Actor user id');
+        if (!actorUserId) {
+          setBoardStatusMessage('Actor user id is required to stop processing.', 'error');
+          return;
+        }
+        setBoardStatusMessage('Stopping active processing...');
+        try {
+          var result = await fetchJson('/api/work-items/' + encodeURIComponent(state.selectedWorkItemId) + '/stop-processing', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ actorUserId: actorUserId }),
+          });
+          await loadWorkItems();
+          var stopped = Array.isArray(result.stoppedRunIds) ? result.stoppedRunIds.length : 0;
+          var failed = Array.isArray(result.failedRunIds) ? result.failedRunIds.length : 0;
+          if (failed > 0) {
+            setBoardStatusMessage('Stop requested for ' + stopped + ' run(s), but ' + failed + ' could not be interrupted.', 'error');
+            return;
+          }
+          setBoardStatusMessage('Stop requested for ' + stopped + ' run(s).', 'ok');
+        } catch (error) {
+          setBoardStatusMessage(error.message || 'Failed to stop processing', 'error');
+        }
+      };
+    }
+
+    if (el.boardOverrideSubmit) {
+      el.boardOverrideSubmit.onclick = async function() {
+        if (!state.selectedWorkItemId) return;
+        var item = state.selectedWorkItem;
+        var actorUserId = ensureBoardActorUserId(item && item.createdByUserId, 'Actor user id');
+        if (!actorUserId) {
+          setBoardStatusMessage('Actor user id is required to override work item state.', 'error');
+          return;
+        }
+        var reason = (el.boardOverrideReason.value || '').trim();
+        if (!reason) {
+          setBoardStatusMessage('Override reason is required.', 'error');
+          return;
+        }
+        setBoardStatusMessage('Applying guarded override...');
+        try {
+          await fetchJson('/api/work-items/' + encodeURIComponent(state.selectedWorkItemId) + '/override-state', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              state: el.boardOverrideState.value,
+              substate: (el.boardOverrideSubstate.value || '').trim() || undefined,
+              reason: reason,
+              actorUserId: actorUserId,
+            }),
+          });
+          el.boardOverrideReason.value = '';
+          await loadWorkItems();
+          setBoardStatusMessage('Override applied.', 'ok');
+        } catch (error) {
+          var message = error.message || 'Failed to apply override';
+          if (/processing is active/i.test(message)) {
+            message += ' Stop processing first, then retry the override.';
+          }
+          setBoardStatusMessage(message, 'error');
+        }
+      };
+    }
 
     el.runSearch.oninput = function() {
       currentSearchQuery = el.runSearch.value.trim().toLowerCase();
@@ -4071,11 +5277,16 @@ export function dashboardHtml(config: AppConfig): string {
 
     async function refreshAll() {
       await loadRuns();
+      await loadWorkItems();
       await refreshSelected();
       await refreshObserver();
     }
 
     initTheme();
+    if (el.boardWorkflow) {
+      el.boardWorkflow.value = state.boardWorkflow;
+    }
+    updateDashboardChrome();
     refreshAll().catch(console.error);
     state.interval = setInterval(() => {
       refreshAll().catch(console.error);

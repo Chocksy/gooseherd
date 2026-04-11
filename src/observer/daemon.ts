@@ -18,10 +18,11 @@ import type { Database } from "../db/index.js";
 import { loadTriggerRules, matchTriggerRule } from "./trigger-rules.js";
 import { buildDedupKey, getDedupTtl, runSafetyChecks } from "./safety.js";
 import { composeRunInput } from "./run-composer.js";
-import { startWebhookServer, type OnEventCallback } from "./webhook-server.js";
+import { startWebhookServer, type OnAdapterPayloadCallback, type OnEventCallback, type OnGitHubWebhookPayloadCallback } from "./webhook-server.js";
 import { registerAdapter } from "./sources/adapter-registry.js";
 import { githubAdapter } from "./sources/github-adapter-wrapper.js";
 import { createSentryAdapter } from "./sources/sentry-adapter-wrapper.js";
+import { jiraWorkItemAdapter } from "./sources/jira-work-item-adapter.js";
 import { pollSentry, type SentryPollerConfig } from "./sources/sentry-poller.js";
 import { pollGitHub, type GitHubPollerConfig } from "./sources/github-poller.js";
 import { triageEvent } from "./smart-triage.js";
@@ -36,6 +37,8 @@ const MAX_EVENT_HISTORY = 200;
 export class ObserverDaemon {
   private readonly stateStore: ObserverStateStore;
   private readonly learningStore: LearningStore;
+  private readonly onGitHubWebhookPayload?: OnGitHubWebhookPayloadCallback;
+  private readonly onAdapterPayload?: OnAdapterPayloadCallback;
   private rules: TriggerRule[] = [];
   private sentryPoller: NodeJS.Timeout | undefined;
   private githubPoller: NodeJS.Timeout | undefined;
@@ -52,12 +55,18 @@ export class ObserverDaemon {
     private readonly webClient: WebClient | undefined,
     private readonly tokenGetter?: () => Promise<string>,
     learningStore?: LearningStore,
-    db?: Database
+    db?: Database,
+    hooks?: {
+      onGitHubWebhookPayload?: OnGitHubWebhookPayloadCallback;
+      onAdapterPayload?: OnAdapterPayloadCallback;
+    }
   ) {
     const database = db ?? (learningStore as unknown as { db: Database })?.db;
     if (!database) throw new Error("ObserverDaemon requires a Database instance");
     this.stateStore = new ObserverStateStore(database);
     this.learningStore = learningStore ?? new LearningStore(database);
+    this.onGitHubWebhookPayload = hooks?.onGitHubWebhookPayload;
+    this.onAdapterPayload = hooks?.onAdapterPayload;
   }
 
   async start(): Promise<void> {
@@ -136,6 +145,7 @@ export class ObserverDaemon {
     if (this.config.observerAlertChannelId) {
       registerAdapter(createSentryAdapter(this.config.observerAlertChannelId));
     }
+    registerAdapter(jiraWorkItemAdapter);
 
     // Load extension adapters from extensions/adapters/
     const extensionDir = path.resolve("extensions/adapters");
@@ -162,7 +172,10 @@ export class ObserverDaemon {
         sentryWebhookSecret: this.config.observerSentryWebhookSecret,
         sentryAlertChannelId: this.config.observerAlertChannelId,
         adapterSecrets: this.config.observerWebhookSecrets
-      }, onEvent);
+      }, onEvent, {
+        onGitHubWebhookPayload: this.onGitHubWebhookPayload,
+        onAdapterPayload: this.onAdapterPayload,
+      });
 
       this.webhookStop = handle.stop;
 

@@ -148,3 +148,63 @@ test("SANDBOX_RUNTIME: loadConfig throws for blank explicit value", () => {
     process.env = originalEnv;
   }
 });
+
+test("work item review reset flags default to false", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: undefined,
+      FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: undefined,
+    };
+    const config = loadConfig();
+    assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, false);
+    assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, false);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("work item review reset flags respect env overrides", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: "true",
+      FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: "yes",
+    };
+    const config = loadConfig();
+    assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, true);
+    assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("work item GitHub adoption labels default to ai_flow", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      WORK_ITEM_GITHUB_ADOPTION_LABELS: undefined,
+    };
+    const config = loadConfig();
+    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai_flow"]);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("work item GitHub adoption labels respect comma-separated env", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      WORK_ITEM_GITHUB_ADOPTION_LABELS: "ai_flow, ai-delivery",
+    };
+    const config = loadConfig();
+    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai_flow", "ai-delivery"]);
+  } finally {
+    process.env = originalEnv;
+  }
+});

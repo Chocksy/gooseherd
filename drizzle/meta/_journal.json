@@ -50,6 +50,20 @@
       "when": 1778607200000,
       "tag": "0006_runner_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778622000000,
+      "tag": "0007_work_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778886000000,
+      "tag": "0008_feature_delivery_jira_unique",
+      "breakpoints": true
     }
   ]
 }

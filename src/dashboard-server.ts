@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFile, access as fsAccess } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { resolveGitHubAuthMode } from "./config.js";
@@ -36,6 +36,7 @@ import type { ControlPlaneStore } from "./runtime/control-plane-store.js";
 import { routeControlPlaneRequest } from "./runtime/control-plane-router.js";
 import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { formatSandboxRuntimeLabel } from "./runtime/runtime-mode.js";
+import type { ReviewRequestRecord, WorkItemEventRecord, WorkItemRecord } from "./work-items/types.js";
 
 /** Lean interface — dashboard only reads observer state, never mutates it. */
 export interface DashboardObserver {
@@ -47,6 +48,67 @@ export interface DashboardObserver {
 /** Optional source for in-memory orchestrator thread messages. */
 export interface DashboardConversationSource {
   get(threadKey: string): Promise<ChatMessage[] | undefined>;
+}
+
+export interface DashboardWorkItemsSource {
+  listWorkItems(workflow?: string): Promise<WorkItemRecord[]>;
+  getWorkItem(id: string): Promise<WorkItemRecord | undefined>;
+  listReviewRequestsForWorkItem(workItemId: string): Promise<ReviewRequestRecord[]>;
+  listReviewRequestComments(reviewRequestId: string): Promise<Array<{
+    id: number;
+    reviewRequestId: string;
+    authorUserId?: string;
+    source: string;
+    body: string;
+    createdAt: string;
+  }>>;
+  listEventsForWorkItem(workItemId: string): Promise<WorkItemEventRecord[]>;
+  createDiscoveryWorkItem(input: {
+    title: string;
+    summary?: string;
+    ownerTeamId?: string;
+    homeChannelId?: string;
+    homeThreadTs?: string;
+    originChannelId?: string;
+    originThreadTs?: string;
+    jiraIssueKey?: string;
+    createdByUserId: string;
+  }): Promise<WorkItemRecord>;
+  createReviewRequests(input: {
+    workItemId: string;
+    requestedByUserId: string;
+    requests: Array<{
+      type: ReviewRequestRecord["type"];
+      targetType: ReviewRequestRecord["targetType"];
+      targetRef: Record<string, unknown>;
+      title: string;
+      requestMessage?: string;
+      focusPoints?: string[];
+    }>;
+  }): Promise<ReviewRequestRecord[]>;
+  respondToReviewRequest(input: {
+    reviewRequestId: string;
+    outcome: NonNullable<ReviewRequestRecord["outcome"]>;
+    authorUserId?: string;
+    comment?: string;
+  }): Promise<WorkItemRecord>;
+  confirmDiscovery(input: {
+    workItemId: string;
+    approved: boolean;
+    actorUserId?: string;
+    jiraIssueKey?: string;
+  }): Promise<WorkItemRecord>;
+  stopProcessing(input: {
+    workItemId: string;
+    actorUserId?: string;
+  }): Promise<{ workItem: WorkItemRecord; stoppedRunIds: string[]; alreadyIdleRunIds: string[]; failedRunIds: string[] }>;
+  guardedOverrideState(input: {
+    workItemId: string;
+    state: WorkItemRecord["state"];
+    substate?: string;
+    actorUserId?: string;
+    reason: string;
+  }): Promise<WorkItemRecord>;
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -406,7 +468,8 @@ export function startDashboardServer(
   agentProfileStore?: AgentProfileStore,
   controlPlaneStore?: ControlPlaneStore,
   runnerArtifactStore?: ArtifactStore,
-): void {
+  workItemsSource?: DashboardWorkItemsSource,
+): Server {
   const githubService = GitHubService.create(config);
   let githubRepositoriesCache: CachedGitHubRepositories | undefined;
 
@@ -904,6 +967,68 @@ export function startDashboardServer(
         return;
       }
 
+      if (req.method === "GET" && pathname === "/api/work-items") {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const workflow = requestUrl.searchParams.get("workflow") ?? undefined;
+        const workItems = await workItemsSource.listWorkItems(workflow || undefined);
+        sendJson(res, 200, { workItems });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/api/work-items/discovery") {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const raw = await readBody(req);
+        if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+        let parsed: {
+          title?: string;
+          summary?: string;
+          ownerTeamId?: string;
+          homeChannelId?: string;
+          homeThreadTs?: string;
+          originChannelId?: string;
+          originThreadTs?: string;
+          jiraIssueKey?: string;
+          createdByUserId?: string;
+        } = {};
+        try {
+          parsed = JSON.parse(raw) as typeof parsed;
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+
+        if (!parsed.title || !parsed.createdByUserId) {
+          sendJson(res, 400, { error: "title and createdByUserId are required" });
+          return;
+        }
+
+        try {
+          const workItem = await workItemsSource.createDiscoveryWorkItem({
+            title: parsed.title,
+            summary: parsed.summary,
+            ownerTeamId: parsed.ownerTeamId,
+            homeChannelId: parsed.homeChannelId,
+            homeThreadTs: parsed.homeThreadTs,
+            originChannelId: parsed.originChannelId,
+            originThreadTs: parsed.originThreadTs,
+            jiraIssueKey: parsed.jiraIssueKey,
+            createdByUserId: parsed.createdByUserId,
+          });
+          sendJson(res, 201, { workItem });
+        } catch (error) {
+          sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to create discovery work item" });
+        }
+        return;
+      }
+
       const parts = pathname.split("/").filter(Boolean);
       if (parts[0] === "api" && parts[1] === "agent-profiles" && parts[2]) {
         if (!agentProfileStore) {
@@ -1305,6 +1430,202 @@ export function startDashboardServer(
         }
       }
 
+      if (parts[0] === "api" && parts[1] === "work-items" && parts[2]) {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const workItemId = decodeURIComponent(parts[2]);
+
+        if (parts.length === 3 && req.method === "GET") {
+          const workItem = await workItemsSource.getWorkItem(workItemId);
+          if (!workItem) {
+            sendJson(res, 404, { error: `Work item not found: ${workItemId}` });
+            return;
+          }
+          sendJson(res, 200, { workItem });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "review-requests" && req.method === "GET") {
+          const reviewRequests = await workItemsSource.listReviewRequestsForWorkItem(workItemId);
+          sendJson(res, 200, { reviewRequests });
+          return;
+        }
+
+        if (parts.length === 6 && parts[3] === "review-requests" && parts[5] === "comments" && req.method === "GET") {
+          const reviewRequestId = decodeURIComponent(parts[4]!);
+          const comments = await workItemsSource.listReviewRequestComments(reviewRequestId);
+          sendJson(res, 200, { comments });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "events" && req.method === "GET") {
+          const events = await workItemsSource.listEventsForWorkItem(workItemId);
+          sendJson(res, 200, { events });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "review-requests" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: {
+            requestedByUserId?: string;
+            requests?: Array<{
+              type: ReviewRequestRecord["type"];
+              targetType: ReviewRequestRecord["targetType"];
+              targetRef: Record<string, unknown>;
+              title: string;
+              requestMessage?: string;
+              focusPoints?: string[];
+            }>;
+          } = {};
+          try {
+            parsed = JSON.parse(raw) as typeof parsed;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (!parsed.requestedByUserId || !parsed.requests || parsed.requests.length === 0) {
+            sendJson(res, 400, { error: "requestedByUserId and at least one request are required" });
+            return;
+          }
+
+          try {
+            const reviewRequests = await workItemsSource.createReviewRequests({
+              workItemId,
+              requestedByUserId: parsed.requestedByUserId,
+              requests: parsed.requests,
+            });
+            sendJson(res, 201, { reviewRequests });
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to create review requests" });
+          }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "confirm-discovery" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: { approved?: boolean; actorUserId?: string; jiraIssueKey?: string } = {};
+          try {
+            parsed = JSON.parse(raw) as typeof parsed;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (typeof parsed.approved !== "boolean") {
+            sendJson(res, 400, { error: "approved must be a boolean" });
+            return;
+          }
+
+          try {
+            const workItem = await workItemsSource.confirmDiscovery({
+              workItemId,
+              approved: parsed.approved,
+              actorUserId: parsed.actorUserId,
+              jiraIssueKey: parsed.jiraIssueKey,
+            });
+            sendJson(res, 200, { workItem });
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to confirm discovery" });
+          }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "stop-processing" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: { actorUserId?: string } = {};
+          try {
+            parsed = raw ? (JSON.parse(raw) as typeof parsed) : {};
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+
+          try {
+            const result = await workItemsSource.stopProcessing({
+              workItemId,
+              actorUserId: parsed.actorUserId,
+            });
+            sendJson(res, 200, result);
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to stop processing" });
+          }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "override-state" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: { state?: WorkItemRecord["state"]; substate?: string; actorUserId?: string; reason?: string } = {};
+          try {
+            parsed = JSON.parse(raw) as typeof parsed;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (!parsed.state || !parsed.reason) {
+            sendJson(res, 400, { error: "state and reason are required" });
+            return;
+          }
+
+          try {
+            const workItem = await workItemsSource.guardedOverrideState({
+              workItemId,
+              state: parsed.state,
+              substate: parsed.substate,
+              actorUserId: parsed.actorUserId,
+              reason: parsed.reason,
+            });
+            sendJson(res, 200, { workItem });
+          } catch (error) {
+            sendJson(res, 409, { error: error instanceof Error ? error.message : "Guarded override rejected" });
+          }
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "review-requests" && parts[2] && parts[3] === "respond" && req.method === "POST") {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const raw = await readBody(req);
+        if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+        let parsed: {
+          outcome?: NonNullable<ReviewRequestRecord["outcome"]>;
+          authorUserId?: string;
+          comment?: string;
+        } = {};
+        try {
+          parsed = JSON.parse(raw) as typeof parsed;
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        if (!parsed.outcome) {
+          sendJson(res, 400, { error: "outcome is required" });
+          return;
+        }
+
+        try {
+          const workItem = await workItemsSource.respondToReviewRequest({
+            reviewRequestId: decodeURIComponent(parts[2]),
+            outcome: parsed.outcome,
+            authorUserId: parsed.authorUserId,
+            comment: parsed.comment,
+          });
+          sendJson(res, 200, { workItem });
+        } catch (error) {
+          sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to record review response" });
+        }
+        return;
+      }
+
       // ── Observer API routes ──
 
       if (req.method === "GET" && pathname === "/api/observer/state") {
@@ -1503,6 +1824,8 @@ export function startDashboardServer(
       url: `http://${config.dashboardHost}:${String(config.dashboardPort)}`
     });
   });
+
+  return server;
 }
 
 function parseOverrideFlag(value: string | undefined): boolean {

@@ -53,87 +53,105 @@ describe("dashboard auth", () => {
     return res as any;
   }
 
-  test("no token configured → always passes", () => {
+  test("no token configured → always passes", async () => {
     const req = makeMockReq();
     const res = makeMockRes();
     const opts = { setupComplete: true };
-    assert.equal(checkAuth(req, res, opts, "/"), true);
-    assert.equal(checkAuth(req, res, opts, "/api/runs"), true);
+    assert.equal(await checkAuth(req, res, opts, "/"), true);
+    assert.equal(await checkAuth(req, res, opts, "/api/runs"), true);
   });
 
-  test("healthz always passes even with token", () => {
+  test("healthz always passes even with token", async () => {
     const req = makeMockReq();
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/healthz"), true);
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/healthz"), true);
   });
 
-  test("/login always passes even with token", () => {
+  test("/login always passes even with token", async () => {
     const req = makeMockReq();
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/login"), true);
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/login"), true);
   });
 
-  test("API route without auth returns 401", () => {
+  test("API route without auth returns 401", async () => {
     const req = makeMockReq();
     const res = makeMockRes();
-    const result = checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs");
+    const result = await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs");
     assert.equal(result, false);
     assert.equal(res.statusCode, 401);
   });
 
-  test("API route with valid Bearer token passes", () => {
+  test("API route with valid Bearer token passes", async () => {
     const req = makeMockReq({
       headers: { authorization: "Bearer secret123" }
     });
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs"), true);
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs"), true);
   });
 
-  test("API route with wrong Bearer token returns 401", () => {
+  test("API route with wrong Bearer token returns 401", async () => {
     const req = makeMockReq({
       headers: { authorization: "Bearer wrong" }
     });
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs"), false);
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs"), false);
     assert.equal(res.statusCode, 401);
   });
 
-  test("HTML page without cookie redirects to /login", () => {
+  test("HTML page without cookie redirects to /login", async () => {
     const req = makeMockReq();
     const res = makeMockRes();
-    const result = checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/");
+    const result = await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/");
     assert.equal(result, false);
     assert.equal(res.statusCode, 302);
     assert.equal(res._headers["location"], "/login");
   });
 
   test("HTML page with valid session cookie passes", async () => {
-    const { createHash } = await import("node:crypto");
-    const sessionValue = createHash("sha256").update("secret123").digest("hex");
     const req = makeMockReq({
-      headers: { cookie: `gooseherd-session=${sessionValue}` }
+      headers: { cookie: "gooseherd-session=session-token" }
     });
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/"), true);
+    const sessionStore = {
+      getSessionByToken: mock.fn(async (token: string) => token === "session-token"
+        ? {
+          id: "sess-1",
+          principalType: "user",
+          authMethod: "slack",
+          userId: "user-1",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          lastSeenAt: new Date().toISOString(),
+        }
+        : undefined),
+    } as any;
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123", sessionStore }, "/"), true);
   });
 
-  test("HTML page with invalid session cookie redirects", () => {
+  test("HTML page with invalid session cookie redirects", async () => {
     const req = makeMockReq({
       headers: { cookie: "gooseherd-session=invalid" }
     });
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/"), false);
+    const sessionStore = { getSessionByToken: mock.fn(async () => undefined) } as any;
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123", sessionStore }, "/"), false);
     assert.equal(res.statusCode, 302);
   });
 
   test("API route with valid session cookie passes", async () => {
-    const { createHash } = await import("node:crypto");
-    const sessionValue = createHash("sha256").update("mytoken").digest("hex");
     const req = makeMockReq({
-      headers: { cookie: `gooseherd-session=${sessionValue}` }
+      headers: { cookie: "gooseherd-session=session-token" }
     });
     const res = makeMockRes();
-    assert.equal(checkAuth(req, res, { setupComplete: true, dashboardToken: "mytoken" }, "/api/runs"), true);
+    const sessionStore = {
+      getSessionByToken: mock.fn(async () => ({
+        id: "sess-1",
+        principalType: "admin",
+        authMethod: "admin_password",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        lastSeenAt: new Date().toISOString(),
+      })),
+    } as any;
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "mytoken", sessionStore }, "/api/runs"), true);
   });
 });
 

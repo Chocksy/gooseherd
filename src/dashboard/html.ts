@@ -584,6 +584,12 @@ export function dashboardHtml(config: AppConfig): string {
       display: grid;
       gap: 12px;
     }
+    .board-detail.is-hidden {
+      display: none !important;
+    }
+    .board-layout.detail-collapsed {
+      grid-template-columns: 1fr;
+    }
     .board-detail-title {
       font-size: 18px;
       font-weight: 700;
@@ -1971,7 +1977,7 @@ export function dashboardHtml(config: AppConfig): string {
           </div>
           <div class="board-layout">
             <div class="board-columns" id="board-columns"></div>
-            <div class="card board-detail" id="board-detail">
+            <div class="card board-detail is-hidden" id="board-detail">
               <div>
                 <div class="card-title">Work Item Detail</div>
                 <div class="card-subtitle" id="board-detail-subtitle">Select a card to inspect workflow context, review requests and actions.</div>
@@ -3501,9 +3507,6 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedWorkItemReviewRequests = [];
         state.selectedWorkItemEvents = [];
       }
-      if (!state.selectedWorkItemId && state.workItems.length > 0) {
-        state.selectedWorkItemId = state.workItems[0].id;
-      }
       if (el.boardMeta) {
         el.boardMeta.textContent = state.workItems.length + ' work items';
       }
@@ -3677,6 +3680,14 @@ export function dashboardHtml(config: AppConfig): string {
 
     function renderBoardDetail() {
       var item = state.selectedWorkItem;
+      var boardDetail = document.getElementById('board-detail');
+      var boardLayout = document.querySelector('.board-layout');
+      if (boardDetail) {
+        boardDetail.classList.toggle('is-hidden', !item);
+      }
+      if (boardLayout) {
+        boardLayout.classList.toggle('detail-collapsed', !item);
+      }
       if (!item) {
         el.boardDetailTitle.textContent = 'No work item selected';
         el.boardDetailSubtitle.textContent = 'Select a card to inspect workflow context, review requests and actions.';
@@ -4702,8 +4713,10 @@ export function dashboardHtml(config: AppConfig): string {
     }
     window.addEventListener('hashchange', applyHashSelection);
 
-    el.logoutBtn.onclick = () => {
-      document.cookie = 'gooseherd-session=; Max-Age=0; Path=/; SameSite=Strict';
+    el.logoutBtn.onclick = async () => {
+      try {
+        await fetch('/logout', { method: 'POST' });
+      } catch (_) {}
       window.location.href = '/login';
     };
 

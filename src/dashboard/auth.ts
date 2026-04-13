@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AppConfig } from "../config.js";
 import { verifyPassword } from "../db/setup-store.js";
+import type { DashboardAuthSessionStore } from "./auth-session-store.js";
 import { escapeHtml } from "./html.js";
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -14,7 +15,7 @@ export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function parseCookies(req: IncomingMessage): Record<string, string> {
+export function parseCookies(req: IncomingMessage): Record<string, string> {
   const header = req.headers["cookie"] ?? "";
   const cookies: Record<string, string> = {};
   for (const pair of header.split(";")) {
@@ -36,38 +37,33 @@ export function safeTokenCompare(a: string, b: string): boolean {
 }
 
 export interface AuthOptions {
-  /** DASHBOARD_TOKEN env var (takes priority). */
   dashboardToken?: string;
-  /** Wizard password hash from DB. */
   passwordHash?: string;
-  /** Whether setup wizard is complete. */
   setupComplete: boolean;
+  slackAuthEnabled?: boolean;
+  sessionStore?: DashboardAuthSessionStore;
 }
 
-/**
- * Check if a request is authenticated.
- * Returns true if auth passes, false if the response has been handled (401/redirect).
- */
-export function checkAuth(
+const PUBLIC_AUTH_PATHS = new Set([
+  "/login",
+  "/auth/slack/signin",
+  "/auth/slack/signup",
+  "/auth/slack/callback",
+]);
+
+export async function checkAuth(
   req: IncomingMessage,
   res: ServerResponse,
   opts: AuthOptions,
   pathname: string
-): boolean {
-  // Health check always passes
+): Promise<boolean> {
   if (pathname === "/healthz") return true;
+  if (PUBLIC_AUTH_PATHS.has(pathname)) return true;
 
-  // Login routes always pass
-  if (pathname === "/login") return true;
-
-  // ── Setup wizard auth logic ──
   if (!opts.setupComplete) {
-    // Wizard page and status are always accessible during setup
     if (pathname === "/setup" || pathname === "/api/setup/status") return true;
-    // Password endpoint always accessible (first step, before any auth exists)
     if (pathname === "/api/setup/password") return true;
 
-    // Other setup routes require session cookie after password is set
     if (pathname.startsWith("/api/setup/")) {
       if (opts.passwordHash) {
         const cookies = parseCookies(req);
@@ -78,7 +74,6 @@ export function checkAuth(
       return false;
     }
 
-    // Non-setup routes during incomplete setup: redirect to /setup
     if (pathname.startsWith("/api/")) {
       sendJson(res, 503, { error: "Setup not complete" });
       return false;
@@ -89,35 +84,24 @@ export function checkAuth(
     return false;
   }
 
-  // ── Normal auth (setup complete) ──
-
-  const effectiveToken = opts.dashboardToken;
-
-  // Parse session cookie once (used by both token and password auth)
   const cookies = parseCookies(req);
-  const sessionHash = cookies["gooseherd-session"];
+  const sessionToken = cookies["gooseherd-session"];
+  if (sessionToken && opts.sessionStore) {
+    const session = await opts.sessionStore.getSessionByToken(sessionToken);
+    if (session) return true;
+  }
 
-  // Check env-var token (Bearer header for API routes, session cookie for all)
-  if (effectiveToken) {
-    if (pathname.startsWith("/api/")) {
-      const authHeader = req.headers["authorization"] ?? "";
-      if (authHeader.startsWith("Bearer ")) {
-        const token = authHeader.slice(7);
-        if (safeTokenCompare(token, effectiveToken)) return true;
-      }
+  if (opts.dashboardToken && pathname.startsWith("/api/")) {
+    const authHeader = req.headers["authorization"] ?? "";
+    if (authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice("Bearer ".length);
+      if (safeTokenCompare(token, opts.dashboardToken)) return true;
     }
-    if (sessionHash && safeTokenCompare(sessionHash, hashToken(effectiveToken))) return true;
   }
 
-  // Check wizard password hash session cookie (works alongside env token)
-  if (opts.passwordHash && sessionHash) {
-    if (safeTokenCompare(sessionHash, hashToken(opts.passwordHash))) return true;
-  }
+  const authConfigured = Boolean(opts.dashboardToken || opts.passwordHash || opts.slackAuthEnabled);
+  if (!authConfigured) return true;
 
-  // No auth configured at all — allow access (backward compat for localhost dev)
-  if (!effectiveToken && !opts.passwordHash) return true;
-
-  // Not authenticated — redirect or 401
   if (pathname.startsWith("/api/")) {
     sendJson(res, 401, { error: "Unauthorized" });
     return false;
@@ -129,26 +113,41 @@ export function checkAuth(
   return false;
 }
 
-/**
- * Handle POST /login — supports both env-var token and wizard password.
- * Returns the session cookie value on success, or undefined on failure.
- */
-export async function handleLogin(
+export async function handleAdminLogin(
   submittedValue: string,
-  opts: AuthOptions
-): Promise<string | undefined> {
-  // Check env-var token first
+  opts: AuthOptions,
+): Promise<boolean> {
   if (opts.dashboardToken && safeTokenCompare(submittedValue, opts.dashboardToken)) {
-    return hashToken(opts.dashboardToken);
+    return true;
   }
-  // Check wizard password (async scrypt)
   if (opts.passwordHash && await verifyPassword(submittedValue, opts.passwordHash)) {
-    return hashToken(opts.passwordHash);
+    return true;
   }
-  return undefined;
+  return false;
 }
 
-/** Render the login page. */
+export function buildDashboardSessionCookie(token: string, config: Pick<AppConfig, "dashboardPublicUrl">): string {
+  const secureSuffix = config.dashboardPublicUrl?.startsWith("https") ? "; Secure" : "";
+  return `gooseherd-session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/${secureSuffix}`;
+}
+
+export function clearDashboardSessionCookie(config: Pick<AppConfig, "dashboardPublicUrl">): string {
+  const secureSuffix = config.dashboardPublicUrl?.startsWith("https") ? "; Secure" : "";
+  return `gooseherd-session=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/${secureSuffix}`;
+}
+
+function renderSlackAuthActions(config: AppConfig): string {
+  if (!config.slackClientId || !config.slackClientSecret) return "";
+
+  return `
+    <div class="auth-divider"><span>or</span></div>
+    <div class="slack-auth-actions">
+      <a class="slack-button" href="/auth/slack/signin">Sign in with Slack</a>
+      <a class="slack-link" href="/auth/slack/signup">Sign up with Slack</a>
+    </div>
+  `;
+}
+
 export function loginPageHtml(config: AppConfig, error?: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -167,6 +166,7 @@ export function loginPageHtml(config: AppConfig, error?: string): string {
       font-family: "Space Grotesk", system-ui, sans-serif;
       background: #060a14;
       color: #e2e8f0;
+      padding: 24px;
     }
     .login-card {
       background: #0f172a;
@@ -174,12 +174,20 @@ export function loginPageHtml(config: AppConfig, error?: string): string {
       border-radius: 16px;
       padding: 40px 36px;
       width: 100%;
-      max-width: 380px;
+      max-width: 420px;
       box-shadow: 0 14px 36px rgba(1,6,18,0.55);
     }
     h1 { font-size: 20px; margin: 0 0 8px; }
     p { color: #94a3b8; font-size: 13px; margin: 0 0 24px; }
-    .error { color: #ef4444; font-size: 13px; margin-bottom: 16px; }
+    .error {
+      color: #fecaca;
+      background: rgba(127, 29, 29, 0.45);
+      border: 1px solid rgba(248, 113, 113, 0.35);
+      border-radius: 10px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+    }
     label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
     input[type="password"] {
       width: 100%;
@@ -192,7 +200,7 @@ export function loginPageHtml(config: AppConfig, error?: string): string {
       outline: none;
     }
     input[type="password"]:focus { border-color: #60a5fa; }
-    button {
+    button, .slack-button {
       margin-top: 16px;
       width: 100%;
       padding: 10px;
@@ -203,19 +211,54 @@ export function loginPageHtml(config: AppConfig, error?: string): string {
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
     }
-    button:hover { background: #1d4ed8; }
+    button:hover, .slack-button:hover { background: #1d4ed8; }
+    .auth-divider {
+      margin: 22px 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #64748b;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .auth-divider::before, .auth-divider::after {
+      content: "";
+      height: 1px;
+      background: #22314f;
+      flex: 1;
+    }
+    .slack-auth-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .slack-link {
+      color: #93c5fd;
+      text-align: center;
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .slack-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
-  <form class="login-card" method="POST" action="/login">
-    <h1>${escapeHtml(config.appName)}</h1>
-    <p>Enter your password to continue.</p>
-    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
-    <label for="token">Password</label>
-    <input type="password" id="token" name="token" autofocus required />
-    <button type="submit">Sign in</button>
-  </form>
+  <div class="login-card">
+    <form method="POST" action="/login">
+      <h1>${escapeHtml(config.appName)}</h1>
+      <p>Enter the administrator password to continue.</p>
+      ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+      <label for="token">Password</label>
+      <input type="password" id="token" name="token" autofocus required />
+      <button type="submit">Admin login</button>
+    </form>
+    ${renderSlackAuthActions(config)}
+  </div>
 </body>
 </html>`;
 }

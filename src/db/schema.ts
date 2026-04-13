@@ -321,12 +321,17 @@ export const teams = pgTable(
     id: uuid("id").primaryKey(),
     name: text("name").notNull(),
     slackChannelId: text("slack_channel_id").notNull(),
+    slackUserGroupId: text("slack_user_group_id"),
+    slackUserGroupHandle: text("slack_user_group_handle"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex("teams_name_idx").on(t.name),
     uniqueIndex("teams_slack_channel_id_idx").on(t.slackChannelId),
+    uniqueIndex("teams_slack_user_group_id_idx")
+      .on(t.slackUserGroupId)
+      .where(sql`slack_user_group_id IS NOT NULL`),
   ]
 );
 
@@ -336,6 +341,7 @@ export const teamMembers = pgTable(
     teamId: uuid("team_id").notNull(),
     userId: uuid("user_id").notNull(),
     functionalRoles: text("functional_roles").array().notNull().default([]),
+    membershipSource: text("membership_source").notNull().default("manual"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -535,6 +541,34 @@ export const sessions = pgTable(
     error: text("error"),
   },
   (t) => [index("sessions_status_idx").on(t.status)]
+);
+
+export const dashboardAuthSessions = pgTable(
+  "dashboard_auth_sessions",
+  {
+    id: uuid("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    principalType: text("principal_type").notNull(),
+    userId: uuid("user_id"),
+    authMethod: text("auth_method").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.userId],
+      foreignColumns: [users.id],
+      name: "dashboard_auth_sessions_user_id_users_id_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("dashboard_auth_sessions_token_hash_idx").on(t.tokenHash),
+    index("dashboard_auth_sessions_user_id_idx")
+      .on(t.userId)
+      .where(sql`user_id IS NOT NULL`),
+    index("dashboard_auth_sessions_expires_at_idx").on(t.expiresAt),
+    index("dashboard_auth_sessions_revoked_at_idx").on(t.revokedAt),
+  ]
 );
 
 // ── conversations ──

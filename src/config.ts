@@ -9,6 +9,9 @@ const envSchema = z.object({
   SLACK_SIGNING_SECRET: z.string().optional(),
   SLACK_COMMAND_NAME: z.string().optional(),
   SLACK_ALLOWED_CHANNELS: z.string().optional(),
+  SLACK_CLIENT_ID: z.string().optional(),
+  SLACK_CLIENT_SECRET: z.string().optional(),
+  SLACK_AUTH_REDIRECT_URI: z.string().optional(),
 
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_APP_ID: z.string().optional(),
@@ -182,6 +185,9 @@ export interface AppConfig {
   slackSigningSecret?: string;
   slackCommandName: string;
   slackAllowedChannels: string[];
+  slackClientId?: string;
+  slackClientSecret?: string;
+  slackAuthRedirectUri?: string;
 
   githubToken?: string;
   githubAppId?: number;
@@ -434,6 +440,9 @@ export function loadConfig(): AppConfig {
     slackSigningSecret: parsed.SLACK_SIGNING_SECRET?.trim() || undefined,
     slackCommandName: parsed.SLACK_COMMAND_NAME?.trim() || appSlug,
     slackAllowedChannels: parseList(parsed.SLACK_ALLOWED_CHANNELS),
+    slackClientId: parsed.SLACK_CLIENT_ID?.trim() || undefined,
+    slackClientSecret: parsed.SLACK_CLIENT_SECRET?.trim() || undefined,
+    slackAuthRedirectUri: parsed.SLACK_AUTH_REDIRECT_URI?.trim() || undefined,
 
     githubToken: parsed.GITHUB_TOKEN,
     githubAppId: parsed.GITHUB_APP_ID ? parseInteger(parsed.GITHUB_APP_ID, 0) || undefined : undefined,

@@ -511,6 +511,7 @@ async function main(): Promise<void> {
       svc.controlPlaneStore,
       svc.runnerArtifactStore,
       svc.dashboardWorkItemsSource,
+      db,
     );
   }
 

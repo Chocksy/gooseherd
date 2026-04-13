@@ -64,6 +64,13 @@
       "when": 1778886000000,
       "tag": "0008_feature_delivery_jira_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1779100000000,
+      "tag": "0009_dashboard_auth_slack",
+      "breakpoints": true
     }
   ]
 }

@@ -84,6 +84,7 @@ export async function checkAuth(
   pathname: string
 ): Promise<boolean> {
   if (pathname === "/healthz") return true;
+  if (pathname.startsWith("/webhooks/")) return true;
   if (PUBLIC_AUTH_PATHS.has(pathname)) return true;
 
   if (!opts.setupComplete) {

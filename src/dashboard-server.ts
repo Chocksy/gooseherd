@@ -64,6 +64,7 @@ export interface DashboardObserver {
   getStateSnapshot(): Promise<ObserverStateSnapshot>;
   getRecentEvents(limit?: number): ObserverEventRecord[];
   getRules(): TriggerRule[];
+  handleWebhookHttpRequest?(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<boolean>;
 }
 
 /** Optional source for in-memory orchestrator thread messages. */
@@ -517,6 +518,11 @@ export function startDashboardServer(
 
       if (controlPlaneStore && runnerArtifactStore) {
         const handled = await routeControlPlaneRequest(req, res, pathname, controlPlaneStore, runnerArtifactStore);
+        if (handled) return;
+      }
+
+      if (pathname.startsWith("/webhooks/")) {
+        const handled = await observer?.handleWebhookHttpRequest?.(req, res) ?? false;
         if (handled) return;
       }
 

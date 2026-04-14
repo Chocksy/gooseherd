@@ -1,7 +1,6 @@
 /**
- * Webhook Receiver — separate HTTP server for external webhooks.
+ * Webhook Receiver — reusable HTTP routes for external webhooks.
  *
- * Runs on OBSERVER_WEBHOOK_PORT, separate from the dashboard.
  * Routes:
  *   POST /webhooks/github  — GitHub webhook events (HMAC-verified)
  *   POST /webhooks/sentry  — Sentry webhook events (HMAC-verified)
@@ -52,7 +51,7 @@ export function startWebhookServer(
   }
 ): { server: Server; stop: () => Promise<void> } {
   const server = createServer((req, res) => {
-    handleRequest(req, res, config, onEvent, hooks).catch((err) => {
+    handleWebhookRequest(req, res, config, onEvent, hooks).catch((err) => {
       const msg = err instanceof Error ? err.message : "unknown";
       logError("Webhook request error", { error: msg });
       sendJson(res, 500, { error: "Internal server error" });
@@ -75,7 +74,7 @@ export function startWebhookServer(
   return { server, stop };
 }
 
-async function handleRequest(
+export async function handleWebhookRequest(
   req: IncomingMessage,
   res: ServerResponse,
   config: WebhookServerConfig,
@@ -84,36 +83,37 @@ async function handleRequest(
     onGitHubWebhookPayload?: OnGitHubWebhookPayloadCallback;
     onAdapterPayload?: OnAdapterPayloadCallback;
   }
-): Promise<void> {
-  const url = req.url ?? "/";
+): Promise<boolean> {
+  const requestUrl = new URL(req.url ?? "/", "http://localhost");
+  const url = requestUrl.pathname;
   const method = req.method ?? "GET";
 
   // Health check
   if (url === "/health" && method === "GET") {
     sendJson(res, 200, { status: "ok" });
-    return;
+    return true;
   }
 
   // GitHub webhook
   if (url === "/webhooks/github" && method === "POST") {
     await handleGitHubWebhook(req, res, config, onEvent, hooks?.onGitHubWebhookPayload);
-    return;
+    return true;
   }
 
   // Sentry webhook
   if (url === "/webhooks/sentry" && method === "POST") {
     await handleSentryWebhook(req, res, config, onEvent);
-    return;
+    return true;
   }
 
   // Generic adapter webhook: /webhooks/{source}
   const adapterMatch = url.match(/^\/webhooks\/([a-z0-9_-]+)$/);
   if (adapterMatch && method === "POST") {
     await handleAdapterWebhook(req, res, config, onEvent, adapterMatch[1]!, hooks?.onAdapterPayload);
-    return;
+    return true;
   }
 
-  sendJson(res, 404, { error: "Not found" });
+  return false;
 }
 
 async function handleGitHubWebhook(

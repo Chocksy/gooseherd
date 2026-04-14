@@ -67,6 +67,12 @@ describe("dashboard auth", () => {
     assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/healthz"), true);
   });
 
+  test("/webhooks/github bypasses dashboard auth", async () => {
+    const req = makeMockReq({ method: "POST" });
+    const res = makeMockRes();
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/webhooks/github"), true);
+  });
+
   test("/login always passes even with token", async () => {
     const req = makeMockReq();
     const res = makeMockRes();

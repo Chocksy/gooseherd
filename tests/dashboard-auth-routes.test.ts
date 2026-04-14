@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { afterEach, describe, mock, test } from "node:test";
 import http from "node:http";
 import os from "node:os";
@@ -118,12 +119,13 @@ function startAuthTestServer(
   config: AppConfig,
   db: Awaited<ReturnType<typeof createTestDb>>["db"],
   workItemsSource?: DashboardWorkItemsSource,
+  observer?: any,
 ) {
   return startDashboardServer(
     config,
     {} as any,
     undefined,
-    undefined,
+    observer,
     undefined,
     undefined,
     undefined,
@@ -173,6 +175,10 @@ async function request(
     if (body) req.write(body);
     req.end();
   });
+}
+
+function signGitHubWebhook(body: string, secret: string): string {
+  return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
 async function requestJson(
@@ -312,6 +318,42 @@ describe("dashboard auth routes", () => {
     assert.match(res.text, /Admin login/);
     assert.match(res.text, /Sign in with Slack/);
     assert.match(res.text, /Sign up with Slack/);
+  });
+
+  test("webhook routes are served on dashboard port without dashboard auth", async (t) => {
+    const testDb = await createTestDb();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
+    const port = getPort();
+    const config = makeConfig(port, dataDir);
+    config.observerGithubWebhookSecret = "github-secret";
+    const observer = {
+      getStateSnapshot: async () => ({ enabled: true }),
+      getRecentEvents: () => [],
+      getRules: () => [],
+      handleWebhookHttpRequest: async (_req: http.IncomingMessage, res: http.ServerResponse) => {
+        res.statusCode = 202;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ accepted: true }));
+        return true;
+      },
+    };
+    const server = startAuthTestServer(config, testDb.db, undefined, observer);
+    t.after(async () => {
+      server.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await testDb.cleanup();
+    });
+    await waitForServer(port);
+
+    const payload = JSON.stringify({ action: "completed" });
+    const res = await requestJson(port, "POST", "/webhooks/github", { action: "completed" }, {
+      "x-github-event": "check_suite",
+      "x-github-delivery": "delivery-1",
+      "x-hub-signature-256": signGitHubWebhook(payload, "github-secret"),
+    });
+
+    assert.equal(res.status, 202);
+    assert.deepEqual(JSON.parse(res.text), { accepted: true });
   });
 
   test("admin login creates db-backed session and logout clears it", async (t) => {

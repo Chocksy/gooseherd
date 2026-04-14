@@ -209,7 +209,7 @@ The repo now includes a minimal local deployment bundle in [kubernetes/local/REA
 ```bash
 minikube start --driver=docker
 npm run k8s:local-up
-kubectl -n gooseherd port-forward svc/gooseherd 8787:8787 9090:9090
+kubectl -n gooseherd port-forward svc/gooseherd 8787:8787
 ```
 
 Useful helpers:
@@ -226,6 +226,7 @@ What `k8s:local-up` does:
 - deploys PostgreSQL in the `gooseherd` namespace
 - generates the Gooseherd secret from your local `.env`
 - deploys Gooseherd with `SANDBOX_RUNTIME=kubernetes`
+- serves dashboard and webhook routes on the same public port
 - configures runner callbacks to use cluster DNS instead of `host.minikube.internal`
 - bootstraps the setup wizard through a temporary local port-forward so the dashboard is ready immediately
 

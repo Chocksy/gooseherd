@@ -27,6 +27,7 @@
     "setup": "tsx scripts/setup.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:backfill-legacy-setup": "tsx scripts/migrate-legacy-setup-config-sections.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed-json.ts",
     "eval": "tsx scripts/run-eval.ts"

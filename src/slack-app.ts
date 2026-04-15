@@ -12,6 +12,8 @@ import type { HandleMessageDeps, HandleMessageRequest } from "./orchestrator/typ
 import type { LLMCallerConfig } from "./llm/caller.js";
 import type { MemoryProvider } from "./memory/provider.js";
 import type { GitHubService } from "./github.js";
+import { parseWorkItemSlackActionValue } from "./work-items/slack-actions.js";
+import type { ReviewRequestRecord } from "./work-items/types.js";
 
 function isChannelAllowed(channelId: string, channelAllowlist: string[]): boolean {
   if (channelAllowlist.length === 0) {
@@ -294,7 +296,15 @@ export async function startSlackApp(
   observer?: ObserverDaemon,
   memoryProvider?: MemoryProvider,
   githubService?: GitHubService,
-  sharedConversationStore?: ConversationStore
+  sharedConversationStore?: ConversationStore,
+  workItems?: {
+    recordReviewOutcome(input: {
+      reviewRequestId: string;
+      outcome: NonNullable<ReviewRequestRecord["outcome"]>;
+      authorUserId?: string;
+      comment?: string;
+    }): Promise<unknown>;
+  }
 ): Promise<void> {
   const app = new App({
     token: config.slackBotToken,
@@ -498,6 +508,86 @@ export async function startSlackApp(
       user: userId,
       text: `Retry queued as ${shortRunId(retried.id)}.`
     });
+  });
+
+  app.action("work_item_review_approve", async ({ ack, body, client }) => {
+    await ack();
+    const action = (body as { actions?: Array<{ value?: string }> }).actions?.[0];
+    const payload = parseWorkItemSlackActionValue(action?.value);
+    const userId = (body as { user?: { id?: string } }).user?.id;
+    const containerChannelId = (body as { container?: { channel_id?: string } }).container?.channel_id;
+
+    if (!payload || !userId || !containerChannelId || !workItems) {
+      return;
+    }
+
+    try {
+      await workItems.recordReviewOutcome({
+        reviewRequestId: payload.reviewRequestId,
+        outcome: "approved",
+        authorUserId: userId,
+        comment: `Approved from Slack by <@${userId}>`,
+      });
+
+      await client.chat.postMessage({
+        channel: payload.homeChannelId,
+        thread_ts: payload.homeThreadTs,
+        text: `<@${userId}> approved review request *${payload.requestTitle}*.`,
+        ...usernameOpt,
+      });
+
+      await client.chat.postEphemeral({
+        channel: containerChannelId,
+        user: userId,
+        text: `Saved approval for ${payload.requestTitle}.`,
+      });
+    } catch (error) {
+      await client.chat.postEphemeral({
+        channel: containerChannelId,
+        user: userId,
+        text: error instanceof Error ? error.message : "Failed to save approval.",
+      });
+    }
+  });
+
+  app.action("work_item_review_changes", async ({ ack, body, client }) => {
+    await ack();
+    const action = (body as { actions?: Array<{ value?: string }> }).actions?.[0];
+    const payload = parseWorkItemSlackActionValue(action?.value);
+    const userId = (body as { user?: { id?: string } }).user?.id;
+    const containerChannelId = (body as { container?: { channel_id?: string } }).container?.channel_id;
+
+    if (!payload || !userId || !containerChannelId || !workItems) {
+      return;
+    }
+
+    try {
+      await workItems.recordReviewOutcome({
+        reviewRequestId: payload.reviewRequestId,
+        outcome: "changes_requested",
+        authorUserId: userId,
+        comment: `Changes requested from Slack by <@${userId}>`,
+      });
+
+      await client.chat.postMessage({
+        channel: payload.homeChannelId,
+        thread_ts: payload.homeThreadTs,
+        text: `<@${userId}> requested changes for *${payload.requestTitle}*.`,
+        ...usernameOpt,
+      });
+
+      await client.chat.postEphemeral({
+        channel: containerChannelId,
+        user: userId,
+        text: `Saved changes request for ${payload.requestTitle}.`,
+      });
+    } catch (error) {
+      await client.chat.postEphemeral({
+        channel: containerChannelId,
+        user: userId,
+        text: error instanceof Error ? error.message : "Failed to save changes request.",
+      });
+    }
   });
 
   // ── Observer: Slack channel alert watcher ──────────────────────

@@ -4,6 +4,11 @@ import {
   isCasualMessage,
   stripMentions
 } from "../src/slack-app.js";
+import {
+  buildWorkItemReviewBlocks,
+  buildWorkItemSlackActionValue,
+  parseWorkItemSlackActionValue,
+} from "../src/work-items/slack-actions.js";
 
 // ── stripMentions ───────────────────────────────────────
 
@@ -80,4 +85,59 @@ test("isCasualMessage: help/status/tail keywords are NOT casual", () => {
   assert.ok(!isCasualMessage("status"));
   assert.ok(!isCasualMessage("show me the status"));
   assert.ok(!isCasualMessage("retry"));
+});
+
+test("work item slack action value round-trips", () => {
+  const encoded = buildWorkItemSlackActionValue({
+    reviewRequestId: "rr-1",
+    workItemId: "wi-1",
+    homeChannelId: "C123",
+    homeThreadTs: "1740000000.123",
+    requestTitle: "Review spec",
+    detailUrl: "https://huble.example.com/#work-item/wi-1",
+  });
+
+  assert.deepEqual(parseWorkItemSlackActionValue(encoded), {
+    reviewRequestId: "rr-1",
+    workItemId: "wi-1",
+    homeChannelId: "C123",
+    homeThreadTs: "1740000000.123",
+    requestTitle: "Review spec",
+    detailUrl: "https://huble.example.com/#work-item/wi-1",
+  });
+});
+
+test("buildWorkItemReviewBlocks includes quick actions and detail link", () => {
+  const blocks = buildWorkItemReviewBlocks({
+    appName: "Huble",
+    workItemTitle: "Add WorkItem entity",
+    workItemDisplayId: "HBL-500",
+    requestTitle: "Engineering review",
+    requestMessage: "Please verify workflow boundaries",
+    focusPoints: ["review rounds", "state machine"],
+    detailUrl: "https://huble.example.com/#work-item/wi-1",
+    actionValue: buildWorkItemSlackActionValue({
+      reviewRequestId: "rr-1",
+      workItemId: "wi-1",
+      homeChannelId: "C123",
+      homeThreadTs: "1740000000.123",
+      requestTitle: "Engineering review",
+      detailUrl: "https://huble.example.com/#work-item/wi-1",
+    }),
+  });
+
+  assert.equal(blocks[0]?.type, "section");
+  assert.equal(blocks[1]?.type, "section");
+  assert.equal(blocks[2]?.type, "actions");
+
+  const focusText = (blocks[1] as { text?: { text?: string } }).text?.text ?? "";
+  assert.match(focusText, /review rounds/);
+  assert.match(focusText, /state machine/);
+  assert.match(focusText, /Open work item/);
+
+  const elements = (blocks[2] as { elements?: Array<{ action_id?: string }> }).elements ?? [];
+  assert.deepEqual(elements.map((element) => element.action_id), [
+    "work_item_review_approve",
+    "work_item_review_changes",
+  ]);
 });

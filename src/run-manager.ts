@@ -280,6 +280,10 @@ export class RunManager {
       });
       return true;
     }
+    await this.store.updateRun(runId, {
+      status: "cancel_requested",
+      phase: "cancel_requested",
+    });
     controller.abort();
     return true;
   }

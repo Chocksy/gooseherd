@@ -68,12 +68,33 @@ Thread follow-ups reuse the repo from the latest run in that thread:
 
 1. Create app at https://api.slack.com/apps
 2. Enable **Socket Mode** (no public webhook needed).
-3. Add bot token scopes: `app_mentions:read`, `channels:history`, `chat:write`
-4. Install to your workspace.
-5. Copy tokens into `.env`:
-   - `SLACK_BOT_TOKEN` (`xoxb-...`)
-   - `SLACK_APP_TOKEN` (`xapp-...`)
+3. Add bot token scopes: `app_mentions:read`, `channels:history`, `chat:write`, `usergroups:read`
+4. For dashboard browser auth, enable **Sign in with Slack** and configure OpenID scopes: `openid`, `email`, `profile`
+5. Add a redirect URL for `https://<your-dashboard>/auth/slack/callback`
+6. Copy tokens into `.env`:
+   - `SLACK_BOT_TOKEN` (`xoxb-...`) for Slack command handling and user-group sync
+   - `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode
    - `SLACK_SIGNING_SECRET`
+   - `SLACK_CLIENT_ID`
+   - `SLACK_CLIENT_SECRET`
+7. Optional: set `SLACK_AUTH_REDIRECT_URI` if the callback URL should differ from `DASHBOARD_PUBLIC_URL`
+
+Required Slack scopes by feature:
+
+- Bot scopes for Slack commands: `app_mentions:read`, `channels:history`, `chat:write`
+- Bot scope for Slack user-group team sync: `usergroups:read`
+- OpenID scopes for dashboard Sign in / Sign up: `openid`, `email`, `profile`
+
+Relevant `.env` variables:
+
+- `SLACK_BOT_TOKEN`: required for Slack command handling and Slack user-group membership sync
+- `SLACK_APP_TOKEN`: required for Socket Mode
+- `SLACK_SIGNING_SECRET`: required for validating Slack requests
+- `SLACK_CLIENT_ID`: required for browser login via Sign in with Slack
+- `SLACK_CLIENT_SECRET`: required for browser login via Sign in with Slack
+- `SLACK_AUTH_REDIRECT_URI`: optional override for the browser auth callback; defaults to `<DASHBOARD_PUBLIC_URL>/auth/slack/callback`
+
+If you add new scopes after the app is already installed, reinstall the Slack app in the workspace so the new permissions take effect.
 
 ## GitHub Setup
 
@@ -82,6 +103,19 @@ Provide `GITHUB_TOKEN` with repo write + PR permissions (for `DRY_RUN=false`).
 Optional controls:
 - `REPO_ALLOWLIST=yourorg/yourrepo` — restrict which repos the bot can target
 - `GITHUB_DEFAULT_OWNER=yourorg` — default owner when only repo name is given
+
+## Jira Read Access
+
+Optional Jira read-access envs:
+
+- `JIRA_BASE_URL` — Jira base URL, for example `https://your-company.atlassian.net`
+- `JIRA_USER` — Jira service-account identity; use the account email for Jira Cloud
+- `JIRA_API_TOKEN` — API token / password equivalent for the service account
+- `JIRA_REQUEST_TIMEOUT_MS` — optional timeout override for Jira reads; defaults to `10000`
+
+These envs are the canonical Jira read-access contract for future product discovery / work-items flows. The intended usage is to resolve Jira issue details after Gooseherd already has context from the Slack thread and discovery flow. This keeps Jira as a read-only source of task content, not a source of routing metadata.
+
+The transport is intentionally left open. A future implementation may read Jira through direct REST API calls or through an MCP-backed path, but both should source credentials and base configuration from the same env contract above.
 
 ## Agent Configuration
 
@@ -175,7 +209,7 @@ The repo now includes a minimal local deployment bundle in [kubernetes/local/REA
 ```bash
 minikube start --driver=docker
 npm run k8s:local-up
-kubectl -n gooseherd port-forward svc/gooseherd 8787:8787 9090:9090
+kubectl -n gooseherd port-forward svc/gooseherd 8787:8787
 ```
 
 Useful helpers:
@@ -192,6 +226,7 @@ What `k8s:local-up` does:
 - deploys PostgreSQL in the `gooseherd` namespace
 - generates the Gooseherd secret from your local `.env`
 - deploys Gooseherd with `SANDBOX_RUNTIME=kubernetes`
+- serves dashboard and webhook routes on the same public port
 - configures runner callbacks to use cluster DNS instead of `host.minikube.internal`
 - bootstraps the setup wizard through a temporary local port-forward so the dashboard is ready immediately
 

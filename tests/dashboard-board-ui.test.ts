@@ -77,7 +77,7 @@ function makeConfig(): AppConfig {
     ciMaxFixRounds: 3,
     featureDeliveryResetEngineeringReviewOnNewCommits: false,
     featureDeliveryResetQaReviewOnNewCommits: false,
-    workItemGithubAdoptionLabels: ["ai_flow"],
+    workItemGithubAdoptionLabels: ["ai:assist"],
     teamChannelMap: new Map(),
     sandboxRuntime: "local",
     sandboxRuntimeExplicit: false,
@@ -116,7 +116,7 @@ test("dashboard HTML includes work item board controls and data fetch hooks", ()
   assert.match(html, /\/api\/review-requests\//);
   assert.match(html, /confirm-discovery/);
   assert.match(html, /Jira issue key is required before discovery can be approved/);
-  assert.match(html, /Reviewer user id/);
+  assert.match(html, /No review requests loaded\./);
   assert.match(html, /stop-processing/);
   assert.match(html, /override-state/);
 });

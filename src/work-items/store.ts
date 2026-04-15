@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { workItems } from "../db/schema.js";
 import type { CreateWorkItemInput, UpdateWorkItemStateInput, WorkItemRecord } from "./types.js";
+import { assertStateMatchesWorkflow, assertStateTransitionAllowed } from "./workflow-policy.js";
 
 type WorkItemRow = typeof workItems.$inferSelect;
 
@@ -37,6 +38,8 @@ export class WorkItemStore {
   async createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord> {
     const id = randomUUID();
     const now = new Date();
+
+    assertStateMatchesWorkflow(input.workflow, input.state);
 
     await this.db.insert(workItems).values({
       id,
@@ -88,9 +91,20 @@ export class WorkItemStore {
     return rows[0] ? rowToRecord(rows[0]) : undefined;
   }
 
+  async findFeatureDeliveryBySourceWorkItemId(sourceWorkItemId: string): Promise<WorkItemRecord | undefined> {
+    const rows = await this.db
+      .select()
+      .from(workItems)
+      .where(and(eq(workItems.sourceWorkItemId, sourceWorkItemId), eq(workItems.workflow, "feature_delivery")))
+      .limit(1);
+    return rows[0] ? rowToRecord(rows[0]) : undefined;
+  }
+
   async updateState(id: string, input: UpdateWorkItemStateInput): Promise<WorkItemRecord> {
     const current = await this.getWorkItem(id);
     if (!current) throw new Error(`WorkItem not found: ${id}`);
+
+    assertStateTransitionAllowed(current, input.state);
 
     const nextFlags = new Set(current.flags);
     for (const flag of input.flagsToAdd ?? []) nextFlags.add(flag);

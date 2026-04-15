@@ -3,6 +3,7 @@ dist
 .env
 .work
 data/runs.json
+data/.encryption-key
 *.log
 !tests/fixtures/*.log
 docker-compose.override.yml

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { eq } from "drizzle-orm";
 import { createTestDb } from "./helpers/test-db.js";
-import { users, teams, reviewRequestComments, workItemEvents } from "../src/db/schema.js";
+import { users, teams, reviewRequestComments, workItemEvents, workItems as workItemsTable } from "../src/db/schema.js";
 import { WorkItemStore } from "../src/work-items/store.js";
 import { ReviewRequestStore } from "../src/work-items/review-request-store.js";
 import { WorkItemEventsStore } from "../src/work-items/events-store.js";
@@ -66,6 +66,14 @@ test("work item stores persist work item state, review requests, comments, and e
   assert.equal(workItem.workflow, "product_discovery");
   assert.equal(workItem.state, "backlog");
   assert.deepEqual(workItem.flags, []);
+
+  const started = await workItems.updateState(workItem.id, {
+    state: "in_progress",
+    substate: "collecting_context",
+  });
+
+  assert.equal(started.state, "in_progress");
+  assert.equal(started.substate, "collecting_context");
 
   const updated = await workItems.updateState(workItem.id, {
     state: "waiting_for_review",
@@ -136,4 +144,80 @@ test("work item stores persist work item state, review requests, comments, and e
   const eventRows = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem.id));
   assert.equal(eventRows.length, 1);
   assert.equal(eventRows[0]?.eventType, "review_request.completed");
+});
+
+test("work item store rejects workflow-incompatible or non-whitelisted state changes", async (t) => {
+  const { cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  await assert.rejects(() => workItems.createWorkItem({
+    workflow: "product_discovery",
+    state: "qa_review",
+    title: "Invalid discovery state",
+    summary: "Should not be creatable",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.200",
+    createdByUserId: ownerUserId,
+  }), /product_discovery/i);
+
+  const delivery = await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Strict transitions",
+    summary: "Should not skip directly to merge-ready",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.201",
+    createdByUserId: ownerUserId,
+  });
+
+  await assert.rejects(() => workItems.updateState(delivery.id, {
+    state: "ready_for_merge",
+  }), /transition/i);
+});
+
+test("work item store enforces a single feature delivery per discovery source", async (t) => {
+  const { db, cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  const discovery = await workItems.createWorkItem({
+    workflow: "product_discovery",
+    state: "done",
+    title: "Discovery source",
+    summary: "Only one delivery should point here",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.202",
+    createdByUserId: ownerUserId,
+  });
+
+  await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery A",
+    summary: "First delivery",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.203",
+    createdByUserId: ownerUserId,
+    jiraIssueKey: "HBL-500",
+    sourceWorkItemId: discovery.id,
+  });
+
+  await assert.rejects(() => workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery B",
+    summary: "Duplicate source",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.204",
+    createdByUserId: ownerUserId,
+    jiraIssueKey: "HBL-501",
+    sourceWorkItemId: discovery.id,
+  }));
+
+  const deliveryRows = await db.select().from(workItemsTable).where(eq(workItemsTable.sourceWorkItemId, discovery.id));
+  assert.equal(deliveryRows.length, 1);
 });

@@ -58,7 +58,7 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
     prTitle: "Automate work item handling",
     prBody: "Implements workflow support\n\nRefs HBL-404",
     prUrl: "https://github.com/hubstaff/gooseherd/pull/77",
-    labels: ["ai_flow"],
+    labels: ["ai:assist"],
     baseBranch: "main",
   });
 
@@ -72,6 +72,25 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, adopted!.id));
   assert.ok(events.some((event) => event.eventType === "github.label_observed"));
   assert.ok(events.some((event) => event.eventType === "github.pr_adopted"));
+});
+
+test("github sync ignores unrelated label", async (t) => {
+  const { cleanup, sync } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 779,
+    prTitle: "Unrelated label should not adopt",
+    prBody: "Implements workflow support\n\nRefs HBL-410",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/779",
+    labels: ["legacy-assist"],
+    baseBranch: "main",
+  });
+
+  assert.equal(adopted, undefined);
 });
 
 test("github sync links labeled PR to existing delivery item with same jira key", async (t) => {
@@ -96,7 +115,7 @@ test("github sync links labeled PR to existing delivery item with same jira key"
     prTitle: "Manual PR for existing delivery",
     prBody: "Continues work\n\nRefs HBL-499",
     prUrl: "https://github.com/hubstaff/gooseherd/pull/78",
-    labels: ["ai_flow"],
+    labels: ["ai:assist"],
     baseBranch: "main",
   });
 

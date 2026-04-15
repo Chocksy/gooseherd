@@ -84,6 +84,7 @@ export async function checkAuth(
   pathname: string
 ): Promise<boolean> {
   if (pathname === "/healthz") return true;
+  if (pathname.startsWith("/webhooks/")) return true;
   if (PUBLIC_AUTH_PATHS.has(pathname)) return true;
 
   if (!opts.setupComplete) {
@@ -112,14 +113,6 @@ export async function checkAuth(
 
   const session = await getDashboardSession(req, opts.sessionStore);
   if (session) return true;
-
-  if (opts.dashboardToken && pathname.startsWith("/api/")) {
-    const authHeader = req.headers["authorization"] ?? "";
-    if (authHeader.startsWith("Bearer ")) {
-      const token = authHeader.slice("Bearer ".length);
-      if (safeTokenCompare(token, opts.dashboardToken)) return true;
-    }
-  }
 
   const authConfigured = Boolean(opts.dashboardToken || opts.passwordHash || opts.slackAuthEnabled);
   if (!authConfigured) return true;

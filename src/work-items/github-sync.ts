@@ -143,7 +143,7 @@ export class GitHubWorkItemSync {
     this.workItems = new WorkItemStore(db);
     this.workItemService = new WorkItemService(db);
     this.events = new WorkItemEventsStore(db);
-    this.adoptionLabels = (options.adoptionLabels ?? ["ai_flow"]).map((label) => label.trim().toLowerCase()).filter(Boolean);
+    this.adoptionLabels = (options.adoptionLabels ?? ["ai:assist"]).map((label) => label.trim().toLowerCase()).filter(Boolean);
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;

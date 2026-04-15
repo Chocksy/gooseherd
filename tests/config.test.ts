@@ -181,7 +181,7 @@ test("work item review reset flags respect env overrides", () => {
   }
 });
 
-test("work item GitHub adoption labels default to ai_flow", () => {
+test("work item GitHub adoption labels default to ai:assist", () => {
   const originalEnv = process.env;
   try {
     process.env = {
@@ -189,7 +189,7 @@ test("work item GitHub adoption labels default to ai_flow", () => {
       WORK_ITEM_GITHUB_ADOPTION_LABELS: undefined,
     };
     const config = loadConfig();
-    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai_flow"]);
+    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai:assist"]);
   } finally {
     process.env = originalEnv;
   }
@@ -200,10 +200,30 @@ test("work item GitHub adoption labels respect comma-separated env", () => {
   try {
     process.env = {
       ...originalEnv,
-      WORK_ITEM_GITHUB_ADOPTION_LABELS: "ai_flow, ai-delivery",
+      WORK_ITEM_GITHUB_ADOPTION_LABELS: "ai:assist, ai-delivery",
     };
     const config = loadConfig();
-    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai_flow", "ai-delivery"]);
+    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai:assist", "ai-delivery"]);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("Jira read access envs are exposed through config", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      JIRA_BASE_URL: " https://example.atlassian.net ",
+      JIRA_USER: " jira-service-account@example.com ",
+      JIRA_API_TOKEN: " jira-token ",
+      JIRA_REQUEST_TIMEOUT_MS: "25000",
+    };
+    const config = loadConfig();
+    assert.equal(config.jiraBaseUrl, "https://example.atlassian.net");
+    assert.equal(config.jiraUser, "jira-service-account@example.com");
+    assert.equal(config.jiraApiToken, "jira-token");
+    assert.equal(config.jiraRequestTimeoutMs, 25000);
   } finally {
     process.env = originalEnv;
   }

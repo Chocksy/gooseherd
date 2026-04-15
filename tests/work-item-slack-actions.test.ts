@@ -87,7 +87,7 @@ function makeConfig(): AppConfig {
     ciMaxFixRounds: 3,
     featureDeliveryResetEngineeringReviewOnNewCommits: false,
     featureDeliveryResetQaReviewOnNewCommits: false,
-    workItemGithubAdoptionLabels: ["ai_flow"],
+    workItemGithubAdoptionLabels: ["ai:assist"],
     teamChannelMap: new Map(),
     sandboxRuntime: "local",
     sandboxRuntimeExplicit: false,

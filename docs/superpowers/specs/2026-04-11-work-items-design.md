@@ -463,7 +463,7 @@ If a developer opens a PR manually and marks it for AI-managed continuation, Goo
 
 Rules:
 
-- GitHub webhook detects PR label such as `ai_flow`
+- GitHub webhook detects PR label such as `ai:assist`
 - if no active delivery item exists for that PR:
   - parse Jira key from PR description
   - create `feature_delivery`
@@ -641,7 +641,7 @@ Not in v1, but explicitly planned:
 
 Still intentionally flexible for implementation:
 
-- exact GitHub/Jira labels such as `automation`, `ai_flow`, `ai_delivery`
+- exact GitHub/Jira labels such as `automation`, `ai:assist`, `ai:delivery`
 - final human-facing board titles
 - exact display wording for some substates and flags
 

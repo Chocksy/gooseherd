@@ -103,7 +103,7 @@ function makeConfig(port: number, dataDir: string): AppConfig {
     ciMaxFixRounds: 3,
     featureDeliveryResetEngineeringReviewOnNewCommits: false,
     featureDeliveryResetQaReviewOnNewCommits: false,
-    workItemGithubAdoptionLabels: ["ai_flow"],
+    workItemGithubAdoptionLabels: ["ai:assist"],
     teamChannelMap: new Map(),
     sandboxRuntime: "local",
     sandboxRuntimeExplicit: false,
@@ -249,7 +249,7 @@ describe("Dashboard Work Item API routes", () => {
     return port;
   }
 
-async function createWorkItemsSource(): Promise<DashboardWorkItemsSource & {
+  async function createWorkItemsSource(): Promise<DashboardWorkItemsSource & {
     db: Awaited<ReturnType<typeof createTestDb>>["db"];
     discoveryId: string;
     pmUserId: string;
@@ -388,6 +388,22 @@ async function createWorkItemsSource(): Promise<DashboardWorkItemsSource & {
     };
   }
 
+  async function moveDiscoveryBackToInProgressForNextReviewRound(
+    port: number,
+    source: Awaited<ReturnType<typeof createWorkItemsSource>>,
+  ): Promise<void> {
+    const reviewerCookie = await source.createUserSessionCookie(source.reviewerUserId);
+    const existingRequests = await source.listReviewRequestsForWorkItem(source.discoveryId);
+
+    const res = await request(port, "POST", `/api/review-requests/${existingRequests[0]!.id}/respond`, {
+      outcome: "changes_requested",
+      comment: "Need another round",
+    }, { cookie: reviewerCookie });
+
+    assert.equal(res.status, 200);
+    assert.equal((res.data.workItem as { state: string }).state, "in_progress");
+  }
+
   test("GET /api/work-items returns 501 when source is unavailable", async () => {
     const port = await startServer(undefined);
     const res = await request(port, "GET", "/api/work-items");
@@ -496,6 +512,7 @@ async function createWorkItemsSource(): Promise<DashboardWorkItemsSource & {
     const source = await createWorkItemsSource();
     const port = await startServer(source, source.db);
     const cookie = await source.createUserSessionCookie(source.pmUserId);
+    await moveDiscoveryBackToInProgressForNextReviewRound(port, source);
 
     const res = await request(port, "POST", `/api/work-items/${source.discoveryId}/review-requests`, {
       requests: [
@@ -511,15 +528,17 @@ async function createWorkItemsSource(): Promise<DashboardWorkItemsSource & {
     }, { cookie });
 
     assert.equal(res.status, 201);
-    const reviewRequests = res.data.reviewRequests as Array<{ workItemId: string }>;
+    const reviewRequests = res.data.reviewRequests as Array<{ workItemId: string; reviewRound: number }>;
     assert.equal(reviewRequests.length, 1);
     assert.equal(reviewRequests[0]?.workItemId, source.discoveryId);
+    assert.equal(reviewRequests[0]?.reviewRound, 2);
   });
 
   test("POST /api/work-items/:id/review-requests ignores forged requester ids in the body", async () => {
     const source = await createWorkItemsSource();
     const port = await startServer(source, source.db);
     const cookie = await source.createUserSessionCookie(source.pmUserId);
+    await moveDiscoveryBackToInProgressForNextReviewRound(port, source);
 
     const res = await request(port, "POST", `/api/work-items/${source.discoveryId}/review-requests`, {
       requestedByUserId: source.reviewerUserId,

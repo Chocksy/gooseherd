@@ -65,7 +65,85 @@ function readJiraDescription(description: unknown): string | undefined {
   if (typeof description === "string" && description.trim()) {
     return description.trim();
   }
-  return undefined;
+
+  const rendered = renderJiraAdfNode(description).replace(/\n{3,}/g, "\n\n").trim();
+  return rendered || undefined;
+}
+
+const JIRA_ADF_BLOCK_NODES = new Set([
+  "bulletList",
+  "blockquote",
+  "codeBlock",
+  "doc",
+  "expand",
+  "heading",
+  "listItem",
+  "mediaSingle",
+  "nestedExpand",
+  "orderedList",
+  "panel",
+  "paragraph",
+  "rule",
+  "table",
+  "tableCell",
+  "tableHeader",
+  "tableRow",
+]);
+
+function renderJiraAdfNode(node: unknown): string {
+  if (typeof node === "string") {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map(renderJiraAdfNode).join("");
+  }
+  if (!isRecord(node)) {
+    return "";
+  }
+
+  const type = typeof node.type === "string" ? node.type : undefined;
+  if (type === "text") {
+    return typeof node.text === "string" ? node.text : "";
+  }
+  if (type === "hardBreak") {
+    return "\n";
+  }
+  if (type === "mention" || type === "status") {
+    return readJiraAdfAttrText(node, "text");
+  }
+  if (type === "emoji") {
+    return readJiraAdfAttrText(node, "text", "shortName");
+  }
+
+  const content = Array.isArray(node.content) ? node.content.map(renderJiraAdfNode).join("") : "";
+  if (content) {
+    if (type && JIRA_ADF_BLOCK_NODES.has(type)) {
+      return `${content.trim()}\n`;
+    }
+    return content;
+  }
+
+  return readJiraAdfAttrText(node, "text");
+}
+
+function readJiraAdfAttrText(node: Record<string, unknown>, ...keys: string[]): string {
+  const attrs = isRecord(node.attrs) ? node.attrs : undefined;
+  if (!attrs) {
+    return "";
+  }
+
+  for (const key of keys) {
+    const value = attrs[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export class JiraWorkItemSync {
@@ -82,7 +160,7 @@ export class JiraWorkItemSync {
     this.service = new WorkItemService(db);
     this.events = new WorkItemEventsStore(db);
     this.discoveryLabels = (options.discoveryLabels ?? ["automation"]).map((label) => label.toLowerCase());
-    this.deliveryLabels = (options.deliveryLabels ?? ["ai_delivery"]).map((label) => label.toLowerCase());
+    this.deliveryLabels = (options.deliveryLabels ?? ["ai:delivery"]).map((label) => label.toLowerCase());
     this.resolveDiscoveryContext = options.resolveDiscoveryContext;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
   }

@@ -20,6 +20,11 @@ const envSchema = z.object({
   GITHUB_DEFAULT_OWNER: z.string().optional(),
   REPO_ALLOWLIST: z.string().optional(),
 
+  JIRA_BASE_URL: z.string().optional(),
+  JIRA_USER: z.string().optional(),
+  JIRA_API_TOKEN: z.string().optional(),
+  JIRA_REQUEST_TIMEOUT_MS: z.string().optional(),
+
   RUNNER_CONCURRENCY: z.string().optional(),
   WORK_ROOT: z.string().optional(),
   DATA_DIR: z.string().optional(),
@@ -195,6 +200,12 @@ export interface AppConfig {
   githubAppInstallationId?: number;
   githubDefaultOwner?: string;
   repoAllowlist: string[];
+
+  /** Canonical Jira read-access config for future discovery/work-items integrations. */
+  jiraBaseUrl?: string;
+  jiraUser?: string;
+  jiraApiToken?: string;
+  jiraRequestTimeoutMs: number;
 
   runnerConcurrency: number;
   workRoot: string;
@@ -452,6 +463,10 @@ export function loadConfig(): AppConfig {
       : undefined,
     githubDefaultOwner: parsed.GITHUB_DEFAULT_OWNER,
     repoAllowlist: parseList(parsed.REPO_ALLOWLIST),
+    jiraBaseUrl: parsed.JIRA_BASE_URL?.trim() || undefined,
+    jiraUser: parsed.JIRA_USER?.trim() || undefined,
+    jiraApiToken: parsed.JIRA_API_TOKEN?.trim() || undefined,
+    jiraRequestTimeoutMs: parseInteger(parsed.JIRA_REQUEST_TIMEOUT_MS, 10_000),
 
     runnerConcurrency: parseInteger(parsed.RUNNER_CONCURRENCY, 1),
     workRoot: parsed.WORK_ROOT ?? ".work",
@@ -566,7 +581,7 @@ export function loadConfig(): AppConfig {
     ),
     workItemGithubAdoptionLabels: parseList(parsed.WORK_ITEM_GITHUB_ADOPTION_LABELS).length > 0
       ? parseList(parsed.WORK_ITEM_GITHUB_ADOPTION_LABELS)
-      : ["ai_flow"],
+      : ["ai:assist"],
 
     dashboardToken: parsed.DASHBOARD_TOKEN?.trim() || undefined,
 

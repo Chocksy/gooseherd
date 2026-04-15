@@ -71,6 +71,27 @@
       "when": 1779100000000,
       "tag": "0009_dashboard_auth_slack",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779150000000,
+      "tag": "0010_remove_legacy_setup_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1779200000000,
+      "tag": "0011_feature_delivery_source_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1779300000000,
+      "tag": "0012_remove_config_section_override_from_env",
+      "breakpoints": true
     }
   ]
 }

@@ -64,6 +64,7 @@ export interface DashboardObserver {
   getStateSnapshot(): Promise<ObserverStateSnapshot>;
   getRecentEvents(limit?: number): ObserverEventRecord[];
   getRules(): TriggerRule[];
+  handleWebhookHttpRequest?(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<boolean>;
 }
 
 /** Optional source for in-memory orchestrator thread messages. */
@@ -520,6 +521,11 @@ export function startDashboardServer(
         if (handled) return;
       }
 
+      if (pathname.startsWith("/webhooks/")) {
+        const handled = await observer?.handleWebhookHttpRequest?.(req, res) ?? false;
+        if (handled) return;
+      }
+
       // Build auth options (async — reads wizard password hash from DB)
       const setupComplete = setupStore ? await setupStore.isComplete() : true;
       const passwordHash = setupStore ? await setupStore.getPasswordHash() : undefined;
@@ -562,7 +568,7 @@ export function startDashboardServer(
 
       if (req.method === "GET" && pathname === "/api/setup/status") {
         if (!setupStore) { sendJson(res, 501, { error: "Setup not available" }); return; }
-        const status = await setupStore.getStatus();
+        const status = await setupStore.getWizardState();
         sendJson(res, 200, status);
         return;
       }

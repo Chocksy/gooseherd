@@ -6,7 +6,7 @@ import { createTestDb } from "./helpers/test-db.js";
 import { teamMembers, teams, users, workItemEvents } from "../src/db/schema.js";
 import { WorkItemStore } from "../src/work-items/store.js";
 import { WorkItemContextResolver } from "../src/work-items/context-resolver.js";
-import { JiraWorkItemSync } from "../src/work-items/jira-sync.js";
+import { JiraWorkItemSync, parseJiraWorkItemWebhookPayload } from "../src/work-items/jira-sync.js";
 
 async function createJiraSyncFixture() {
   const testDb = await createTestDb();
@@ -87,7 +87,7 @@ test("jira sync creates discovery work item for automation-labeled issue", async
   assert.equal(stored?.workflow, "product_discovery");
 });
 
-test("jira sync creates delivery work item for ai_delivery-labeled issue and records event", async (t) => {
+test("jira sync creates delivery work item for ai:delivery-labeled issue and records event", async (t) => {
   const { cleanup, jiraSync, workItems, db, teamId } = await createJiraSyncFixture();
   t.after(cleanup);
 
@@ -95,7 +95,7 @@ test("jira sync creates delivery work item for ai_delivery-labeled issue and rec
     issueKey: "HBL-802",
     title: "Ship managed delivery",
     summary: "Ready for implementation",
-    labels: ["ai_delivery"],
+    labels: ["ai:delivery"],
     actorJiraAccountId: "JIRA_PM",
     ownerTeamId: teamId,
     originChannelId: "C_GROWTH",
@@ -112,4 +112,73 @@ test("jira sync creates delivery work item for ai_delivery-labeled issue and rec
 
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem!.id));
   assert.ok(events.some((event) => event.eventType === "jira.issue_created"));
+});
+
+test("jira sync ignores unrelated delivery label", async (t) => {
+  const { cleanup, jiraSync, teamId } = await createJiraSyncFixture();
+  t.after(cleanup);
+
+  const workItem = await jiraSync.handleWebhookPayload({
+    issueKey: "HBL-803",
+    title: "Unrelated label should not create delivery",
+    summary: "Ready for implementation",
+    labels: ["legacy-delivery"],
+    actorJiraAccountId: "JIRA_PM",
+    ownerTeamId: teamId,
+    originChannelId: "C_GROWTH",
+    originThreadTs: "1740000000.201",
+  });
+
+  assert.equal(workItem, undefined);
+});
+
+test("jira webhook parser extracts summary text from Jira Cloud ADF descriptions", () => {
+  const parsed = parseJiraWorkItemWebhookPayload({
+    issue: {
+      key: "HBL-804",
+      fields: {
+        summary: "ADF-backed issue",
+        labels: ["automation"],
+        description: {
+          type: "doc",
+          version: 1,
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "Investigate" },
+                { type: "hardBreak" },
+                { type: "text", text: "managed flow" },
+              ],
+            },
+            {
+              type: "bulletList",
+              content: [
+                {
+                  type: "listItem",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "Keep review history" }],
+                    },
+                  ],
+                },
+                {
+                  type: "listItem",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "mention", attrs: { text: "@pm" } }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(parsed?.summary, "Investigate\nmanaged flow\nKeep review history\n@pm");
 });

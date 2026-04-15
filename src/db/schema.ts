@@ -426,6 +426,9 @@ export const workItems = pgTable(
     uniqueIndex("work_items_feature_delivery_jira_issue_key_idx")
       .on(t.jiraIssueKey)
       .where(sql`jira_issue_key IS NOT NULL AND workflow = 'feature_delivery'`),
+    uniqueIndex("work_items_feature_delivery_source_work_item_id_idx")
+      .on(t.sourceWorkItemId)
+      .where(sql`source_work_item_id IS NOT NULL AND workflow = 'feature_delivery'`),
     uniqueIndex("work_items_github_pr_number_idx")
       .on(t.githubPrNumber)
       .where(sql`github_pr_number IS NOT NULL`),
@@ -624,14 +627,6 @@ export const evalResults = pgTable(
 export const setup = pgTable("setup", {
   id: integer("id").primaryKey().default(1),
   passwordHash: text("password_hash"),
-  githubConfig: jsonb("github_config").$type<Record<string, unknown>>(),
-  githubTokenEnc: bytea("github_token_enc"),
-  githubAppKeyEnc: bytea("github_app_key_enc"),
-  llmConfig: jsonb("llm_config").$type<Record<string, unknown>>(),
-  llmApiKeyEnc: bytea("llm_api_key_enc"),
-  slackConfig: jsonb("slack_config").$type<Record<string, unknown>>(),
-  slackBotTokenEnc: bytea("slack_bot_token_enc"),
-  slackAppTokenEnc: bytea("slack_app_token_enc"),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -641,7 +636,6 @@ export const configSections = pgTable("config_sections", {
   section: text("section").primaryKey(),
   config: jsonb("config").notNull().$type<Record<string, unknown>>().default({}),
   secretsEnc: bytea("secrets_enc"),
-  overrideFromEnv: boolean("override_from_env").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

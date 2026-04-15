@@ -31,13 +31,18 @@ for (const relativePath of [
   });
 }
 
-test("build-app-image.sh builds directly in the minikube daemon when requested", async () => {
+test("build-app-image.sh streams the host build into minikube when needed", async () => {
   const contents = await readFile(path.join(rootDir, "scripts/kubernetes/build-app-image.sh"), "utf8");
 
-  assert.match(contents, /minikube -p "\$\{MINIKUBE_PROFILE\}" docker-env/);
-  assert.match(contents, /\[image\] building .* directly in \$\{MINIKUBE_PROFILE\} docker daemon/);
+  assert.match(contents, /\[image\] building .* on the host docker daemon/);
+  assert.match(contents, /docker image inspect --format '\{\{\.Id\}\}' "\$\{IMAGE_TAG\}"/);
+  assert.match(contents, /docker exec "\$\{MINIKUBE_PROFILE\}" docker image inspect --format '\{\{\.Id\}\}' "\$\{IMAGE_TAG\}"/);
+  assert.match(contents, /\[image\] \$\{IMAGE_TAG\} already present in \$\{MINIKUBE_PROFILE\}/);
+  assert.match(contents, /docker save "\$\{IMAGE_TAG\}" \| docker exec -i "\$\{MINIKUBE_PROFILE\}" docker load/);
   assert.doesNotMatch(contents, /docker save -o/);
   assert.doesNotMatch(contents, /docker load -i/);
+  assert.doesNotMatch(contents, /minikube image load "\$\{IMAGE_TAG\}"/);
+  assert.doesNotMatch(contents, /docker-env/);
 });
 
 test("build-runner-image.sh keeps the host build and loads it into minikube", async () => {
@@ -49,7 +54,7 @@ test("build-runner-image.sh keeps the host build and loads it into minikube", as
   assert.match(contents, /\[image\] \$\{IMAGE_TAG\} already present in \$\{MINIKUBE_PROFILE\}/);
   assert.match(contents, /docker save "\$\{IMAGE_TAG\}" \| docker exec -i "\$\{MINIKUBE_PROFILE\}" docker load/);
   assert.doesNotMatch(contents, /docker save -o/);
-  assert.doesNotMatch(contents, /minikube -p "\$\{MINIKUBE_PROFILE\}" image load "\$\{IMAGE_TAG\}"/);
+  assert.doesNotMatch(contents, /minikube image load "\$\{IMAGE_TAG\}"/);
   assert.doesNotMatch(contents, /docker-env/);
 });
 

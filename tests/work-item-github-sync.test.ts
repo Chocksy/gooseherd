@@ -66,6 +66,7 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
   assert.equal(adopted?.workflow, "feature_delivery");
   assert.equal(adopted?.state, "auto_review");
   assert.equal(adopted?.jiraIssueKey, "HBL-404");
+  assert.equal(adopted?.repo, "hubstaff/gooseherd");
   assert.equal(adopted?.githubPrNumber, 77);
   assert.ok(adopted?.flags.includes("pr_opened"));
 
@@ -121,8 +122,180 @@ test("github sync links labeled PR to existing delivery item with same jira key"
 
   assert.equal(adopted?.id, existing.id);
   assert.equal(adopted?.state, "auto_review");
+  assert.equal(adopted?.repo, "hubstaff/gooseherd");
   assert.equal(adopted?.githubPrNumber, 78);
   assert.ok(adopted?.flags.includes("pr_opened"));
+});
+
+test("github sync creates a new delivery when a second PR arrives for a Jira issue with an already linked delivery", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const linked = await service.createDeliveryFromJira({
+    title: "Already linked delivery",
+    summary: "Existing PR should stay attached",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.561",
+    jiraIssueKey: "HBL-561",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 77,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/77",
+  });
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 78,
+    prTitle: "Second PR should not hijack",
+    prBody: "Continues work\n\nRefs HBL-561",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/78",
+    labels: ["ai:assist"],
+    baseBranch: "main",
+  });
+
+  assert.ok(adopted);
+  assert.notEqual(adopted?.id, linked.id);
+  assert.equal(linked.githubPrNumber, 77);
+  assert.equal(linked.repo, "hubstaff/gooseherd");
+  assert.equal(adopted?.githubPrNumber, 78);
+  assert.equal(adopted?.repo, "hubstaff/gooseherd");
+});
+
+test("github sync logs ambiguity when multiple unlinked delivery candidates exist for a Jira issue", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, db } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const candidateA = await service.createDeliveryFromJira({
+    title: "Candidate A",
+    summary: "First open delivery candidate",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.562",
+    jiraIssueKey: "HBL-562",
+    createdByUserId: pmUserId,
+  });
+
+  const candidateB = await service.createDeliveryFromJira({
+    title: "Candidate B",
+    summary: "Second open delivery candidate",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.563",
+    jiraIssueKey: "HBL-562",
+    createdByUserId: pmUserId,
+  });
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 79,
+    prTitle: "Ambiguous adoption",
+    prBody: "Multiple candidates\n\nRefs HBL-562",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/79",
+    labels: ["ai:assist"],
+    baseBranch: "main",
+  });
+
+  assert.equal(adopted, undefined);
+  assert.equal((await service.getWorkItem(candidateA.id))?.githubPrNumber, undefined);
+  assert.equal((await service.getWorkItem(candidateB.id))?.githubPrNumber, undefined);
+
+  const eventsA = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, candidateA.id));
+  const eventsB = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, candidateB.id));
+  assert.ok(eventsA.some((event) => event.eventType === "github.pr_adoption_ambiguous"));
+  assert.ok(eventsB.some((event) => event.eventType === "github.pr_adoption_ambiguous"));
+});
+
+test("github sync leaves legacy repo-null PR rows unresolved after deploy", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const legacy = await service.createDeliveryFromJira({
+    title: "Legacy PR row",
+    summary: "Created before repo existed",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.564",
+    jiraIssueKey: "HBL-564",
+    createdByUserId: pmUserId,
+    githubPrNumber: 81,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/81",
+  });
+
+  const existing = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "opened",
+    repo: "hubstaff/gooseherd",
+    prNumber: 81,
+    prTitle: "Legacy row lookup",
+    prBody: "No adoption needed",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/81",
+  });
+
+  assert.equal(existing, undefined);
+  const stored = await service.getWorkItem(legacy.id);
+  assert.equal(stored?.githubPrNumber, 81);
+  assert.equal(stored?.repo, undefined);
+});
+
+test("github sync keeps same PR number isolated by repo", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const gooseherdDelivery = await service.createDeliveryFromJira({
+    title: "Gooseherd PR 77",
+    summary: "First repo",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.560",
+    jiraIssueKey: "HBL-560",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 77,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/77",
+  });
+
+  const otherRepoDelivery = await service.createDeliveryFromJira({
+    title: "Other repo PR 77",
+    summary: "Second repo",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.561",
+    jiraIssueKey: "HBL-561",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/another-repo",
+    githubPrNumber: 77,
+    githubPrUrl: "https://github.com/hubstaff/another-repo/pull/77",
+  });
+
+  const gooseherdUpdated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "opened",
+    repo: "hubstaff/gooseherd",
+    prNumber: 77,
+    prTitle: "Existing gooseherd PR",
+    prBody: "No-op",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/77",
+  });
+
+  const otherRepoUpdated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "opened",
+    repo: "hubstaff/another-repo",
+    prNumber: 77,
+    prTitle: "Existing other repo PR",
+    prBody: "No-op",
+    prUrl: "https://github.com/hubstaff/another-repo/pull/77",
+  });
+
+  assert.equal(gooseherdUpdated?.id, gooseherdDelivery.id);
+  assert.equal(gooseherdUpdated?.repo, "hubstaff/gooseherd");
+  assert.equal(otherRepoUpdated?.id, otherRepoDelivery.id);
+  assert.equal(otherRepoUpdated?.repo, "hubstaff/another-repo");
 });
 
 test("github sync advances auto review item to engineering review after green CI", async (t) => {
@@ -137,6 +310,7 @@ test("github sync advances auto review item to engineering review after green CI
     homeThreadTs: "1740000000.600",
     jiraIssueKey: "HBL-405",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 88,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/88",
     initialState: "auto_review",
@@ -173,6 +347,7 @@ test("github sync routes engineering review outcomes back into delivery flow", a
     homeThreadTs: "1740000000.700",
     jiraIssueKey: "HBL-406",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 99,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/99",
     initialState: "engineering_review",
@@ -199,6 +374,7 @@ test("github sync routes engineering review outcomes back into delivery flow", a
     homeThreadTs: "1740000000.701",
     jiraIssueKey: "HBL-407",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 100,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/100",
     initialState: "engineering_review",
@@ -230,6 +406,7 @@ test("github sync advances qa preparation to qa review after green CI when produ
     homeThreadTs: "1740000000.702",
     jiraIssueKey: "HBL-408",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 101,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/101",
     initialState: "qa_preparation",
@@ -264,6 +441,7 @@ test("github sync advances qa preparation to product review when required", asyn
     homeThreadTs: "1740000000.703",
     jiraIssueKey: "HBL-409",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 102,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/102",
     initialState: "qa_preparation",
@@ -297,6 +475,7 @@ test("github sync marks delivery done when linked pull request is merged", async
     homeThreadTs: "1740000000.704",
     jiraIssueKey: "HBL-410",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 103,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/103",
     initialState: "ready_for_merge",
@@ -331,6 +510,7 @@ test("github sync resets ready_for_merge to auto review on synchronize", async (
     homeThreadTs: "1740000000.705",
     jiraIssueKey: "HBL-411",
     createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
     githubPrNumber: 104,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/104",
     initialState: "ready_for_merge",

@@ -5,6 +5,7 @@ import { orgRoleAssignments, teamMembers, teams, users } from "../db/schema.js";
 export interface IdentityUserRecord {
   id: string;
   slackUserId?: string;
+  primaryTeamId?: string;
   displayName: string;
   isActive: boolean;
 }
@@ -13,6 +14,7 @@ export interface IdentityTeamRecord {
   id: string;
   name: string;
   slackChannelId: string;
+  isDefault: boolean;
 }
 
 export class WorkItemIdentityStore {
@@ -25,6 +27,7 @@ export class WorkItemIdentityStore {
     return {
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     };
@@ -37,6 +40,7 @@ export class WorkItemIdentityStore {
     return {
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     };
@@ -49,6 +53,7 @@ export class WorkItemIdentityStore {
     return {
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     };
@@ -62,6 +67,7 @@ export class WorkItemIdentityStore {
       id: row.id,
       name: row.name,
       slackChannelId: row.slackChannelId,
+      isDefault: row.isDefault,
     };
   }
 
@@ -74,6 +80,7 @@ export class WorkItemIdentityStore {
       id: row.id,
       name: row.name,
       slackChannelId: row.slackChannelId,
+      isDefault: row.isDefault,
     }));
   }
 
@@ -139,6 +146,7 @@ export class WorkItemIdentityStore {
     return rows.map((row) => ({
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     }));

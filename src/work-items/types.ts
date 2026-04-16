@@ -45,6 +45,7 @@ export interface WorkItemRecord {
   githubPrNumber?: number;
   githubPrUrl?: string;
   sourceWorkItemId?: string;
+  repo?: string;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
@@ -67,6 +68,7 @@ export interface CreateWorkItemInput {
   githubPrNumber?: number;
   githubPrUrl?: string;
   sourceWorkItemId?: string;
+  repo?: string;
   createdByUserId: string;
 }
 

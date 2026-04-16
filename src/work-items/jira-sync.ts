@@ -167,12 +167,12 @@ export class JiraWorkItemSync {
 
   async handleWebhookPayload(payload: JiraWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
     const labels = payload.labels.map((label) => label.toLowerCase());
-    const existing = await this.workItems.findByJiraIssueKey(payload.issueKey);
-    if (existing) {
-      return existing;
-    }
-
     if (labels.some((label) => this.deliveryLabels.includes(label))) {
+      const existingDeliveries = await this.workItems.listFeatureDeliveriesByJiraIssueKey(payload.issueKey);
+      if (existingDeliveries[0]) {
+        return existingDeliveries[0];
+      }
+
       const context = await this.resolveDeliveryContext({
         actorJiraAccountId: payload.actorJiraAccountId,
         ownerTeamId: payload.ownerTeamId,
@@ -201,6 +201,11 @@ export class JiraWorkItemSync {
     }
 
     if (labels.some((label) => this.discoveryLabels.includes(label))) {
+      const existingDiscovery = await this.workItems.findProductDiscoveryByJiraIssueKey(payload.issueKey);
+      if (existingDiscovery) {
+        return existingDiscovery;
+      }
+
       const context = await this.resolveDiscoveryContext({
         actorJiraAccountId: payload.actorJiraAccountId,
         ownerTeamId: payload.ownerTeamId,

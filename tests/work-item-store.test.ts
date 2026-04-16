@@ -177,7 +177,89 @@ test("work item store rejects workflow-incompatible or non-whitelisted state cha
   }), /transition/i);
 });
 
-test("work item store enforces a single feature delivery per discovery source", async (t) => {
+test("work item store allows multiple feature deliveries to share the same Jira issue key", async (t) => {
+  const { db, cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery A",
+    summary: "First delivery",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.202",
+    createdByUserId: ownerUserId,
+    jiraIssueKey: "HBL-500",
+  });
+
+  await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery B",
+    summary: "Second delivery",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.203",
+    createdByUserId: ownerUserId,
+    jiraIssueKey: "HBL-500",
+  });
+
+  const deliveryRows = await db.select().from(workItemsTable).where(eq(workItemsTable.jiraIssueKey, "HBL-500"));
+  assert.equal(deliveryRows.length, 2);
+});
+
+test("work item store rejects duplicate product discovery Jira issue keys", async (t) => {
+  const { cleanup, db, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  await db.insert(workItemsTable).values({
+    id: randomUUID(),
+    workflow: "product_discovery",
+    state: "backlog",
+    title: "Discovery A",
+    summary: "First discovery",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.200",
+    createdByUserId: ownerUserId,
+    jiraIssueKey: "HBL-501",
+  });
+
+  await assert.rejects(() => db.insert(workItemsTable).values({
+    id: randomUUID(),
+    workflow: "product_discovery",
+    state: "backlog",
+    title: "Discovery B",
+    summary: "Duplicate discovery key",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.201",
+    createdByUserId: ownerUserId,
+    jiraIssueKey: "HBL-501",
+  }));
+});
+
+test("work item store preserves repo on create and read", async (t) => {
+  const { cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  const workItem = await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Repo scoped delivery",
+    summary: "Round-trip repo mapping",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.202",
+    createdByUserId: ownerUserId,
+    repo: "acme/widgets",
+  });
+
+  assert.equal(workItem.repo, "acme/widgets");
+});
+
+test("work item store allows multiple feature deliveries to share the same source work item id", async (t) => {
   const { db, cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
   t.after(cleanup);
 
@@ -185,10 +267,10 @@ test("work item store enforces a single feature delivery per discovery source", 
     workflow: "product_discovery",
     state: "done",
     title: "Discovery source",
-    summary: "Only one delivery should point here",
+    summary: "Multiple deliveries should point here",
     ownerTeamId,
     homeChannelId: "C_TEAM_1",
-    homeThreadTs: "1740000000.202",
+    homeThreadTs: "1740000000.204",
     createdByUserId: ownerUserId,
   });
 
@@ -199,25 +281,89 @@ test("work item store enforces a single feature delivery per discovery source", 
     summary: "First delivery",
     ownerTeamId,
     homeChannelId: "C_TEAM_1",
-    homeThreadTs: "1740000000.203",
+    homeThreadTs: "1740000000.205",
     createdByUserId: ownerUserId,
-    jiraIssueKey: "HBL-500",
     sourceWorkItemId: discovery.id,
   });
 
-  await assert.rejects(() => workItems.createWorkItem({
+  await workItems.createWorkItem({
     workflow: "feature_delivery",
     state: "backlog",
     title: "Delivery B",
-    summary: "Duplicate source",
+    summary: "Second delivery",
     ownerTeamId,
     homeChannelId: "C_TEAM_1",
-    homeThreadTs: "1740000000.204",
+    homeThreadTs: "1740000000.206",
     createdByUserId: ownerUserId,
-    jiraIssueKey: "HBL-501",
     sourceWorkItemId: discovery.id,
-  }));
+  });
 
   const deliveryRows = await db.select().from(workItemsTable).where(eq(workItemsTable.sourceWorkItemId, discovery.id));
-  assert.equal(deliveryRows.length, 1);
+  assert.equal(deliveryRows.length, 2);
+});
+
+test("work item store allows multiple feature deliveries with null GitHub PR numbers", async (t) => {
+  const { db, cleanup, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  await db.insert(workItemsTable).values({
+    id: randomUUID(),
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery A",
+    summary: "Null PR number one",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.207",
+    createdByUserId: ownerUserId,
+  });
+
+  await db.insert(workItemsTable).values({
+    id: randomUUID(),
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery B",
+    summary: "Null PR number two",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.208",
+    createdByUserId: ownerUserId,
+  });
+
+  const rows = await db.select().from(workItemsTable).where(eq(workItemsTable.ownerTeamId, ownerTeamId));
+  const nullPrRows = rows.filter((row) => row.workflow === "feature_delivery" && row.githubPrNumber === null);
+  assert.equal(nullPrRows.length, 2);
+});
+
+test("work item store rejects duplicate feature deliveries for the same repo and GitHub PR number", async (t) => {
+  const { cleanup, db, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  await db.insert(workItemsTable).values({
+    id: randomUUID(),
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery A",
+    summary: "First repo-scoped PR",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.209",
+    createdByUserId: ownerUserId,
+    repo: "acme/widgets",
+    githubPrNumber: 42,
+  });
+
+  await assert.rejects(() => db.insert(workItemsTable).values({
+    id: randomUUID(),
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Delivery B",
+    summary: "Duplicate repo-scoped PR",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.210",
+    createdByUserId: ownerUserId,
+    repo: "acme/widgets",
+    githubPrNumber: 42,
+  }));
 });

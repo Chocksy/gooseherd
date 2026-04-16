@@ -243,8 +243,8 @@ export class WorkItemService {
             throw new Error("Jira issue key is required before completing discovery");
           }
 
-          const existingDelivery = await txWorkItems.findFeatureDeliveryBySourceWorkItemId(currentWorkItem.id);
-          if (existingDelivery) {
+          const existingDeliveries = await txWorkItems.listFeatureDeliveriesBySourceWorkItemId(currentWorkItem.id);
+          if (existingDeliveries.length > 0) {
             throw new Error(`Delivery work item already exists for discovery ${currentWorkItem.id}`);
           }
 
@@ -371,6 +371,7 @@ export class WorkItemService {
     originThreadTs?: string;
     jiraIssueKey: string;
     createdByUserId: string;
+    repo?: string;
     githubPrNumber?: number;
     githubPrUrl?: string;
     initialState?: Extract<WorkItemRecord["state"], "backlog" | "auto_review">;
@@ -389,6 +390,7 @@ export class WorkItemService {
       originChannelId: input.originChannelId,
       originThreadTs: input.originThreadTs,
       jiraIssueKey: input.jiraIssueKey,
+      repo: input.repo,
       githubPrNumber: input.githubPrNumber,
       githubPrUrl: input.githubPrUrl,
       createdByUserId: input.createdByUserId,
@@ -533,13 +535,6 @@ export class WorkItemService {
   private rewriteDeliveryCreationConflict(error: unknown, workItemId: string, jiraIssueKey: string): Error {
     if (!isUniqueConstraintError(error)) {
       return error instanceof Error ? error : new Error(String(error));
-    }
-
-    if (error.constraint_name === "work_items_feature_delivery_source_work_item_id_idx") {
-      return new Error(`Delivery work item already exists for discovery ${workItemId}`);
-    }
-    if (error.constraint_name === "work_items_feature_delivery_jira_issue_key_idx") {
-      return new Error(`Feature delivery already exists for Jira issue ${jiraIssueKey}`);
     }
 
     return error instanceof Error ? error : new Error(String(error));

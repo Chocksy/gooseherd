@@ -164,11 +164,11 @@ export class GitHubWorkItemSync {
 
   private async handlePullRequest(payload: GitHubWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
     const prNumber = payload.prNumber;
-    if (!prNumber) {
+    if (!prNumber || !payload.repo) {
       return undefined;
     }
 
-    const existing = await this.workItems.findByGitHubPrNumber(prNumber);
+    const existing = await this.workItems.findByRepoAndGitHubPrNumber(payload.repo, prNumber);
     if (existing) {
       await this.events.append({
         workItemId: existing.id,
@@ -201,8 +201,9 @@ export class GitHubWorkItemSync {
       return undefined;
     }
 
-    const existingByJira = await this.workItems.findByJiraIssueKey(jiraIssueKey);
-    if (existingByJira?.workflow === "feature_delivery") {
+    const adoptionCandidates = await this.workItems.listFeatureDeliveryAdoptionCandidatesByJiraIssueKey(jiraIssueKey);
+    if (adoptionCandidates.length === 1) {
+      const existingByJira = adoptionCandidates[0]!;
       await this.events.append({
         workItemId: existingByJira.id,
         eventType: "github.label_observed",
@@ -214,6 +215,7 @@ export class GitHubWorkItemSync {
         },
       });
       await this.workItems.linkPullRequest(existingByJira.id, {
+        repo: payload.repo,
         githubPrNumber: prNumber,
         githubPrUrl: payload.prUrl,
       });
@@ -236,6 +238,24 @@ export class GitHubWorkItemSync {
       return updated;
     }
 
+    if (adoptionCandidates.length > 1) {
+      for (const candidate of adoptionCandidates) {
+        await this.events.append({
+          workItemId: candidate.id,
+          eventType: "github.pr_adoption_ambiguous",
+          actorUserId: candidate.createdByUserId,
+          payload: {
+            action: payload.action,
+            repo: payload.repo,
+            prNumber,
+            jiraIssueKey,
+            candidateCount: adoptionCandidates.length,
+          },
+        });
+      }
+      return undefined;
+    }
+
     const context = await this.resolveDeliveryContext({
       jiraIssueKey,
       repo: payload.repo,
@@ -254,6 +274,7 @@ export class GitHubWorkItemSync {
       originChannelId: context.originChannelId,
       originThreadTs: context.originThreadTs,
       jiraIssueKey,
+      repo: payload.repo,
       createdByUserId: context.createdByUserId,
       githubPrNumber: prNumber,
       githubPrUrl: payload.prUrl,
@@ -289,7 +310,7 @@ export class GitHubWorkItemSync {
   }
 
   private async handleCheckSuite(payload: GitHubWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
-    const workItem = await this.findWorkItemByPullRequestNumbers(payload.pullRequestNumbers);
+    const workItem = await this.findWorkItemByPullRequestNumbers(payload.repo, payload.pullRequestNumbers);
     if (!workItem) {
       return undefined;
     }
@@ -366,7 +387,9 @@ export class GitHubWorkItemSync {
       return undefined;
     }
 
-    const workItem = await this.workItems.findByGitHubPrNumber(payload.prNumber);
+    const workItem = payload.repo
+      ? await this.workItems.findByRepoAndGitHubPrNumber(payload.repo, payload.prNumber)
+      : undefined;
     if (!workItem) {
       return undefined;
     }
@@ -521,9 +544,15 @@ export class GitHubWorkItemSync {
     return normalized.some((label) => this.adoptionLabels.includes(label));
   }
 
-  private async findWorkItemByPullRequestNumbers(prNumbers: number[] | undefined): Promise<WorkItemRecord | undefined> {
+  private async findWorkItemByPullRequestNumbers(
+    repo: string | undefined,
+    prNumbers: number[] | undefined
+  ): Promise<WorkItemRecord | undefined> {
+    if (!repo) {
+      return undefined;
+    }
     for (const prNumber of prNumbers ?? []) {
-      const workItem = await this.workItems.findByGitHubPrNumber(prNumber);
+      const workItem = await this.workItems.findByRepoAndGitHubPrNumber(repo, prNumber);
       if (workItem) {
         return workItem;
       }

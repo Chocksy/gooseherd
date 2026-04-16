@@ -229,16 +229,19 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     adoptionLabels: config.workItemGithubAdoptionLabels,
     resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
     resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
-    resolveDeliveryContext: async ({ jiraIssueKey }) => {
-      const existing = await workItemStore.findByJiraIssueKey(jiraIssueKey);
-      if (existing) {
+    resolveDeliveryContext: async ({ jiraIssueKey, repo, prNumber }) => {
+      const existing = repo && typeof prNumber === "number"
+        ? await workItemStore.findByRepoAndGitHubPrNumber(repo, prNumber)
+        : undefined;
+      const contextSource = existing ?? await workItemStore.findProductDiscoveryByJiraIssueKey(jiraIssueKey);
+      if (contextSource) {
         return {
-          ownerTeamId: existing.ownerTeamId,
-          homeChannelId: existing.homeChannelId,
-          homeThreadTs: existing.homeThreadTs,
-          createdByUserId: existing.createdByUserId,
-          originChannelId: existing.originChannelId,
-          originThreadTs: existing.originThreadTs,
+          ownerTeamId: contextSource.ownerTeamId,
+          homeChannelId: contextSource.homeChannelId,
+          homeThreadTs: contextSource.homeThreadTs,
+          createdByUserId: contextSource.createdByUserId,
+          originChannelId: contextSource.originChannelId,
+          originThreadTs: contextSource.originThreadTs,
         };
       }
       return undefined;

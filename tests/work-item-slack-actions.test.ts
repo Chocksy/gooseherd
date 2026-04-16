@@ -116,18 +116,19 @@ async function seedIdentityFixture() {
   const ctoReviewerId = randomUUID();
 
   await testDb.db.insert(users).values([
-    { id: createdByUserId, slackUserId: "U_PM", displayName: "PM" },
+    { id: createdByUserId, slackUserId: "U_PM", jiraAccountId: "JIRA_PM", primaryTeamId: ownerTeamId, displayName: "PM" },
     { id: directReviewerId, slackUserId: "U_DEV", displayName: "Direct Reviewer" },
     { id: qaReviewerId, slackUserId: "U_QA", displayName: "QA Reviewer" },
     { id: ctoReviewerId, slackUserId: "U_CTO", displayName: "CTO Reviewer" },
   ]);
 
   await testDb.db.insert(teams).values([
-    { id: ownerTeamId, name: "growth", slackChannelId: "C_GROWTH" },
-    { id: randomUUID(), name: "platform", slackChannelId: "C_PLATFORM" },
+    { id: ownerTeamId, name: "growth", slackChannelId: "C_GROWTH", isDefault: true },
+    { id: randomUUID(), name: "platform", slackChannelId: "C_PLATFORM", isDefault: false },
   ]);
 
   await testDb.db.insert(teamMembers).values([
+    { teamId: ownerTeamId, userId: createdByUserId, functionalRoles: ["pm"] },
     { teamId: ownerTeamId, userId: directReviewerId, functionalRoles: ["engineer"] },
     { teamId: ownerTeamId, userId: qaReviewerId, functionalRoles: ["qa"] },
   ]);
@@ -225,6 +226,32 @@ test("resolveReviewRequestDestinations handles user/team/team_role/org_role targ
     assert.deepEqual(
       await resolveReviewRequestDestinations(fixture.identityStore, fixture.workItem, ctoReview),
       [{ kind: "dm", slackUserId: "U_CTO", label: "CTO Reviewer (cto)" }],
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("identity store exposes primary team and default team flags", async () => {
+  const fixture = await seedIdentityFixture();
+
+  try {
+    const pmById = await fixture.identityStore.getUser(fixture.users.createdByUserId);
+    assert.equal(pmById?.primaryTeamId, fixture.ownerTeamId);
+
+    const pmBySlack = await fixture.identityStore.getUserBySlackUserId("U_PM");
+    assert.equal(pmBySlack?.primaryTeamId, fixture.ownerTeamId);
+
+    const pmByJira = await fixture.identityStore.getUserByJiraAccountId("JIRA_PM");
+    assert.equal(pmByJira?.primaryTeamId, fixture.ownerTeamId);
+
+    const ownerTeam = await fixture.identityStore.getTeam(fixture.ownerTeamId);
+    assert.equal(ownerTeam?.isDefault, true);
+
+    const teamsForUser = await fixture.identityStore.listTeamsForUser(fixture.users.createdByUserId);
+    assert.deepEqual(
+      teamsForUser.map((team) => ({ id: team.id, isDefault: team.isDefault })),
+      [{ id: fixture.ownerTeamId, isDefault: true }],
     );
   } finally {
     await fixture.cleanup();

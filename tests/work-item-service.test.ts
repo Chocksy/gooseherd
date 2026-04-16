@@ -452,7 +452,7 @@ test("service blocks manual discovery actions outside the allowed workflow state
   }), /product_discovery/i);
 });
 
-test("service keeps discovery confirmation atomic when delivery creation fails", async (t) => {
+test("service rejects confirmation when a delivery already exists for the same source work item", async (t) => {
   const { db, cleanup, service, pmUserId, reviewerUserId, ownerTeamId } = await createServiceFixture();
   t.after(cleanup);
 
@@ -483,14 +483,24 @@ test("service keeps discovery confirmation atomic when delivery creation fails",
     outcome: "approved",
   });
 
-  await service.createDeliveryFromJira({
+  await db.insert(workItems).values({
+    id: randomUUID(),
+    workflow: "feature_delivery",
+    state: "backlog",
     title: "Existing Jira delivery",
-    summary: "Uses the same Jira key and should force create failure",
+    summary: "Uses the same source work item",
     ownerTeamId,
     homeChannelId: "C_GROWTH",
     homeThreadTs: "1740000000.374",
+    sourceWorkItemId: discovery.id,
     jiraIssueKey: "HBL-374",
     createdByUserId: pmUserId,
+    flags: [],
+    repo: null,
+    githubPrNumber: null,
+    githubPrUrl: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
   });
 
   await assert.rejects(() => service.confirmDiscovery({
@@ -498,14 +508,14 @@ test("service keeps discovery confirmation atomic when delivery creation fails",
     approved: true,
     actor: systemUserActor(pmUserId),
     jiraIssueKey: "HBL-374",
-  }));
+  }), /already exists/i);
 
   const storedDiscovery = await service.getWorkItem(discovery.id);
   assert.equal(storedDiscovery?.state, "waiting_for_pm_confirmation");
   assert.equal(storedDiscovery?.jiraIssueKey, undefined);
 
   const deliveryRows = await db.select().from(workItems).where(eq(workItems.sourceWorkItemId, discovery.id));
-  assert.equal(deliveryRows.length, 0);
+  assert.equal(deliveryRows.length, 1);
 });
 
 test("service stop processing requires manual transition authority, while override requires explicit admin override", async (t) => {

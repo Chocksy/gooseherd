@@ -297,6 +297,7 @@ export const users = pgTable(
     slackUserId: text("slack_user_id"),
     githubLogin: text("github_login"),
     jiraAccountId: text("jira_account_id"),
+    primaryTeamId: uuid("primary_team_id"),
     displayName: text("display_name").notNull(),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -323,6 +324,7 @@ export const teams = pgTable(
     slackChannelId: text("slack_channel_id").notNull(),
     slackUserGroupId: text("slack_user_group_id"),
     slackUserGroupHandle: text("slack_user_group_handle"),
+    isDefault: boolean("is_default").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -332,6 +334,9 @@ export const teams = pgTable(
     uniqueIndex("teams_slack_user_group_id_idx")
       .on(t.slackUserGroupId)
       .where(sql`slack_user_group_id IS NOT NULL`),
+    uniqueIndex("teams_default_unique_idx")
+      .on(t.isDefault)
+      .where(sql`is_default = true`),
   ]
 );
 
@@ -393,6 +398,7 @@ export const workItems = pgTable(
     ownerTeamId: uuid("owner_team_id").notNull(),
     homeChannelId: text("home_channel_id").notNull(),
     homeThreadTs: text("home_thread_ts").notNull(),
+    repo: text("repo"),
     originChannelId: text("origin_channel_id"),
     originThreadTs: text("origin_thread_ts"),
     jiraIssueKey: text("jira_issue_key"),
@@ -423,15 +429,12 @@ export const workItems = pgTable(
     index("work_items_workflow_state_idx").on(t.workflow, t.state),
     index("work_items_owner_team_idx").on(t.ownerTeamId),
     index("work_items_created_at_idx").on(t.createdAt),
-    uniqueIndex("work_items_feature_delivery_jira_issue_key_idx")
+    uniqueIndex("work_items_product_discovery_jira_issue_key_idx")
       .on(t.jiraIssueKey)
-      .where(sql`jira_issue_key IS NOT NULL AND workflow = 'feature_delivery'`),
-    uniqueIndex("work_items_feature_delivery_source_work_item_id_idx")
-      .on(t.sourceWorkItemId)
-      .where(sql`source_work_item_id IS NOT NULL AND workflow = 'feature_delivery'`),
-    uniqueIndex("work_items_github_pr_number_idx")
-      .on(t.githubPrNumber)
-      .where(sql`github_pr_number IS NOT NULL`),
+      .where(sql`workflow = 'product_discovery' AND jira_issue_key IS NOT NULL`),
+    uniqueIndex("work_items_repo_github_pr_number_idx")
+      .on(t.repo, t.githubPrNumber)
+      .where(sql`repo IS NOT NULL AND github_pr_number IS NOT NULL`),
   ]
 );
 

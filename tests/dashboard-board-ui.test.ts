@@ -121,4 +121,19 @@ test("dashboard HTML includes work item board controls and data fetch hooks", ()
   assert.match(html, /No review requests loaded\./);
   assert.match(html, /stop-processing/);
   assert.match(html, /override-state/);
+  assert.match(html, /boardWorkflow: 'feature_delivery'/);
+});
+
+test("dashboard HTML uses view-aware polling with reduced board and observer cadence", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /var RUNS_POLL_INTERVAL_MS = 5000;/);
+  assert.match(html, /var BOARD_POLL_INTERVAL_MS = 15000;/);
+  assert.match(html, /var OBSERVER_POLL_INTERVAL_MS = 30000;/);
+  assert.match(html, /if \(document\.hidden\) return;/);
+  assert.match(html, /if \(state\.viewMode === 'board'\) \{/);
+  assert.match(html, /await loadWorkItems\(\);/);
+  assert.match(html, /await refreshObserver\(false\);/);
+  assert.match(html, /await loadRuns\(\);/);
+  assert.match(html, /await refreshSelected\(\);/);
 });

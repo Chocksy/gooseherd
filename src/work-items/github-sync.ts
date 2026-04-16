@@ -10,6 +10,7 @@ import {
   shouldResetQaReviewOnNewCommits,
 } from "./feature-delivery-policy.js";
 import { WorkItemEventsStore } from "./events-store.js";
+import { logError } from "../logger.js";
 import { WorkItemService } from "./service.js";
 import { WorkItemStore } from "./store.js";
 import type { WorkItemRecord } from "./types.js";
@@ -24,6 +25,7 @@ export interface GitHubWorkItemWebhookPayload {
   prUrl?: string;
   authorLogin?: string;
   baseBranch?: string;
+  headBranch?: string;
   labels?: string[];
   reviewer?: string;
   state?: string;
@@ -50,6 +52,7 @@ export interface GitHubWorkItemSyncOptions {
   adoptionLabels?: string[];
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
+  reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
   resolveDeliveryContext: (input: {
     jiraIssueKey: string;
     repo?: string;
@@ -94,6 +97,7 @@ export function parseGitHubWorkItemWebhookPayload(
       prUrl: pullRequest["html_url"] as string | undefined,
       authorLogin: (pullRequest["user"] as Record<string, unknown> | undefined)?.["login"] as string | undefined,
       baseBranch: (pullRequest["base"] as Record<string, unknown> | undefined)?.["ref"] as string | undefined,
+      headBranch: (pullRequest["head"] as Record<string, unknown> | undefined)?.["ref"] as string | undefined,
       labels,
       merged: pullRequest["merged"] as boolean | undefined,
     };
@@ -144,6 +148,7 @@ export class GitHubWorkItemSync {
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
   private readonly resetQaReviewOnNewCommits?: boolean;
+  private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
 
   constructor(db: Database, options: GitHubWorkItemSyncOptions) {
     this.workItems = new WorkItemStore(db);
@@ -153,6 +158,7 @@ export class GitHubWorkItemSync {
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
+    this.reconcileWorkItem = options.reconcileWorkItem;
   }
 
   async handleWebhookPayload(payload: GitHubWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
@@ -224,6 +230,8 @@ export class GitHubWorkItemSync {
         repo: payload.repo,
         githubPrNumber: prNumber,
         githubPrUrl: payload.prUrl,
+        githubPrBaseBranch: payload.baseBranch,
+        githubPrHeadBranch: payload.headBranch,
       });
       const updated = await this.workItems.updateState(existingByJira.id, {
         state: "auto_review",
@@ -241,6 +249,7 @@ export class GitHubWorkItemSync {
           labels: payload.labels ?? [],
         },
       });
+      await this.reconcileIfConfigured(updated.id, "github.pr_adopted");
       return updated;
     }
 
@@ -288,6 +297,8 @@ export class GitHubWorkItemSync {
       createdByUserId: context.createdByUserId,
       githubPrNumber: prNumber,
       githubPrUrl: payload.prUrl,
+      githubPrBaseBranch: payload.baseBranch,
+      githubPrHeadBranch: payload.headBranch,
       initialState: "auto_review",
       initialSubstate: "pr_adopted",
       flags: ["pr_opened"],
@@ -316,6 +327,7 @@ export class GitHubWorkItemSync {
       },
     });
 
+    await this.reconcileIfConfigured(adopted.id, "github.pr_adopted");
     return adopted;
   }
 
@@ -376,7 +388,11 @@ export class GitHubWorkItemSync {
         : "auto_review";
       const updated = await this.workItems.updateState(workItem.id, {
         state: nextState,
-        substate: workItem.state === "ready_for_merge" ? "revalidating_after_rebase" : "waiting_ci",
+        substate: workItem.state === "ready_for_merge"
+          ? "revalidating_after_rebase"
+          : workItem.state === "auto_review"
+            ? "applying_review_feedback"
+            : "waiting_ci",
         flagsToRemove: ["ci_green"],
       });
 
@@ -386,6 +402,9 @@ export class GitHubWorkItemSync {
         payload: { conclusion, state: updated.state, prNumbers: payload.pullRequestNumbers ?? [] },
       });
 
+      if (workItem.state === "auto_review") {
+        await this.reconcileIfConfigured(updated.id, "github.ci_failed");
+      }
       return updated;
     }
 
@@ -461,6 +480,9 @@ export class GitHubWorkItemSync {
       },
     });
 
+    if (reviewState === "changes_requested" && updated.state === "auto_review") {
+      await this.reconcileIfConfigured(updated.id, "github.review_changes_requested");
+    }
     return updated;
   }
 
@@ -495,7 +517,7 @@ export class GitHubWorkItemSync {
       return workItem;
     }
 
-    const flagsToRemove = ["ci_green"];
+    const flagsToRemove = ["ci_green", "self_review_done"];
     let nextState = workItem.state;
     let substate = workItem.substate;
 
@@ -589,6 +611,8 @@ export class GitHubWorkItemSync {
       repo,
       githubPrNumber: prNumber,
       githubPrUrl: prUrl ?? legacy.githubPrUrl,
+      githubPrBaseBranch: legacy.githubPrBaseBranch,
+      githubPrHeadBranch: legacy.githubPrHeadBranch,
     });
   }
 
@@ -604,6 +628,19 @@ export class GitHubWorkItemSync {
       return this.resetQaReviewOnNewCommits;
     }
     return shouldResetQaReviewOnNewCommits();
+  }
+
+  private async reconcileIfConfigured(workItemId: string, reason: string): Promise<void> {
+    if (!this.reconcileWorkItem) {
+      return;
+    }
+
+    try {
+      await this.reconcileWorkItem(workItemId, reason);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown";
+      logError("GitHub work item reconcile callback failed", { workItemId, reason, error: message });
+    }
   }
 }
 

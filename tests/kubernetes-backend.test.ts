@@ -47,6 +47,7 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
   const resourceCalls: string[] = [];
   let jobReads = 0;
   let revokedRunId: string | undefined;
+  let createdEnvelope: { payloadJson: Record<string, unknown> } | undefined;
 
   const resourceClient: Pick<KubernetesResourceClientType, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret"> = {
     applySecret: async () => {
@@ -81,7 +82,10 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
 
   const backend = new KubernetesExecutionBackend({
     controlPlaneStore: {
-      createRunEnvelope: async () => undefined,
+      createRunEnvelope: async (input) => {
+        createdEnvelope = input;
+        return undefined;
+      },
       issueRunToken: async () => ({ token: "issued-token" }),
       getLatestCompletion: async () => makeCompletion(),
       revokeRunToken: async (runId: string) => {
@@ -109,6 +113,19 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
     runnerEnvSecretName: "gooseherd-env",
     runnerEnvConfigMapName: "gooseherd-config",
     namespace: "default",
+    runnerConfigSource: {
+      agentCommandTemplate: "profile command",
+      agentFollowUpTemplate: "profile follow-up",
+      activeAgentProfile: {
+        id: "profile-1",
+        name: "Codex",
+        runtime: "codex",
+        provider: "openai",
+        model: "gpt-5.4",
+        commandTemplate: "profile command",
+        source: "profile",
+      },
+    } as never,
     resourceClient,
     pollIntervalMs: 1,
     waitTimeoutMs: 5_000,
@@ -135,6 +152,19 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
     assert.doesNotMatch(manifest, /issued-token/);
     assert.match(manifest, /REDACTED/);
     assert.equal(revokedRunId, "run-k8s-backend-1");
+    assert.deepEqual(createdEnvelope?.payloadJson.runnerConfig, {
+      agentCommandTemplate: "profile command",
+      agentFollowUpTemplate: "profile follow-up",
+      activeAgentProfile: {
+        id: "profile-1",
+        name: "Codex",
+        runtime: "codex",
+        provider: "openai",
+        model: "gpt-5.4",
+        commandTemplate: "profile command",
+        source: "profile",
+      },
+    });
 
     assert.deepEqual(resourceCalls, [
       "applySecret",

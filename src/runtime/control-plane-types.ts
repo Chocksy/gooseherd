@@ -18,6 +18,22 @@ export interface CreateRunEnvelopeInput {
   runtime: "local" | "docker" | "kubernetes";
 }
 
+export interface ActiveAgentProfileSnapshot {
+  id: string;
+  name: string;
+  runtime: string;
+  provider?: string;
+  model?: string;
+  commandTemplate: string;
+  source: "profile" | "env";
+}
+
+export interface RunnerConfigPayload {
+  agentCommandTemplate?: string;
+  agentFollowUpTemplate?: string;
+  activeAgentProfile?: ActiveAgentProfileSnapshot;
+}
+
 export interface RunEnvelope {
   runId: string;
   payloadRef: string;

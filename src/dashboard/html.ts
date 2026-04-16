@@ -2205,10 +2205,17 @@ export function dashboardHtml(config: AppConfig): string {
       interval: null,
       themePreference: 'system',
       viewMode: 'runs',
-      boardWorkflow: 'product_discovery',
+      boardWorkflow: 'feature_delivery',
     };
 
     var logStreamState = { runId: null, offset: 0 };
+    var RUNS_POLL_INTERVAL_MS = 5000;
+    var BOARD_POLL_INTERVAL_MS = 15000;
+    var OBSERVER_POLL_INTERVAL_MS = 30000;
+    var observerRulesCache = [];
+    var observerRulesLoaded = false;
+    var observerLastRefreshAt = 0;
+    var refreshInFlight = false;
 
     // ── Lazy loading constants ──
     var MAX_VISIBLE_EVENTS = 150;
@@ -3518,7 +3525,7 @@ export function dashboardHtml(config: AppConfig): string {
     }
 
     async function loadWorkItems() {
-      var workflow = state.boardWorkflow || 'product_discovery';
+      var workflow = state.boardWorkflow || 'feature_delivery';
       var data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow));
       state.workItems = Array.isArray(data.workItems) ? data.workItems : [];
       var hashTarget = currentHashTarget();
@@ -3561,7 +3568,7 @@ export function dashboardHtml(config: AppConfig): string {
       if (!el.boardColumns) return;
       el.boardColumns.innerHTML = '';
 
-      var workflow = state.boardWorkflow || 'product_discovery';
+      var workflow = state.boardWorkflow || 'feature_delivery';
       var columns = BOARD_COLUMNS[workflow] || [];
 
       for (var i = 0; i < columns.length; i++) {
@@ -3750,7 +3757,7 @@ export function dashboardHtml(config: AppConfig): string {
         el.boardOverrideSubmit.disabled = true;
         if (el.boardOverrideSubstate) el.boardOverrideSubstate.value = '';
         if (el.boardOverrideReason) el.boardOverrideReason.value = '';
-        populateOverrideStateOptions(state.boardWorkflow || 'product_discovery');
+        populateOverrideStateOptions(state.boardWorkflow || 'feature_delivery');
         return;
       }
 
@@ -4457,19 +4464,17 @@ export function dashboardHtml(config: AppConfig): string {
         if (!button) return;
         state.viewMode = button.getAttribute('data-view') === 'board' ? 'board' : 'runs';
         updateDashboardChrome();
-        if (state.viewMode === 'board') {
-          loadWorkItems().catch(console.error);
-        } else if (el.topMeta) {
-          el.topMeta.textContent = state.runs.length + ' runs';
-        }
+        refreshCurrentView().catch(console.error);
+        scheduleRefresh(nextRefreshDelayMs());
       };
     }
 
     if (el.boardWorkflow) {
       el.boardWorkflow.onchange = function() {
-        state.boardWorkflow = el.boardWorkflow.value || 'product_discovery';
+        state.boardWorkflow = el.boardWorkflow.value || 'feature_delivery';
         setBoardStatusMessage('');
         loadWorkItems().catch(console.error);
+        scheduleRefresh(nextRefreshDelayMs());
       };
     }
 
@@ -5021,30 +5026,48 @@ export function dashboardHtml(config: AppConfig): string {
       }
     }
 
-    async function refreshObserver() {
+    async function refreshObserver(forceRules) {
       try {
-        var [stateData, eventsData, rulesData] = await Promise.all([
+        var shouldLoadRules = !!forceRules || !observerRulesLoaded;
+        var requests = [
           fetchJson('/api/observer/state'),
           fetchJson('/api/observer/events?limit=50'),
-          fetchJson('/api/observer/rules'),
-        ]);
+        ];
+        if (shouldLoadRules) {
+          requests.push(fetchJson('/api/observer/rules'));
+        }
+
+        var results = await Promise.all(requests);
+        var stateData = results[0];
+        var eventsData = results[1];
+        var rulesData = shouldLoadRules ? results[2] : { rules: observerRulesCache };
 
         if (!stateData.enabled) {
           observerEl.card.style.display = 'none';
           return;
         }
 
+        if (shouldLoadRules) {
+          observerRulesCache = Array.isArray(rulesData.rules) ? rulesData.rules : [];
+          observerRulesLoaded = true;
+        }
+        observerLastRefreshAt = Date.now();
+
         observerEl.card.style.display = '';
-        observerEl.subtitle.textContent = 'Day: ' + stateData.counterDay + ' \\u00b7 ' + (rulesData.rules || []).length + ' rules loaded';
+        observerEl.subtitle.textContent = 'Day: ' + stateData.counterDay + ' \\u00b7 ' + observerRulesCache.length + ' rules loaded';
         observerEl.budget.textContent = stateData.dailyCount + ' runs today';
 
-        renderObserverRules(rulesData.rules || [], stateData.ruleOutcomes || {});
+        renderObserverRules(observerRulesCache, stateData.ruleOutcomes || {});
         renderObserverStats(stateData);
         renderObserverEvents(eventsData.events || []);
       } catch (e) {
         // Observer not available — hide panel
         observerEl.card.style.display = 'none';
       }
+    }
+
+    function observerRefreshDue() {
+      return observerLastRefreshAt === 0 || (Date.now() - observerLastRefreshAt) >= OBSERVER_POLL_INTERVAL_MS;
     }
 
     // ── Pipeline Manager ──
@@ -5362,7 +5385,56 @@ export function dashboardHtml(config: AppConfig): string {
       await loadRuns();
       await loadWorkItems();
       await refreshSelected();
-      await refreshObserver();
+      await refreshObserver(true);
+    }
+
+    async function refreshCurrentView() {
+      if (state.viewMode === 'board') {
+        await loadWorkItems();
+        if (observerRefreshDue()) {
+          await refreshObserver(false);
+        }
+        return;
+      }
+
+      await loadRuns();
+      await refreshSelected();
+      if (observerRefreshDue()) {
+        await refreshObserver(false);
+      }
+    }
+
+    function nextRefreshDelayMs() {
+      return state.viewMode === 'board' ? BOARD_POLL_INTERVAL_MS : RUNS_POLL_INTERVAL_MS;
+    }
+
+    function clearRefreshTimer() {
+      if (state.interval) {
+        clearTimeout(state.interval);
+        state.interval = null;
+      }
+    }
+
+    function scheduleRefresh(delayMs) {
+      clearRefreshTimer();
+      state.interval = setTimeout(runScheduledRefresh, delayMs);
+    }
+
+    async function runScheduledRefresh() {
+      if (document.hidden) return;
+      if (refreshInFlight) {
+        scheduleRefresh(nextRefreshDelayMs());
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        await refreshCurrentView();
+      } catch (error) {
+        console.error(error);
+      } finally {
+        refreshInFlight = false;
+        scheduleRefresh(nextRefreshDelayMs());
+      }
     }
 
     initTheme();
@@ -5370,10 +5442,19 @@ export function dashboardHtml(config: AppConfig): string {
       el.boardWorkflow.value = state.boardWorkflow;
     }
     updateDashboardChrome();
-    refreshAll().catch(console.error);
-    state.interval = setInterval(() => {
-      refreshAll().catch(console.error);
-    }, 5000);
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        clearRefreshTimer();
+        return;
+      }
+      refreshCurrentView().catch(console.error);
+      scheduleRefresh(nextRefreshDelayMs());
+    });
+    refreshAll()
+      .catch(console.error)
+      .finally(function() {
+        scheduleRefresh(nextRefreshDelayMs());
+      });
   </script>
 </body>
 </html>`;

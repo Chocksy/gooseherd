@@ -5,6 +5,7 @@ import type { RunExecutionBackend, RunExecutionContext } from "./backend.js";
 import type { ControlPlaneStore } from "./control-plane-store.js";
 import type { ArtifactStore } from "./artifact-store.js";
 import type { RunCompletionRecord } from "./control-plane-types.js";
+import type { AppConfig } from "../config.js";
 import type { RunStore } from "../store.js";
 import {
   buildRunJobSpec,
@@ -18,6 +19,7 @@ import { sleep } from "../utils/sleep.js";
 import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
 import { readKubernetesTerminalFact } from "./kubernetes/runtime-facts.js";
+import { buildRunnerConfigPayload } from "./runner-config-payload.js";
 
 interface KubernetesExecutionBackendDeps {
   controlPlaneStore: Pick<ControlPlaneStore, "createRunEnvelope" | "issueRunToken" | "getLatestCompletion" | "revokeRunToken">;
@@ -30,6 +32,7 @@ interface KubernetesExecutionBackendDeps {
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
   namespace?: string;
+  runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile">;
   resourceClient?: Pick<KubernetesResourceClient, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret">;
   pollIntervalMs?: number;
   waitTimeoutMs?: number;
@@ -62,7 +65,10 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
     await this.deps.controlPlaneStore.createRunEnvelope({
       runId: run.id,
       payloadRef: `payload/${run.id}`,
-      payloadJson: { run: payload },
+      payloadJson: {
+        run: payload,
+        ...(this.deps.runnerConfigSource ? { runnerConfig: buildRunnerConfigPayload(this.deps.runnerConfigSource) } : {}),
+      },
       runtime: "kubernetes",
     });
     await this.deps.artifactStore.allocateTargets(run.id);

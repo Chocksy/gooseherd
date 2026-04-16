@@ -1,6 +1,7 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import type { AgentAnalysis } from "./implement.js";
+import { hasReusableBranch } from "../branch-reuse.js";
 
 /**
  * Create PR node: create or update pull request via GitHub API.
@@ -13,6 +14,7 @@ export async function createPrNode(
   const config = deps.config;
   const run = deps.run;
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
+  const reusesExistingBranch = ctx.get<boolean>("reusesExistingBranch") ?? hasReusableBranch(run);
   const resolvedBaseBranch = ctx.get<string>("resolvedBaseBranch") ?? run.baseBranch;
   const dryRun = config.dryRun;
 
@@ -37,7 +39,7 @@ export async function createPrNode(
     undefined, undefined, undefined, changeSummary
   );
 
-  const prResult = isFollowUp
+  const prResult = reusesExistingBranch
     ? await deps.githubService.findOrCreatePullRequest({
         repoSlug: run.repoSlug,
         title: prTitle,

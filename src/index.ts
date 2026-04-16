@@ -55,6 +55,7 @@ import { WorkItemContextResolver } from "./work-items/context-resolver.js";
 import { ensureDefaultTeam } from "./work-items/default-team-bootstrap.js";
 import { GitHubWorkItemSync, parseGitHubWorkItemWebhookPayload } from "./work-items/github-sync.js";
 import { JiraWorkItemSync, parseJiraWorkItemWebhookPayload } from "./work-items/jira-sync.js";
+import { WorkItemOrchestrator } from "./work-items/orchestrator.js";
 import {
   hasSandboxRuntimeHotReloadChange,
   preflightSandboxRuntime
@@ -82,6 +83,7 @@ interface Services {
   runtimeReconciler: RuntimeReconciler;
   dashboardWorkItemsSource: DashboardWorkItemsSource;
   workItemService: WorkItemService;
+  workItemOrchestrator: WorkItemOrchestrator;
   workItemGitHubSync: GitHubWorkItemSync;
   workItemJiraSync: JiraWorkItemSync;
 }
@@ -215,6 +217,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
   const workItemIdentityStore = new WorkItemIdentityStore(db);
   const userDirectoryService = new UserDirectoryService(db);
   const workItemContextResolver = new WorkItemContextResolver(db);
+  let workItemOrchestrator: WorkItemOrchestrator | undefined;
   const createHomeThread = webClient
     ? async (input: { channelId: string; text: string }) => {
         const response = await webClient.chat.postMessage({
@@ -232,6 +235,9 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     adoptionLabels: config.workItemGithubAdoptionLabels,
     resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
     resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
+    reconcileWorkItem: async (workItemId, reason) => {
+      await workItemOrchestrator?.reconcileWorkItem(workItemId, reason);
+    },
     resolveDeliveryContext: async ({ jiraIssueKey, repo, prNumber, prTitle, authorLogin }) => {
       const githubLogin = authorLogin?.trim();
       if (!githubLogin) {
@@ -347,6 +353,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
       runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
       runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
       namespace: resolveKubernetesNamespace(),
+      runnerConfigSource: config,
     })
     : undefined;
   const runtimeRegistry: RuntimeRegistry = {
@@ -487,11 +494,18 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
       hasActiveProcessing: async (workItem) => workItemService.hasActiveProcessing(workItem.id),
     }),
   };
+  workItemOrchestrator = new WorkItemOrchestrator(db, {
+    config: {
+      defaultBaseBranch: config.defaultBaseBranch,
+      sandboxRuntime: config.sandboxRuntime,
+    },
+    runManager,
+  });
 
   return {
     config, store, agentProfileStore, githubService, memoryProvider, hooks, containerManager,
     pipelineEngine, pipelineStore, learningStore, evalStore, webClient, runManager, conversationStore,
-    controlPlaneStore, runnerArtifactStore, runtimeReconciler, dashboardWorkItemsSource, workItemService, workItemGitHubSync, workItemJiraSync,
+    controlPlaneStore, runnerArtifactStore, runtimeReconciler, dashboardWorkItemsSource, workItemService, workItemOrchestrator, workItemGitHubSync, workItemJiraSync,
   };
 }
 
@@ -559,6 +573,17 @@ async function main(): Promise<void> {
   }
   checkAgentDefault(config);
   globalRefs.config = config;
+
+  svc.runManager.onRunStatusChange((runId, status) => {
+    if (status !== "awaiting_ci" && status !== "completed") {
+      return;
+    }
+
+    svc.workItemOrchestrator.writebackWorkItem(runId).catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown";
+      logError("Failed to write back auto-review run status", { runId, status, error: message });
+    });
+  });
 
   // 5. Recover stale in-progress runs from before restart
   const recovery = await recoverRunsAfterRestart(

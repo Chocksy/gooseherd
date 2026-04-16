@@ -314,6 +314,56 @@ test("continueRun returns undefined for non-existent parent", async () => {
   await testDb.cleanup();
 });
 
+test("run manager notifies status listeners for awaiting_ci and completed transitions", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const seenStatuses: string[] = [];
+  const mockPipeline: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (_run, { onPhase }) => {
+        await onPhase("cloning");
+        await onPhase("agent");
+        await onPhase("awaiting_ci");
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+          prUrl: "https://github.com/org/repo/pull/42",
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+  manager.onRunStatusChange((runId, status) => {
+    if (runId) {
+      seenStatuses.push(status);
+    }
+  });
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "wait for ci",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+
+  await waitForRunDone(store, run.id);
+
+  assert.ok(seenStatuses.includes("awaiting_ci"));
+  assert.equal(seenStatuses.at(-1), "completed");
+
+  await testDb.cleanup();
+});
+
 // ── processRun (via enqueueRun) ────────────────────────
 
 test("processRun posts status card and summary on success", async () => {

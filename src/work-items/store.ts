@@ -24,6 +24,8 @@ function rowToRecord(row: WorkItemRow): WorkItemRecord {
     jiraIssueKey: row.jiraIssueKey ?? undefined,
     githubPrNumber: row.githubPrNumber ?? undefined,
     githubPrUrl: row.githubPrUrl ?? undefined,
+    githubPrBaseBranch: row.githubPrBaseBranch ?? undefined,
+    githubPrHeadBranch: row.githubPrHeadBranch ?? undefined,
     sourceWorkItemId: row.sourceWorkItemId ?? undefined,
     repo: row.repo ?? undefined,
     createdByUserId: row.createdByUserId,
@@ -58,6 +60,8 @@ export class WorkItemStore {
       jiraIssueKey: input.jiraIssueKey,
       githubPrNumber: input.githubPrNumber,
       githubPrUrl: input.githubPrUrl,
+      githubPrBaseBranch: input.githubPrBaseBranch,
+      githubPrHeadBranch: input.githubPrHeadBranch,
       sourceWorkItemId: input.sourceWorkItemId,
       repo: input.repo,
       createdByUserId: input.createdByUserId,
@@ -221,7 +225,7 @@ export class WorkItemStore {
 
   async linkPullRequest(
     id: string,
-    input: { repo?: string; githubPrNumber: number; githubPrUrl?: string }
+    input: { repo?: string; githubPrNumber: number; githubPrUrl?: string; githubPrBaseBranch?: string; githubPrHeadBranch?: string }
   ): Promise<WorkItemRecord> {
     await this.db
       .update(workItems)
@@ -229,6 +233,8 @@ export class WorkItemStore {
         repo: input.repo,
         githubPrNumber: input.githubPrNumber,
         githubPrUrl: input.githubPrUrl ?? null,
+        githubPrBaseBranch: input.githubPrBaseBranch ?? null,
+        githubPrHeadBranch: input.githubPrHeadBranch ?? null,
         updatedAt: new Date(),
       })
       .where(eq(workItems.id, id));

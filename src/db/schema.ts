@@ -404,6 +404,8 @@ export const workItems = pgTable(
     jiraIssueKey: text("jira_issue_key"),
     githubPrNumber: integer("github_pr_number"),
     githubPrUrl: text("github_pr_url"),
+    githubPrBaseBranch: text("github_pr_base_branch"),
+    githubPrHeadBranch: text("github_pr_head_branch"),
     sourceWorkItemId: uuid("source_work_item_id"),
     createdByUserId: uuid("created_by_user_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

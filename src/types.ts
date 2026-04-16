@@ -69,7 +69,7 @@ export interface RunRecord {
   rootRunId?: string;
   /** 0 for first run, 1 for first follow-up, etc. */
   chainIndex?: number;
-  /** Branch inherited from parent (reused instead of creating new) */
+  /** Existing branch to reuse instead of creating a fresh one */
   parentBranchName?: string;
   /** The engineer's follow-up instruction */
   feedbackNote?: string;
@@ -91,7 +91,7 @@ export interface RunRecord {
   tokenUsage?: TokenUsage;
   /** Team identifier derived from channel mapping */
   teamId?: string;
-  /** Managed work item this run belongs to, when attached */
+  /** Managed work item this run belongs to, whether linked at creation or later */
   workItemId?: string;
 }
 
@@ -103,6 +103,8 @@ export interface NewRunInput {
   channelId: string;
   threadTs: string;
   runtime: SandboxRuntime;
+  /** Managed work item this run belongs to, when created in-band */
+  workItemId?: string;
   /** Link to the parent run for follow-ups */
   parentRunId?: string;
   /** The engineer's follow-up instruction */

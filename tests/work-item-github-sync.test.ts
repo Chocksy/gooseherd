@@ -18,6 +18,7 @@ async function createGitHubSyncFixture() {
   const testDb = await createTestDb();
   const pmUserId = randomUUID();
   const ownerTeamId = randomUUID();
+  const reconcileCalls: Array<{ workItemId: string; reason: string }> = [];
 
   await testDb.db.insert(users).values({
     id: pmUserId,
@@ -43,8 +44,53 @@ async function createGitHubSyncFixture() {
     cleanup: testDb.cleanup,
     ownerTeamId,
     pmUserId,
+    reconcileCalls,
     service: new WorkItemService(testDb.db),
-    sync: new GitHubWorkItemSync(testDb.db, { resolveDeliveryContext }),
+    sync: new GitHubWorkItemSync(testDb.db, {
+      resolveDeliveryContext,
+      reconcileWorkItem: async (workItemId, reason) => {
+        reconcileCalls.push({ workItemId, reason });
+      },
+    }),
+  };
+}
+
+async function createGitHubSyncFixtureWithThrowingReconcile() {
+  const testDb = await createTestDb();
+  const pmUserId = randomUUID();
+  const ownerTeamId = randomUUID();
+
+  await testDb.db.insert(users).values({
+    id: pmUserId,
+    slackUserId: "U_PM_THROW",
+    githubLogin: "pm-throw",
+    displayName: "PM Throw",
+  });
+  await testDb.db.insert(teams).values({
+    id: ownerTeamId,
+    name: "growth-throw",
+    slackChannelId: "C_GROWTH_THROW",
+  });
+
+  const resolveDeliveryContext = async () => ({
+    ownerTeamId,
+    homeChannelId: "C_GROWTH_THROW",
+    homeThreadTs: "1740000000.599",
+    createdByUserId: pmUserId,
+  });
+
+  return {
+    db: testDb.db,
+    cleanup: testDb.cleanup,
+    ownerTeamId,
+    pmUserId,
+    service: new WorkItemService(testDb.db),
+    sync: new GitHubWorkItemSync(testDb.db, {
+      resolveDeliveryContext,
+      reconcileWorkItem: async () => {
+        throw new Error("reconcile exploded");
+      },
+    }),
   };
 }
 
@@ -174,6 +220,7 @@ test("parseGitHubWorkItemWebhookPayload extracts author login from PR payload", 
         body: "Refs HBL-582",
         html_url: "https://github.com/hubstaff/gooseherd/pull/82",
         base: { ref: "main" },
+        head: { ref: "feature/pr-author-login" },
         labels: [],
         user: { login: "github-author" },
       },
@@ -181,6 +228,8 @@ test("parseGitHubWorkItemWebhookPayload extracts author login from PR payload", 
   );
 
   assert.equal(parsed?.authorLogin, "github-author");
+  assert.equal(parsed?.baseBranch, "main");
+  assert.equal(parsed?.headBranch, "feature/pr-author-login");
 });
 
 test("github sync adopts labeled PR into delivery work item", async (t) => {
@@ -197,6 +246,7 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
     prUrl: "https://github.com/hubstaff/gooseherd/pull/77",
     labels: ["ai:assist"],
     baseBranch: "main",
+    headBranch: "feature/hbl-404",
   });
 
   assert.ok(adopted);
@@ -205,6 +255,8 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
   assert.equal(adopted?.jiraIssueKey, "HBL-404");
   assert.equal(adopted?.repo, "hubstaff/gooseherd");
   assert.equal(adopted?.githubPrNumber, 77);
+  assert.equal(adopted?.githubPrBaseBranch, "main");
+  assert.equal(adopted?.githubPrHeadBranch, "feature/hbl-404");
   assert.ok(adopted?.flags.includes("pr_opened"));
 
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, adopted!.id));
@@ -252,7 +304,7 @@ test("github sync ignores labeled PRs without a Jira issue key", async (t) => {
 });
 
 test("github sync links labeled PR to existing delivery item with same jira key", async (t) => {
-  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
   t.after(cleanup);
 
   const existing = await service.createDeliveryFromJira({
@@ -275,13 +327,49 @@ test("github sync links labeled PR to existing delivery item with same jira key"
     prUrl: "https://github.com/hubstaff/gooseherd/pull/78",
     labels: ["ai:assist"],
     baseBranch: "main",
+    headBranch: "feature/hbl-499",
   });
 
   assert.equal(adopted?.id, existing.id);
   assert.equal(adopted?.state, "auto_review");
   assert.equal(adopted?.repo, "hubstaff/gooseherd");
   assert.equal(adopted?.githubPrNumber, 78);
+  assert.equal(adopted?.githubPrBaseBranch, "main");
+  assert.equal(adopted?.githubPrHeadBranch, "feature/hbl-499");
   assert.ok(adopted?.flags.includes("pr_opened"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: existing.id, reason: "github.pr_adopted" }]);
+});
+
+test("github sync keeps PR adoption mutation when reconcile callback throws", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixtureWithThrowingReconcile();
+  t.after(cleanup);
+
+  const existing = await service.createDeliveryFromJira({
+    title: "Existing delivery with failing reconcile",
+    summary: "Reconcile should not break adoption",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH_THROW",
+    homeThreadTs: "1740000000.551",
+    jiraIssueKey: "HBL-1499",
+    createdByUserId: pmUserId,
+  });
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 781,
+    prTitle: "Adoption survives reconcile failure",
+    prBody: "Continues work\n\nRefs HBL-1499",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/781",
+    labels: ["ai:assist"],
+    baseBranch: "main",
+  });
+
+  assert.equal(adopted?.id, existing.id);
+  assert.equal(adopted?.state, "auto_review");
+  assert.equal(adopted?.substate, "pr_adopted");
+  assert.equal(adopted?.githubPrNumber, 781);
 });
 
 test("github sync creates a new delivery when a second PR arrives for a Jira issue with an already linked delivery", async (t) => {
@@ -550,8 +638,80 @@ test("github sync advances auto review item to engineering review after green CI
   assert.ok(events.some((event) => event.eventType === "github.ci_updated"));
 });
 
+test("github sync returns auto_review items to applying_review_feedback and reconciles on failed CI", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Auto-review CI failed",
+    summary: "Fresh auto-review run is required",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.601",
+    jiraIssueKey: "HBL-405A",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 89,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/89",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "ci_green", "self_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "failure",
+    status: "completed",
+    pullRequestNumbers: [89],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "applying_review_feedback");
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.ci_failed" }]);
+});
+
+test("github sync preserves ready_for_merge revalidation behavior on failed CI without reconciling", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Ready for merge CI failed",
+    summary: "Should revalidate after rebase",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.602",
+    jiraIssueKey: "HBL-405B",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 90,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/90",
+    initialState: "ready_for_merge",
+    initialSubstate: "waiting_merge",
+    flags: ["pr_opened", "ci_green", "engineering_review_done", "qa_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "timed_out",
+    status: "completed",
+    pullRequestNumbers: [90],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "revalidating_after_rebase");
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, []);
+});
+
 test("github sync routes engineering review outcomes back into delivery flow", async (t) => {
-  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
   t.after(cleanup);
 
   const changesRequestedItem = await service.createDeliveryFromJira({
@@ -580,6 +740,7 @@ test("github sync routes engineering review outcomes back into delivery flow", a
 
   assert.equal(sentBack?.id, changesRequestedItem.id);
   assert.equal(sentBack?.state, "auto_review");
+  assert.deepEqual(reconcileCalls, [{ workItemId: changesRequestedItem.id, reason: "github.review_changes_requested" }]);
 
   const approvedItem = await service.createDeliveryFromJira({
     title: "Approved review webhook handling",
@@ -607,6 +768,39 @@ test("github sync routes engineering review outcomes back into delivery flow", a
 
   assert.equal(approved?.id, approvedItem.id);
   assert.equal(approved?.state, "qa_preparation");
+});
+
+test("github sync keeps changes_requested mutation when reconcile callback throws", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixtureWithThrowingReconcile();
+  t.after(cleanup);
+
+  const changesRequestedItem = await service.createDeliveryFromJira({
+    title: "Changes requested with failing reconcile",
+    summary: "State mutation should survive callback failure",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH_THROW",
+    homeThreadTs: "1740000000.701",
+    jiraIssueKey: "HBL-1406",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 991,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/991",
+    initialState: "engineering_review",
+    flags: ["pr_opened", "ci_green", "self_review_done"],
+  });
+
+  const sentBack = await sync.handleWebhookPayload({
+    eventType: "pull_request_review",
+    action: "submitted",
+    repo: "hubstaff/gooseherd",
+    prNumber: 991,
+    state: "changes_requested",
+    reviewer: "reviewer-a",
+  });
+
+  assert.equal(sentBack?.id, changesRequestedItem.id);
+  assert.equal(sentBack?.state, "auto_review");
+  assert.equal(sentBack?.substate, "applying_review_feedback");
 });
 
 test("github sync advances qa preparation to qa review after green CI when product review is not required", async (t) => {
@@ -744,4 +938,35 @@ test("github sync resets ready_for_merge to auto review on synchronize", async (
   assert.equal(updated?.state, "auto_review");
   assert.equal(updated?.substate, "waiting_ci");
   assert.ok(!updated?.flags.includes("ci_green"));
+});
+
+test("github sync clears ci_green and self_review_done on synchronize for auto_review items", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "New commits on auto review PR",
+    summary: "Auto-review needs a fresh run",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.706",
+    jiraIssueKey: "HBL-412",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 105,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/105",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "ci_green", "self_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "synchronize",
+    repo: "hubstaff/gooseherd",
+    prNumber: 105,
+  });
+
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.ok(!updated?.flags.includes("self_review_done"));
 });

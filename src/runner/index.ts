@@ -11,6 +11,7 @@ import { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import { logError, logInfo } from "../logger.js";
 import { RunnerControlPlaneClient } from "./control-plane-client.js";
 import { runPipelineRunner, type RunnerEventEmitter } from "./pipeline-runner.js";
+import { applyRunnerConfigPayload } from "../runtime/runner-config-payload.js";
 
 function getRequiredEnv(name: "GOOSEHERD_INTERNAL_BASE_URL" | "RUN_ID" | "RUN_TOKEN"): string {
   const value = process.env[name];
@@ -46,10 +47,11 @@ function buildRunnerServices(): RunnerServices {
 async function executeSharedPipeline(
   services: RunnerServices,
   run: RunRecord,
-  _payload: RunEnvelope,
+  payload: RunEnvelope,
   emit: RunnerEventEmitter,
   abortSignal: AbortSignal,
 ) {
+  applyRunnerConfigPayload(services.config, payload);
   return services.pipelineEngine.execute(
     run,
     async (phase) => {

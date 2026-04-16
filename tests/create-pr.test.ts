@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPrBody } from "../src/pipeline/nodes/create-pr.js";
+import { buildPrBody, createPrNode } from "../src/pipeline/nodes/create-pr.js";
 import type { AgentAnalysis } from "../src/pipeline/nodes/implement.js";
 
 const BASE_RUN = {
@@ -186,6 +186,47 @@ test("buildPrBody: shows all gates including passes for a convincing report", ()
   assert.ok(body.includes("## Verification"), "Shows all gates even when all pass");
   assert.ok(body.includes("Diff Gate"));
   assert.ok(body.includes("Security Scan"));
+});
+
+test("createPrNode reuses an existing PR branch for auto-review runs without a parent run", async () => {
+  const calls: string[] = [];
+  const ctxStore = new Map<string, unknown>([["resolvedBaseBranch", "main"]]);
+  const deps = {
+    config: {
+      appSlug: "gooseherd",
+      appName: "Gooseherd",
+      dryRun: false,
+    },
+    run: {
+      id: "run-abc12345",
+      task: "Self-review existing PR",
+      requestedBy: "work-item:auto-review",
+      repoSlug: "hubstaff/gooseherd",
+      baseBranch: "main",
+      branchName: "feature/hbl-404",
+      parentBranchName: "feature/hbl-404",
+    },
+    githubService: {
+      findOrCreatePullRequest: async () => {
+        calls.push("findOrCreatePullRequest");
+        return { url: "https://github.com/hubstaff/gooseherd/pull/77", number: 77 };
+      },
+      createPullRequest: async () => {
+        calls.push("createPullRequest");
+        return { url: "https://github.com/hubstaff/gooseherd/pull/999", number: 999 };
+      },
+    },
+  } as any;
+  const ctx = {
+    get: <T>(key: string): T | undefined => ctxStore.get(key) as T | undefined,
+    set: (key: string, value: unknown) => { ctxStore.set(key, value); },
+  } as any;
+
+  const result = await createPrNode({}, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.deepEqual(calls, ["findOrCreatePullRequest"]);
+  assert.equal(ctxStore.get("prNumber"), 77);
 });
 
 // ── Visual Evidence ──

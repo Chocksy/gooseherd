@@ -374,6 +374,8 @@ export class WorkItemService {
     repo?: string;
     githubPrNumber?: number;
     githubPrUrl?: string;
+    githubPrBaseBranch?: string;
+    githubPrHeadBranch?: string;
     initialState?: Extract<WorkItemRecord["state"], "backlog" | "auto_review">;
     initialSubstate?: string;
     flags?: string[];
@@ -393,6 +395,8 @@ export class WorkItemService {
       repo: input.repo,
       githubPrNumber: input.githubPrNumber,
       githubPrUrl: input.githubPrUrl,
+      githubPrBaseBranch: input.githubPrBaseBranch,
+      githubPrHeadBranch: input.githubPrHeadBranch,
       createdByUserId: input.createdByUserId,
       flags: input.flags ?? [],
     });

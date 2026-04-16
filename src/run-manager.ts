@@ -150,11 +150,13 @@ function isRetryableStatus(status: RunRecord["status"]): boolean {
 }
 
 export type RunTerminalCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
+export type RunStatusChangeCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
 type EnqueueRunInput = Omit<NewRunInput, "runtime"> & { runtime?: NewRunInput["runtime"] };
 
 export class RunManager {
   private readonly queue: PQueue;
   private readonly terminalCallbacks: RunTerminalCallback[] = [];
+  private readonly statusChangeCallbacks: RunStatusChangeCallback[] = [];
   /** AbortControllers for in-progress runs — enables cancellation. */
   private readonly runAbortControllers = new Map<string, AbortController>();
 
@@ -293,8 +295,23 @@ export class RunManager {
     this.terminalCallbacks.push(cb);
   }
 
+  /** Register a callback that fires when any run status changes, including non-terminal states. */
+  onRunStatusChange(cb: RunStatusChangeCallback): void {
+    this.statusChangeCallbacks.push(cb);
+  }
+
   private fireTerminalCallbacks(runId: string, status: string, runtime: RunRecord["runtime"]): void {
     for (const cb of this.terminalCallbacks) {
+      try {
+        cb(runId, status, runtime);
+      } catch {
+        // Swallow errors from callbacks to avoid disrupting the run manager
+      }
+    }
+  }
+
+  private fireStatusChangeCallbacks(runId: string, status: string, runtime: RunRecord["runtime"]): void {
+    for (const cb of this.statusChangeCallbacks) {
       try {
         cb(runId, status, runtime);
       } catch {
@@ -570,6 +587,7 @@ export class RunManager {
         const runPhase = phase as import("./types.js").RunPhase;
         const updated = await this.store.updateRun(stableRunId, { status: nextStatus, phase: runPhase });
         run = updated;
+        this.fireStatusChangeCallbacks(run.id, run.status, run.runtime);
         await upsertRunCard();
       };
 
@@ -616,6 +634,7 @@ export class RunManager {
       // Store run completion via lifecycle hooks (fire-and-forget, errors swallowed internally)
       this.hooks?.onRunComplete(run, result);
 
+      this.fireStatusChangeCallbacks(run.id, "completed", run.runtime);
       // Notify terminal listeners (observer learning loop)
       this.fireTerminalCallbacks(run.id, "completed", run.runtime);
     } catch (error) {
@@ -651,6 +670,7 @@ export class RunManager {
         logError("Run failed", { runId: terminalRun.id, error: message });
       }
 
+      this.fireStatusChangeCallbacks(terminalRun.id, terminalRun.status, terminalRun.runtime);
       // Notify terminal listeners (observer learning loop)
       this.fireTerminalCallbacks(terminalRun.id, terminalRun.status, terminalRun.runtime);
     }

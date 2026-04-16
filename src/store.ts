@@ -94,6 +94,7 @@ export class RunStore {
       channelId: input.channelId,
       threadTs: input.threadTs,
       createdAt: new Date(),
+      workItemId: input.workItemId,
       parentRunId: input.parentRunId,
       rootRunId,
       chainIndex,

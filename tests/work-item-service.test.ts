@@ -728,6 +728,45 @@ test("admin_session may override but cannot confirm discovery as a normal partic
   assert.equal(overrideRequested.payload.actorSessionId, "admin-override");
 });
 
+test("run store can create a queued run already linked to a work item", async (t) => {
+  const { db, service, cleanup, pmUserId, ownerTeamId } = await createServiceFixture();
+  t.after(cleanup);
+
+  const workItem = await service.createDeliveryFromJira({
+    title: "Adopt run chain",
+    summary: "Attach ad-hoc run",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.400",
+    jiraIssueKey: "HBL-303",
+    createdByUserId: pmUserId,
+  });
+
+  const runStore = new RunStore(db);
+  const run = await runStore.createRun(
+    {
+      runtime: "local",
+      repoSlug: "hubstaff/gooseherd",
+      task: "Fix specs",
+      baseBranch: "main",
+      requestedBy: "U_PM",
+      channelId: "C_GROWTH",
+      threadTs: "1740000000.400",
+      workItemId: workItem.id,
+    },
+    "gooseherd"
+  );
+
+  const storedRun = await runStore.getRun(run.id);
+  assert.equal(storedRun?.workItemId, workItem.id);
+  assert.equal(storedRun?.status, "queued");
+
+  const linkedRuns = await runStore.listRunsForWorkItem(workItem.id);
+  assert.equal(linkedRuns.length, 1);
+  assert.equal(linkedRuns[0]?.id, run.id);
+  assert.equal(linkedRuns[0]?.workItemId, workItem.id);
+});
+
 test("service can attach an existing run to a work item", async (t) => {
   const { db, service, cleanup, pmUserId, ownerTeamId } = await createServiceFixture();
   t.after(cleanup);
@@ -764,6 +803,12 @@ test("service can attach an existing run to a work item", async (t) => {
 
   const storedRun = await runStore.getRun(run.id);
   assert.equal(storedRun?.workItemId, workItem.id);
+
+  const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem.id));
+  const attachedEvent = events.find((event) => event.eventType === "run.attached");
+  assert.ok(attachedEvent);
+  assert.equal(attachedEvent?.payload.runId, run.id);
+  assert.equal(attachedEvent?.actorUserId, pmUserId);
 });
 
 test("service stops active processing before guarded override", async (t) => {

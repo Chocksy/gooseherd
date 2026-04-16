@@ -45,6 +45,8 @@ export interface WorkItemRecord {
   jiraIssueKey?: string;
   githubPrNumber?: number;
   githubPrUrl?: string;
+  githubPrBaseBranch?: string;
+  githubPrHeadBranch?: string;
   sourceWorkItemId?: string;
   repo?: string;
   createdByUserId: string;
@@ -79,6 +81,8 @@ export interface CreateWorkItemInput {
   jiraIssueKey?: string;
   githubPrNumber?: number;
   githubPrUrl?: string;
+  githubPrBaseBranch?: string;
+  githubPrHeadBranch?: string;
   sourceWorkItemId?: string;
   repo?: string;
   createdByUserId: string;

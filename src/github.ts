@@ -16,11 +16,55 @@ export interface PullRequestResult {
   number: number;
 }
 
+export interface PullRequestDetails {
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  state: string;
+  baseRef?: string;
+  headRef?: string;
+  headSha?: string;
+  authorLogin?: string;
+}
+
+export interface PullRequestDiscussionComment {
+  id: string;
+  authorLogin?: string;
+  createdAt?: string;
+  body: string;
+  url?: string;
+}
+
+export interface PullRequestReview {
+  id: string;
+  authorLogin?: string;
+  createdAt?: string;
+  state?: string;
+  body: string;
+  url?: string;
+}
+
+export interface PullRequestReviewComment {
+  id: string;
+  authorLogin?: string;
+  createdAt?: string;
+  body: string;
+  path?: string;
+  line?: number;
+  side?: string;
+  url?: string;
+  threadResolved: false;
+}
+
 export interface CICheckRun {
   id: number;
   name: string;
   status: string;
   conclusion: string | null;
+  detailsUrl?: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface CICheckAnnotation {
@@ -30,11 +74,73 @@ export interface CICheckAnnotation {
   annotation_level: string;
 }
 
+export interface PullRequestCiSnapshot {
+  headSha?: string;
+  conclusion: "success" | "failure" | "pending" | "no_ci";
+  failedRuns?: Array<{
+    id: number;
+    name: string;
+    status: string;
+    conclusion: string | null;
+    detailsUrl?: string;
+    startedAt?: string;
+    completedAt?: string;
+  }>;
+  failedAnnotations?: Array<{
+    checkRunName: string;
+    path: string;
+    line: number;
+    message: string;
+    level: string;
+  }>;
+}
+
 export interface AccessibleRepository {
   fullName: string;
   private: boolean;
   defaultBranch?: string;
   htmlUrl?: string;
+}
+
+interface GraphQLReviewThreadCommentPage {
+  comments?: {
+    nodes?: Array<{
+      id?: string | null;
+      author?: { login?: string | null } | null;
+      createdAt?: string | null;
+      body?: string | null;
+      path?: string | null;
+      line?: number | null;
+      side?: string | null;
+      url?: string | null;
+    } | null> | null;
+    pageInfo?: {
+      hasNextPage?: boolean | null;
+      endCursor?: string | null;
+    } | null;
+  } | null;
+}
+
+interface GraphQLReviewThreadPage {
+  repository?: {
+    pullRequest?: {
+      reviewThreads?: {
+        nodes?: Array<{
+          id?: string | null;
+          isResolved?: boolean | null;
+          comments?: GraphQLReviewThreadCommentPage["comments"];
+        } | null> | null;
+        pageInfo?: {
+          hasNextPage?: boolean | null;
+          endCursor?: string | null;
+        } | null;
+      } | null;
+    } | null;
+  } | null;
+}
+
+interface GraphQLThreadCommentsPage {
+  node?: GraphQLReviewThreadCommentPage | null;
 }
 
 export function parseRepoSlug(repoSlug: string): { owner: string; repo: string } {
@@ -115,6 +221,228 @@ export class GitHubService {
     return { url: response.data.html_url, number: response.data.number };
   }
 
+  async getPullRequest(repoSlug: string, prNumber: number): Promise<PullRequestDetails> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const response = await this.octokit.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber
+    });
+
+    return {
+      number: response.data.number,
+      url: response.data.html_url,
+      title: response.data.title,
+      body: response.data.body ?? "",
+      state: response.data.state,
+      baseRef: response.data.base?.ref ?? undefined,
+      headRef: response.data.head?.ref ?? undefined,
+      headSha: response.data.head?.sha ?? undefined,
+      authorLogin: response.data.user?.login ?? undefined
+    };
+  }
+
+  async listPullRequestDiscussionComments(
+    repoSlug: string,
+    prNumber: number
+  ): Promise<PullRequestDiscussionComment[]> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const comments = await this.paginateRest(page =>
+      this.octokit.issues.listComments({
+        owner,
+        repo,
+        issue_number: prNumber,
+        per_page: 100,
+        page
+      })
+    );
+
+    return comments
+      .map(comment => ({
+        id: String(comment.id),
+        authorLogin: comment.user?.login ?? undefined,
+        createdAt: comment.created_at ?? undefined,
+        body: comment.body ?? "",
+        url: comment.html_url ?? undefined
+      }))
+      .sort(sortByCreatedAt);
+  }
+
+  async listPullRequestReviews(repoSlug: string, prNumber: number): Promise<PullRequestReview[]> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const reviews = await this.paginateRest(page =>
+      this.octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100,
+        page
+      })
+    );
+
+    return reviews
+      .map(review => ({
+        id: String(review.id),
+        authorLogin: review.user?.login ?? undefined,
+        createdAt: review.submitted_at ?? undefined,
+        state: review.state ?? undefined,
+        body: review.body ?? "",
+        url: review.html_url ?? undefined
+      }))
+      .sort(sortByCreatedAt);
+  }
+
+  async listUnresolvedReviewComments(
+    repoSlug: string,
+    prNumber: number
+  ): Promise<PullRequestReviewComment[]> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const unresolvedComments: PullRequestReviewComment[] = [];
+    let threadAfter: string | undefined;
+
+    while (true) {
+      const response = await this.graphql<GraphQLReviewThreadPage>(`
+      query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 100, after: $after) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                id
+                isResolved
+                comments(first: 100) {
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                  nodes {
+                    id
+                    author { login }
+                    createdAt
+                    body
+                    path
+                    line
+                    side
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `, { owner, repo, number: prNumber, after: threadAfter });
+
+      const threadsConnection = response.repository?.pullRequest?.reviewThreads;
+      for (const thread of threadsConnection?.nodes ?? []) {
+        if (!thread?.id || thread.isResolved) {
+          continue;
+        }
+        collectReviewThreadComments(thread.comments, unresolvedComments);
+
+        let commentAfter = thread.comments?.pageInfo?.endCursor ?? undefined;
+        let commentPage = thread.comments;
+        while (commentPage?.pageInfo?.hasNextPage) {
+          const commentResponse = await this.graphql<GraphQLThreadCommentsPage>(`
+            query($threadId: ID!, $after: String) {
+              node(id: $threadId) {
+                ... on PullRequestReviewThread {
+                  comments(first: 100, after: $after) {
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
+                    nodes {
+                      id
+                      author { login }
+                      createdAt
+                      body
+                      path
+                      line
+                      side
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          `, { threadId: thread.id, after: commentAfter });
+          commentPage = commentResponse.node?.comments ?? null;
+          collectReviewThreadComments(commentPage, unresolvedComments);
+          if (!commentPage?.pageInfo?.hasNextPage) {
+            break;
+          }
+          commentAfter = commentPage.pageInfo?.endCursor ?? undefined;
+        }
+      }
+
+      if (!threadsConnection?.pageInfo?.hasNextPage) {
+        break;
+      }
+      threadAfter = threadsConnection.pageInfo.endCursor ?? undefined;
+    }
+
+    return unresolvedComments.sort(sortByCreatedAt);
+  }
+
+  async getPullRequestCiSnapshot(
+    repoSlug: string,
+    headSha: string
+  ): Promise<PullRequestCiSnapshot> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const checkRuns = await this.listCheckRuns(owner, repo, headSha);
+    if (checkRuns.length === 0) {
+      return { headSha, conclusion: "no_ci" };
+    }
+
+    const failedRuns = checkRuns.filter(run => isFailedCheckRun(run));
+    const hasPendingRuns = checkRuns.some(run =>
+      run.status !== "completed" ||
+      run.conclusion === null ||
+      run.conclusion === "cancelled"
+    );
+
+    if (failedRuns.length > 0) {
+      const failedAnnotations: PullRequestCiSnapshot["failedAnnotations"] = [];
+      for (const run of failedRuns) {
+        const annotations = await this.getCheckAnnotations(owner, repo, run.id);
+        for (const annotation of annotations) {
+          failedAnnotations.push({
+            checkRunName: run.name,
+            path: annotation.path,
+            line: annotation.start_line,
+            message: annotation.message,
+            level: annotation.annotation_level
+          });
+        }
+      }
+
+      return {
+        headSha,
+        conclusion: "failure",
+        failedRuns: failedRuns.map(run => ({
+          id: run.id,
+          name: run.name,
+          status: run.status,
+          conclusion: run.conclusion,
+          detailsUrl: run.detailsUrl,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt
+        })),
+        failedAnnotations
+      };
+    }
+
+    if (hasPendingRuns) {
+      return { headSha, conclusion: "pending" };
+    }
+
+    return { headSha, conclusion: "success" };
+  }
+
   async findOrCreatePullRequest(params: PullRequestParams): Promise<PullRequestResult> {
     const { owner, repo } = parseRepoSlug(params.repoSlug);
 
@@ -143,26 +471,37 @@ export class GitHubService {
   }
 
   async listCheckRuns(owner: string, repo: string, ref: string): Promise<CICheckRun[]> {
-    const response = await this.octokit.checks.listForRef({
-      owner,
-      repo,
-      ref
-    });
-    return response.data.check_runs.map(cr => ({
+    const checkRuns = await this.paginateRest(page =>
+      this.octokit.checks.listForRef({
+        owner,
+        repo,
+        ref,
+        per_page: 100,
+        page
+      }).then(response => ({ data: response.data.check_runs }))
+    );
+    return checkRuns.map(cr => ({
       id: cr.id,
       name: cr.name,
       status: cr.status,
-      conclusion: cr.conclusion
+      conclusion: cr.conclusion,
+      detailsUrl: cr.details_url ?? undefined,
+      startedAt: cr.started_at ?? undefined,
+      completedAt: cr.completed_at ?? undefined
     }));
   }
 
   async getCheckAnnotations(owner: string, repo: string, checkRunId: number): Promise<CICheckAnnotation[]> {
-    const response = await this.octokit.checks.listAnnotations({
-      owner,
-      repo,
-      check_run_id: checkRunId
-    });
-    return response.data.map(a => ({
+    const annotations = await this.paginateRest(page =>
+      this.octokit.checks.listAnnotations({
+        owner,
+        repo,
+        check_run_id: checkRunId,
+        per_page: 100,
+        page
+      })
+    );
+    return annotations.map(a => ({
       path: a.path,
       start_line: a.start_line,
       message: a.message ?? "",
@@ -177,6 +516,12 @@ export class GitHubService {
       job_id: jobId
     });
     return typeof response.data === "string" ? response.data : String(response.data);
+  }
+
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    return (this.octokit as unknown as {
+      graphql: <U>(query: string, variables?: Record<string, unknown>) => Promise<U>;
+    }).graphql<T>(query, variables);
   }
 
   async listDeployments(
@@ -429,5 +774,56 @@ export class GitHubService {
       defaultBranch: r.default_branch ?? undefined,
       htmlUrl: r.html_url ?? undefined,
     }));
+  }
+
+  private async paginateRest<T>(fetchPage: (page: number) => Promise<{ data: T[] }>): Promise<T[]> {
+    const items: T[] = [];
+    let page = 1;
+
+    while (true) {
+      const response = await fetchPage(page);
+      items.push(...response.data);
+      if (response.data.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+
+    return items;
+  }
+}
+
+function sortByCreatedAt<T extends { createdAt?: string }>(left: T, right: T): number {
+  const leftCreatedAt = left.createdAt ?? "";
+  const rightCreatedAt = right.createdAt ?? "";
+  if (leftCreatedAt === rightCreatedAt) {
+    return 0;
+  }
+  return leftCreatedAt < rightCreatedAt ? -1 : 1;
+}
+
+function isFailedCheckRun(run: CICheckRun): boolean {
+  return run.conclusion === "failure" || run.conclusion === "timed_out";
+}
+
+function collectReviewThreadComments(
+  comments: GraphQLReviewThreadCommentPage["comments"] | undefined,
+  target: PullRequestReviewComment[]
+): void {
+  for (const comment of comments?.nodes ?? []) {
+    if (!comment?.id) {
+      continue;
+    }
+    target.push({
+      id: comment.id,
+      authorLogin: comment.author?.login ?? undefined,
+      createdAt: comment.createdAt ?? undefined,
+      body: comment.body ?? "",
+      path: comment.path ?? undefined,
+      line: comment.line ?? undefined,
+      side: comment.side ?? undefined,
+      url: comment.url ?? undefined,
+      threadResolved: false
+    });
   }
 }

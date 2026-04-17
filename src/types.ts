@@ -1,3 +1,4 @@
+import type { RunPrefetchContext } from "./runtime/run-context-types.js";
 import type { SandboxRuntime } from "./runtime/runtime-mode.js";
 
 export type RunStatus =
@@ -93,6 +94,8 @@ export interface RunRecord {
   teamId?: string;
   /** Managed work item this run belongs to, whether linked at creation or later */
   workItemId?: string;
+  prefetchContext?: RunPrefetchContext;
+  autoReviewSourceSubstate?: string;
 }
 
 export interface NewRunInput {
@@ -117,6 +120,8 @@ export interface NewRunInput {
   enableNodes?: string[];
   /** Team identifier derived from channel mapping */
   teamId?: string;
+  prefetchContext?: RunPrefetchContext;
+  autoReviewSourceSubstate?: string;
 }
 
 export interface ExecutionResult {

@@ -48,6 +48,72 @@ test("createRun stores queued phase and metadata updates persist", async (t) => 
   assert.match(formatted, /Changed files: 2/);
 });
 
+test("RunStore persists prefetchContext and autoReviewSourceSubstate", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const created = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "prefetch test",
+      baseBranch: "main",
+      requestedBy: "U123",
+      channelId: "C123",
+      threadTs: "123.456",
+      runtime: "local",
+      workItemId: "11111111-1111-1111-1111-111111111111",
+      autoReviewSourceSubstate: "pr_adopted",
+      prefetchContext: {
+        meta: {
+          fetchedAt: new Date().toISOString(),
+          sources: ["github_pr", "jira"],
+        },
+        workItem: {
+          id: "11111111-1111-1111-1111-111111111111",
+          title: "Prefetch test",
+          workflow: "feature_delivery",
+          state: "collecting_context",
+          jiraIssueKey: "HBL-1",
+          githubPrUrl: "https://github.com/owner/repo/pull/1",
+          githubPrNumber: 1,
+        },
+        github: {
+          pr: {
+            number: 1,
+            url: "https://github.com/owner/repo/pull/1",
+            title: "Prefetch test PR",
+            body: "Body",
+            state: "open",
+            headSha: "abc123",
+          },
+          discussionComments: [],
+          reviews: [],
+          reviewComments: [],
+          ci: {
+            headSha: "abc123",
+            conclusion: "no_ci",
+          },
+        },
+        jira: {
+          issue: {
+            key: "HBL-1",
+            description: "Jira description",
+          },
+          comments: [],
+        },
+      },
+    },
+    "gooseherd"
+  );
+
+  const loaded = await store.getRun(created.id);
+
+  assert.equal(loaded?.autoReviewSourceSubstate, "pr_adopted");
+  assert.equal(loaded?.prefetchContext?.workItem.id, "11111111-1111-1111-1111-111111111111");
+  assert.equal(loaded?.prefetchContext?.github?.pr.title, "Prefetch test PR");
+  assert.equal(loaded?.prefetchContext?.jira?.issue.key, "HBL-1");
+});
+
 test("listRuns returns newest first and feedback is saved", async (t) => {
   const { store, cleanup } = await createStore();
   t.after(cleanup);

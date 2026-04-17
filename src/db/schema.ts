@@ -23,6 +23,7 @@ import {
   foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { RunPrefetchContext } from "../runtime/run-context-types.js";
 
 // Custom bytea type for encrypted fields
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -72,6 +73,8 @@ export const runs = pgTable(
     tokenUsage: jsonb("token_usage"),
     teamId: text("team_id"),
     workItemId: uuid("work_item_id"),
+    prefetchContext: jsonb("prefetch_context").$type<RunPrefetchContext>(),
+    autoReviewSourceSubstate: text("auto_review_source_substate"),
   },
   (t) => [
     index("runs_runtime_idx").on(t.runtime),

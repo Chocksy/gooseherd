@@ -257,3 +257,23 @@ test("Jira read access envs are exposed through config", () => {
     process.env = originalEnv;
   }
 });
+
+test("Jira read access defaults stay unset without env vars", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      JIRA_BASE_URL: undefined,
+      JIRA_USER: undefined,
+      JIRA_API_TOKEN: undefined,
+      JIRA_REQUEST_TIMEOUT_MS: undefined,
+    };
+    const config = loadConfig();
+    assert.equal(config.jiraBaseUrl, undefined);
+    assert.equal(config.jiraUser, undefined);
+    assert.equal(config.jiraApiToken, undefined);
+    assert.equal(config.jiraRequestTimeoutMs, 10_000);
+  } finally {
+    process.env = originalEnv;
+  }
+});

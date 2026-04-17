@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { GitHubService } from "../src/github.js";
+import { JiraClient } from "../src/jira.js";
 import { buildPrBody, createPrNode } from "../src/pipeline/nodes/create-pr.js";
 import type { AgentAnalysis } from "../src/pipeline/nodes/implement.js";
 
@@ -227,6 +229,674 @@ test("createPrNode reuses an existing PR branch for auto-review runs without a p
   assert.equal(result.outcome, "success");
   assert.deepEqual(calls, ["findOrCreatePullRequest"]);
   assert.equal(ctxStore.get("prNumber"), 77);
+});
+
+test("GitHubService: unresolved review comments keep only unresolved threads", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    graphql: async () => ({
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: {
+              hasNextPage: false,
+              endCursor: undefined
+            },
+            nodes: [
+              {
+                id: "thread-1",
+                isResolved: false,
+                comments: {
+                  pageInfo: {
+                    hasNextPage: false,
+                    endCursor: undefined
+                  },
+                  nodes: [
+                    {
+                      id: "r1",
+                      author: { login: "reviewer1" },
+                      createdAt: "2026-04-17T10:00:00Z",
+                      body: "Please rename this",
+                      path: "src/app.ts",
+                      line: 42,
+                      side: "RIGHT",
+                      url: "https://github.com/org/repo/pull/1#discussion_r1"
+                    }
+                  ]
+                }
+              },
+              {
+                id: "thread-2",
+                isResolved: true,
+                comments: {
+                  pageInfo: {
+                    hasNextPage: false,
+                    endCursor: undefined
+                  },
+                  nodes: [
+                    {
+                      id: "r2",
+                      author: { login: "reviewer2" },
+                      createdAt: "2026-04-17T11:00:00Z",
+                      body: "Resolved feedback",
+                      path: "src/app.ts",
+                      line: 99,
+                      side: "RIGHT",
+                      url: "https://github.com/org/repo/pull/1#discussion_r2"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    })
+  };
+
+  const comments = await service.listUnresolvedReviewComments("org/repo", 1);
+
+  assert.deepEqual(comments, [
+    {
+      id: "r1",
+      authorLogin: "reviewer1",
+      createdAt: "2026-04-17T10:00:00Z",
+      body: "Please rename this",
+      path: "src/app.ts",
+      line: 42,
+      side: "RIGHT",
+      url: "https://github.com/org/repo/pull/1#discussion_r1",
+      threadResolved: false
+    }
+  ]);
+});
+
+test("GitHubService: CI snapshot keeps only failed runs and annotations", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            {
+              id: 10,
+              name: "lint",
+              status: "completed",
+              conclusion: "success"
+            },
+            {
+              id: 11,
+              name: "tests",
+              status: "completed",
+              conclusion: "failure"
+            }
+          ]
+        }
+      }),
+      listAnnotations: async ({ check_run_id }: { check_run_id: number }) => ({
+        data: check_run_id === 11
+          ? [
+              {
+                path: "src/app.ts",
+                start_line: 7,
+                message: "Expected true but got false",
+                annotation_level: "failure"
+              }
+            ]
+          : []
+      })
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(snapshot, {
+    headSha: "abc123",
+    conclusion: "failure",
+    failedRuns: [
+      {
+        id: 11,
+        name: "tests",
+        status: "completed",
+        conclusion: "failure",
+        detailsUrl: undefined,
+        startedAt: undefined,
+        completedAt: undefined
+      }
+    ],
+    failedAnnotations: [
+      {
+        checkRunName: "tests",
+        path: "src/app.ts",
+        line: 7,
+        message: "Expected true but got false",
+        level: "failure"
+      }
+    ]
+  });
+});
+
+test("GitHubService: CI snapshot reports no_ci without failed run details", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({ data: { check_runs: [] } })
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(snapshot, {
+    headSha: "abc123",
+    conclusion: "no_ci"
+  });
+});
+
+test("GitHubService: discussion comments paginate across pages", async () => {
+  const calls: Array<{ page: number; per_page: number }> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    user: { login: `alice-${index + 1}` },
+    created_at: `2026-04-17T10:${String(index).padStart(2, "0")}:00Z`,
+    body: `First page ${index + 1}`,
+    html_url: `https://github.com/org/repo/pull/1#issuecomment-${index + 1}`
+  }));
+  service.octokit = {
+    issues: {
+      listComments: async ({ page, per_page }: { page: number; per_page: number }) => {
+        calls.push({ page, per_page });
+        if (page === 1) {
+          return {
+            data: firstPage
+          };
+        }
+        if (page === 2) {
+          return {
+            data: [
+              {
+                id: 2,
+                user: { login: "bob" },
+                created_at: "2026-04-17T11:00:00Z",
+                body: "Second page",
+                html_url: "https://github.com/org/repo/pull/1#issuecomment-2"
+              }
+            ]
+          };
+        }
+        return { data: [] };
+      }
+    }
+  };
+
+  const comments = await service.listPullRequestDiscussionComments("org/repo", 1);
+
+  assert.deepEqual(calls, [
+    { page: 1, per_page: 100 },
+    { page: 2, per_page: 100 }
+  ]);
+  assert.equal(comments.length, 101);
+  assert.deepEqual(comments[0], {
+    id: "1",
+    authorLogin: "alice-1",
+    createdAt: "2026-04-17T10:00:00Z",
+    body: "First page 1",
+    url: "https://github.com/org/repo/pull/1#issuecomment-1"
+  });
+  assert.deepEqual(comments[99], {
+    id: "100",
+    authorLogin: "alice-100",
+    createdAt: "2026-04-17T10:99:00Z",
+    body: "First page 100",
+    url: "https://github.com/org/repo/pull/1#issuecomment-100"
+  });
+  assert.deepEqual(comments[100], {
+    id: "2",
+    authorLogin: "bob",
+    createdAt: "2026-04-17T11:00:00Z",
+    body: "Second page",
+    url: "https://github.com/org/repo/pull/1#issuecomment-2"
+  });
+});
+
+test("GitHubService: review comments paginate across pages", async () => {
+  const calls: Array<{ page: number; per_page: number }> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 10,
+    user: { login: `reviewer-a-${index + 1}` },
+    submitted_at: `2026-04-17T09:${String(index).padStart(2, "0")}:00Z`,
+    state: "APPROVED",
+    body: `Looks good ${index + 1}`,
+    html_url: `https://github.com/org/repo/pull/1#pullrequestreview-${index + 10}`
+  }));
+  service.octokit = {
+    pulls: {
+      listReviews: async ({ page, per_page }: { page: number; per_page: number }) => {
+        calls.push({ page, per_page });
+        if (page === 1) {
+          return {
+            data: firstPage
+          };
+        }
+        if (page === 2) {
+          return {
+            data: [
+              {
+                id: 11,
+                user: { login: "reviewer-b" },
+                submitted_at: "2026-04-17T12:00:00Z",
+                state: "CHANGES_REQUESTED",
+                body: "Please fix",
+                html_url: "https://github.com/org/repo/pull/1#pullrequestreview-11"
+              }
+            ]
+          };
+        }
+        return { data: [] };
+      }
+    }
+  };
+
+  const reviews = await service.listPullRequestReviews("org/repo", 1);
+
+  assert.deepEqual(calls, [
+    { page: 1, per_page: 100 },
+    { page: 2, per_page: 100 }
+  ]);
+  assert.equal(reviews.length, 101);
+  assert.deepEqual(reviews[0], {
+    id: "10",
+    authorLogin: "reviewer-a-1",
+    createdAt: "2026-04-17T09:00:00Z",
+    state: "APPROVED",
+    body: "Looks good 1",
+    url: "https://github.com/org/repo/pull/1#pullrequestreview-10"
+  });
+  assert.deepEqual(reviews[99], {
+    id: "109",
+    authorLogin: "reviewer-a-100",
+    createdAt: "2026-04-17T09:99:00Z",
+    state: "APPROVED",
+    body: "Looks good 100",
+    url: "https://github.com/org/repo/pull/1#pullrequestreview-109"
+  });
+  assert.deepEqual(reviews[100], {
+    id: "11",
+    authorLogin: "reviewer-b",
+    createdAt: "2026-04-17T12:00:00Z",
+    state: "CHANGES_REQUESTED",
+    body: "Please fix",
+    url: "https://github.com/org/repo/pull/1#pullrequestreview-11"
+  });
+});
+
+test("GitHubService: unresolved review comments paginate threads and thread comments", async () => {
+  const calls: Array<{ kind: string; after?: string; threadId?: string }> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    graphql: async (_query: string, variables: Record<string, unknown>) => {
+      if ("threadId" in variables) {
+        calls.push({ kind: "thread-comments", threadId: String(variables.threadId), after: variables.after as string | undefined });
+        if (variables.after === "comment-cursor-1") {
+          return {
+            node: {
+              comments: {
+                pageInfo: {
+                  hasNextPage: false,
+                  endCursor: "comment-cursor-2"
+                },
+                nodes: [
+                  {
+                    id: "c2",
+                    author: { login: "reviewer-1" },
+                    createdAt: "2026-04-17T10:05:00Z",
+                    body: "Second comment on thread 1",
+                    path: "src/app.ts",
+                    line: 43,
+                    side: "RIGHT",
+                    url: "https://github.com/org/repo/pull/1#discussion_r2"
+                  }
+                ]
+              }
+            }
+          };
+        }
+        return {
+          node: {
+            comments: {
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: undefined
+              },
+              nodes: []
+            }
+          }
+        };
+      }
+
+      calls.push({ kind: "threads", after: variables.after as string | undefined });
+      if (variables.after === "thread-cursor-1") {
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: {
+                  hasNextPage: false,
+                  endCursor: "thread-cursor-2"
+                },
+                nodes: [
+                  {
+                    id: "thread-2",
+                    isResolved: false,
+                    comments: {
+                      pageInfo: {
+                        hasNextPage: false,
+                        endCursor: undefined
+                      },
+                      nodes: [
+                        {
+                          id: "c3",
+                          author: { login: "reviewer-2" },
+                          createdAt: "2026-04-17T11:00:00Z",
+                          body: "Thread 2 comment",
+                          path: "src/app.ts",
+                          line: 99,
+                          side: "RIGHT",
+                          url: "https://github.com/org/repo/pull/1#discussion_r3"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        };
+      }
+
+      return {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: {
+                hasNextPage: true,
+                endCursor: "thread-cursor-1"
+              },
+              nodes: [
+                {
+                  id: "thread-1",
+                  isResolved: false,
+                  comments: {
+                    pageInfo: {
+                      hasNextPage: true,
+                      endCursor: "comment-cursor-1"
+                    },
+                    nodes: [
+                      {
+                        id: "c1",
+                        author: { login: "reviewer-1" },
+                        createdAt: "2026-04-17T10:00:00Z",
+                        body: "First comment on thread 1",
+                        path: "src/app.ts",
+                        line: 42,
+                        side: "RIGHT",
+                        url: "https://github.com/org/repo/pull/1#discussion_r1"
+                      }
+                    ]
+                  }
+                },
+                {
+                  id: "thread-resolved",
+                  isResolved: true,
+                  comments: {
+                    pageInfo: {
+                      hasNextPage: false,
+                      endCursor: undefined
+                    },
+                    nodes: [
+                      {
+                        id: "resolved",
+                        author: { login: "reviewer-3" },
+                        createdAt: "2026-04-17T12:00:00Z",
+                        body: "Resolved comment",
+                        path: "src/app.ts",
+                        line: 123,
+                        side: "RIGHT",
+                        url: "https://github.com/org/repo/pull/1#discussion_r4"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      };
+    }
+  };
+
+  const comments = await service.listUnresolvedReviewComments("org/repo", 1);
+
+  assert.deepEqual(calls, [
+    { kind: "threads", after: undefined },
+    { kind: "thread-comments", threadId: "thread-1", after: "comment-cursor-1" },
+    { kind: "threads", after: "thread-cursor-1" }
+  ]);
+  assert.deepEqual(comments, [
+    {
+      id: "c1",
+      authorLogin: "reviewer-1",
+      createdAt: "2026-04-17T10:00:00Z",
+      body: "First comment on thread 1",
+      path: "src/app.ts",
+      line: 42,
+      side: "RIGHT",
+      url: "https://github.com/org/repo/pull/1#discussion_r1",
+      threadResolved: false
+    },
+    {
+      id: "c2",
+      authorLogin: "reviewer-1",
+      createdAt: "2026-04-17T10:05:00Z",
+      body: "Second comment on thread 1",
+      path: "src/app.ts",
+      line: 43,
+      side: "RIGHT",
+      url: "https://github.com/org/repo/pull/1#discussion_r2",
+      threadResolved: false
+    },
+    {
+      id: "c3",
+      authorLogin: "reviewer-2",
+      createdAt: "2026-04-17T11:00:00Z",
+      body: "Thread 2 comment",
+      path: "src/app.ts",
+      line: 99,
+      side: "RIGHT",
+      url: "https://github.com/org/repo/pull/1#discussion_r3",
+      threadResolved: false
+    }
+  ]);
+});
+
+test("GitHubService: CI snapshot paginates failed runs and failed annotations", async () => {
+  const calls: Array<{ kind: string; page?: number; check_run_id?: number }> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async ({ page, per_page }: { page: number; per_page: number }) => {
+        calls.push({ kind: "check-runs", page });
+        if (page === 1) {
+          return {
+            data: {
+              check_runs: Array.from({ length: per_page }, (_, index) => ({
+                id: index + 1,
+                name: `check-${index + 1}`,
+                status: "completed",
+                conclusion: "success"
+              }))
+            }
+          };
+        }
+        return {
+          data: {
+            check_runs: [
+              {
+                id: 101,
+                name: "test-suite",
+                status: "completed",
+                conclusion: "failure",
+                details_url: "https://github.com/org/repo/actions/runs/101",
+                started_at: "2026-04-17T12:00:00Z",
+                completed_at: "2026-04-17T12:05:00Z"
+              }
+            ]
+          }
+        };
+      },
+      listAnnotations: async ({ check_run_id, page }: { check_run_id: number; page: number }) => {
+        calls.push({ kind: "annotations", check_run_id, page });
+        if (page === 1) {
+          return {
+            data: Array.from({ length: 100 }, (_, index) => ({
+              path: "src/app.ts",
+              start_line: index + 1,
+              message: `annotation-${index + 1}`,
+              annotation_level: "failure"
+            }))
+          };
+        }
+        return {
+          data: [
+            {
+              path: "src/app.ts",
+              start_line: 101,
+              message: "annotation-101",
+              annotation_level: "failure"
+            }
+          ]
+        };
+      }
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(calls, [
+    { kind: "check-runs", page: 1 },
+    { kind: "check-runs", page: 2 },
+    { kind: "annotations", check_run_id: 101, page: 1 },
+    { kind: "annotations", check_run_id: 101, page: 2 }
+  ]);
+  assert.equal(snapshot.conclusion, "failure");
+  assert.deepEqual(snapshot.failedRuns, [
+    {
+      id: 101,
+      name: "test-suite",
+      status: "completed",
+      conclusion: "failure",
+      detailsUrl: "https://github.com/org/repo/actions/runs/101",
+      startedAt: "2026-04-17T12:00:00Z",
+      completedAt: "2026-04-17T12:05:00Z"
+    }
+  ]);
+  assert.equal(snapshot.failedAnnotations?.length, 101);
+  assert.deepEqual(snapshot.failedAnnotations?.[0], {
+    checkRunName: "test-suite",
+    path: "src/app.ts",
+    line: 1,
+    message: "annotation-1",
+    level: "failure"
+  });
+  assert.deepEqual(snapshot.failedAnnotations?.[100], {
+    checkRunName: "test-suite",
+    path: "src/app.ts",
+    line: 101,
+    message: "annotation-101",
+    level: "failure"
+  });
+});
+
+test("JiraClient: comments paginate across pages", async () => {
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/comment?startAt=0&maxResults=100")) {
+        return new Response(JSON.stringify({
+          comments: Array.from({ length: 100 }, (_, index) => ({
+            id: index + 1,
+            author: { displayName: "Alice" },
+            created: `2026-04-17T10:${String(index).padStart(2, "0")}:00Z`,
+            body: `Comment ${index + 1}`
+          })),
+          isLast: false,
+          maxResults: 100,
+          startAt: 0,
+          total: 101
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/comment?startAt=100&maxResults=100")) {
+        return new Response(JSON.stringify({
+          comments: [
+            {
+              id: 101,
+              author: { displayName: "Bob" },
+              created: "2026-04-17T12:00:00Z",
+              body: "Comment 101"
+            }
+          ],
+          isLast: true,
+          maxResults: 100,
+          startAt: 100,
+          total: 101
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/issue/ABC-1?")) {
+        return new Response(JSON.stringify({
+          key: "ABC-1",
+          fields: {
+            summary: "Example issue",
+            status: { name: "In Progress" },
+            description: "Issue description"
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = new JiraClient({
+      jiraBaseUrl: "https://example.atlassian.net",
+      jiraUser: "jira-user@example.com",
+      jiraApiToken: "jira-token",
+      jiraRequestTimeoutMs: 5_000
+    });
+
+    const comments = await client.getComments("ABC-1");
+
+    assert.deepEqual(calls, [
+      "https://example.atlassian.net/rest/api/3/issue/ABC-1/comment?startAt=0&maxResults=100",
+      "https://example.atlassian.net/rest/api/3/issue/ABC-1/comment?startAt=100&maxResults=100"
+    ]);
+    assert.equal(comments.length, 101);
+    assert.deepEqual(comments[0], {
+      id: "1",
+      authorDisplayName: "Alice",
+      createdAt: "2026-04-17T10:00:00Z",
+      body: "Comment 1"
+    });
+    assert.deepEqual(comments[100], {
+      id: "101",
+      authorDisplayName: "Bob",
+      createdAt: "2026-04-17T12:00:00Z",
+      body: "Comment 101"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // ── Visual Evidence ──

@@ -44,6 +44,8 @@ function rowToRecord(row: RunRow): RunRecord {
     tokenUsage: row.tokenUsage as RunRecord["tokenUsage"],
     teamId: row.teamId ?? undefined,
     workItemId: row.workItemId ?? undefined,
+    prefetchContext: (row.prefetchContext ?? undefined) as RunRecord["prefetchContext"],
+    autoReviewSourceSubstate: row.autoReviewSourceSubstate ?? undefined,
   };
 }
 
@@ -104,6 +106,8 @@ export class RunStore {
       skipNodes: input.skipNodes,
       enableNodes: input.enableNodes,
       teamId: input.teamId,
+      prefetchContext: input.prefetchContext,
+      autoReviewSourceSubstate: input.autoReviewSourceSubstate,
     });
 
     return (await this.getRun(id))!;
@@ -233,6 +237,8 @@ export class RunStore {
         | "tokenUsage"
         | "title"
         | "workItemId"
+        | "prefetchContext"
+        | "autoReviewSourceSubstate"
       >
     >
   ): Promise<RunRecord> {
@@ -257,6 +263,8 @@ export class RunStore {
     if (update.tokenUsage !== undefined) dbUpdate.tokenUsage = update.tokenUsage;
     if (update.title !== undefined) dbUpdate.title = update.title;
     if (update.workItemId !== undefined) dbUpdate.workItemId = update.workItemId;
+    if (update.prefetchContext !== undefined) dbUpdate.prefetchContext = update.prefetchContext;
+    if (update.autoReviewSourceSubstate !== undefined) dbUpdate.autoReviewSourceSubstate = update.autoReviewSourceSubstate;
 
     await this.db.update(runs).set(dbUpdate).where(eq(runs.id, id));
     const result = await this.getRun(id);

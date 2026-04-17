@@ -25,6 +25,7 @@ const envSchema = z.object({
   DEFAULT_TEAM_SLACK_CHANNEL_NAME: z.string().optional(),
 
   JIRA_BASE_URL: z.string().optional(),
+  JIRA_CLOUD_ID: z.string().optional(),
   JIRA_USER: z.string().optional(),
   JIRA_API_TOKEN: z.string().optional(),
   JIRA_REQUEST_TIMEOUT_MS: z.string().optional(),
@@ -210,6 +211,7 @@ export interface AppConfig {
 
   /** Canonical Jira read-access config for future discovery/work-items integrations. */
   jiraBaseUrl?: string;
+  jiraCloudId?: string;
   jiraUser?: string;
   jiraApiToken?: string;
   jiraRequestTimeoutMs: number;
@@ -474,6 +476,7 @@ export function loadConfig(): AppConfig {
     defaultTeamSlackChannelId: parsed.DEFAULT_TEAM_SLACK_CHANNEL_ID?.trim() || undefined,
     defaultTeamSlackChannelName: parsed.DEFAULT_TEAM_SLACK_CHANNEL_NAME?.trim() || "#general",
     jiraBaseUrl: parsed.JIRA_BASE_URL?.trim() || undefined,
+    jiraCloudId: parsed.JIRA_CLOUD_ID?.trim() || undefined,
     jiraUser: parsed.JIRA_USER?.trim() || undefined,
     jiraApiToken: parsed.JIRA_API_TOKEN?.trim() || undefined,
     jiraRequestTimeoutMs: parseInteger(parsed.JIRA_REQUEST_TIMEOUT_MS, 10_000),

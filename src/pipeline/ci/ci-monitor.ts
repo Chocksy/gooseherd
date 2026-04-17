@@ -5,6 +5,7 @@
  */
 
 import type { CICheckRun, CICheckAnnotation } from "../../github.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 // ── Types ──
 
@@ -139,6 +140,7 @@ export function buildCIFixPrompt(
   logTail: string,
   changedFiles: string[]
 ): string {
+  const sanitizedChangedFiles = filterInternalGeneratedFiles(changedFiles);
   const lines: string[] = [
     "CI has failed on your PR. Fix the following failures only.",
     ""
@@ -157,9 +159,9 @@ export function buildCIFixPrompt(
     lines.push("```", logTail, "```", "");
   }
 
-  if (changedFiles.length > 0) {
+  if (sanitizedChangedFiles.length > 0) {
     lines.push("## Your Changed Files", "");
-    for (const f of changedFiles) {
+    for (const f of sanitizedChangedFiles) {
       lines.push(`- ${f}`);
     }
     lines.push("");

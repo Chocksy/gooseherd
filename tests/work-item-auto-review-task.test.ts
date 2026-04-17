@@ -20,8 +20,14 @@ test("auto review task renderer includes repo, PR metadata, Jira key, and title"
   assert.ok(rendered.includes("HBL-404"));
   assert.ok(rendered.includes("Add auto-review orchestration"));
   assert.match(rendered, /review actionable pr comments/i);
+  assert.match(rendered, /comments .* hints, not requirements/i);
+  assert.match(rendered, /ignore stale or irrelevant comments/i);
   assert.match(rendered, /perform a self-review of the current diff/i);
   assert.match(rendered, /apply the minimal fixes needed/i);
   assert.match(rendered, /validate and push/i);
   assert.match(rendered, /do not merge the pr/i);
+  assert.match(rendered, /GOOSEHERD_REVIEW_SUMMARY/);
+  assert.match(rendered, /selectedFindings/i);
+  assert.match(rendered, /ignoredFindings/i);
+  assert.match(rendered, /rationale/i);
 });

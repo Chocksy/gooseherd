@@ -51,6 +51,7 @@ test("control-plane store issues one run token and deduplicates completion by id
     artifactState: "complete",
     commitSha: "abc123",
     changedFiles: ["a.ts", "b.ts"],
+    internalArtifacts: ["AGENTS.md"],
     prUrl: "https://example.com/pr/1",
     title: "Fix bug in runtime persistence",
   });
@@ -60,6 +61,7 @@ test("control-plane store issues one run token and deduplicates completion by id
     artifactState: "complete",
     commitSha: "abc123",
     changedFiles: ["a.ts", "b.ts"],
+    internalArtifacts: ["AGENTS.md"],
     prUrl: "https://example.com/pr/1",
     title: "Fix bug in runtime persistence",
   });
@@ -238,6 +240,7 @@ test("reconciler finalizes completed when completion exists and runtime reports 
     artifactState: "complete",
     commitSha: "abc123",
     changedFiles: ["a.ts"],
+    internalArtifacts: ["AGENTS.md"],
     title: "Complete run",
   });
 
@@ -254,6 +257,7 @@ test("reconciler finalizes completed when completion exists and runtime reports 
   assert.ok(updated?.finishedAt);
   assert.equal(updated?.commitSha, "abc123");
   assert.deepEqual(updated?.changedFiles, ["a.ts"]);
+  assert.deepEqual(updated?.internalArtifacts, ["AGENTS.md"]);
   assert.equal(updated?.title, "Complete run");
   await cleanup();
 });

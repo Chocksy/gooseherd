@@ -9,10 +9,12 @@ import os from "node:os";
 import path from "node:path";
 import { ContextBag } from "../src/pipeline/context-bag.js";
 import { localTestNode } from "../src/pipeline/nodes/local-test.js";
+import { rubySyntaxGateNode } from "../src/pipeline/nodes/ruby-syntax-gate.js";
 import { notifyNode } from "../src/pipeline/nodes/notify.js";
 import type { NodeConfig, NodeDeps } from "../src/pipeline/types.js";
 import type { AppConfig } from "../src/config.js";
 import type { RunRecord } from "../src/types.js";
+import { runShellCapture } from "../src/pipeline/shell.js";
 
 // ── Helpers ──
 
@@ -52,6 +54,22 @@ function makeDeps(overrides: Partial<NodeDeps> & { configOverrides?: Partial<App
     onPhase: async () => {},
     ...depsOverrides
   };
+}
+
+async function makeGitRepo(prefix = "pipeline-node-git-"): Promise<{ repoDir: string; logFile: string; cleanup: () => Promise<void> }> {
+  const repoDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const logFile = path.join(repoDir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  await runShellCapture("git init", { cwd: repoDir, logFile });
+  await runShellCapture("git config user.email 'test@test.com'", { cwd: repoDir, logFile });
+  await runShellCapture("git config user.name 'Test User'", { cwd: repoDir, logFile });
+  await writeFile(path.join(repoDir, ".gitkeep"), "", "utf8");
+  await runShellCapture("git add -A", { cwd: repoDir, logFile });
+  await runShellCapture("git commit -m 'init'", { cwd: repoDir, logFile });
+  const cleanup = async () => {
+    await rm(repoDir, { recursive: true, force: true });
+  };
+  return { repoDir, logFile, cleanup };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -117,6 +135,67 @@ describe("localTestNode", () => {
       () => localTestNode(makeNodeConfig("local_test"), ctx, deps),
       { message: /required key 'repoDir' is missing/ }
     );
+  });
+});
+
+describe("rubySyntaxGateNode", () => {
+  test("skips when there are no changed Ruby files", async (t) => {
+    const { repoDir, logFile, cleanup } = await makeGitRepo("ruby-gate-skip-");
+    t.after(cleanup);
+
+    await writeFile(path.join(repoDir, "index.ts"), "export const value = 1;\n", "utf8");
+
+    const ctx = new ContextBag({ repoDir });
+    const deps = makeDeps({ logFile });
+
+    const result = await rubySyntaxGateNode(makeNodeConfig("ruby_syntax_gate"), ctx, deps);
+    assert.equal(result.outcome, "skipped");
+  });
+
+  test("returns success when changed Ruby files pass syntax check", async (t) => {
+    const { repoDir, logFile, cleanup } = await makeGitRepo("ruby-gate-pass-");
+    t.after(cleanup);
+
+    await writeFile(path.join(repoDir, "worker.rb"), "class Worker\n  def call\n    :ok\n  end\nend\n", "utf8");
+
+    const ctx = new ContextBag({ repoDir });
+    const deps = makeDeps({ logFile });
+
+    const result = await rubySyntaxGateNode(makeNodeConfig("ruby_syntax_gate"), ctx, deps);
+    assert.equal(result.outcome, "success");
+  });
+
+  test("returns failure with rawOutput when a changed Ruby file has invalid syntax", async (t) => {
+    const { repoDir, logFile, cleanup } = await makeGitRepo("ruby-gate-fail-");
+    t.after(cleanup);
+
+    await writeFile(path.join(repoDir, "broken.rb"), "class Broken\n  def call(\nend\n", "utf8");
+
+    const ctx = new ContextBag({ repoDir });
+    const deps = makeDeps({ logFile });
+
+    const result = await rubySyntaxGateNode(makeNodeConfig("ruby_syntax_gate"), ctx, deps);
+    assert.equal(result.outcome, "failure");
+    assert.match(result.error ?? "", /Ruby syntax check failed/i);
+    assert.ok(result.rawOutput?.includes("broken.rb"));
+  });
+});
+
+describe("pipeline-loader accepts ruby_syntax_gate", () => {
+  test("ruby_syntax_gate is a valid registered action", async () => {
+    const { loadPipelineFromString } = await import("../src/pipeline/pipeline-loader.js");
+
+    const pipeline = loadPipelineFromString(`
+version: 1
+name: "ruby-syntax-gate-test"
+nodes:
+  - id: ruby
+    type: deterministic
+    action: ruby_syntax_gate
+`);
+
+    assert.equal(pipeline.nodes.length, 1);
+    assert.equal(pipeline.nodes[0].action, "ruby_syntax_gate");
   });
 });
 

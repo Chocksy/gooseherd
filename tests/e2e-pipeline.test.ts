@@ -13,7 +13,22 @@ import type { RunRecord, ExecutionResult, PipelinePhase } from "../src/types.js"
 // Load .env for real tokens
 dotenv.config({ override: true });
 
+const ENABLED = process.env["E2E_PIPELINE"] === "1";
+
 // ── Helpers ─────────────────────────────────────────
+
+function getE2EPipelineSkipReason(): string | undefined {
+  if (!ENABLED) {
+    return "Set E2E_PIPELINE=1 to run this test";
+  }
+
+  const authMode = resolveGitHubAuthMode(loadConfig());
+  if (authMode === "none") {
+    return "No GitHub auth configured (set GITHUB_TOKEN or GitHub App credentials) — skipping E2E test";
+  }
+
+  return undefined;
+}
 
 function makeTestRun(overrides: Partial<RunRecord> = {}): RunRecord {
   const id = `e2e-test-${Date.now()}`;
@@ -54,10 +69,9 @@ function makeTestConfig(workRoot: string, dataDir: string): AppConfig {
 // ── E2E: Full Default Pipeline ──────────────────────
 
 test("E2E: full default pipeline with epiccoders/pxls (dummy agent, dry-run)", async (t) => {
-  // Skip if no GitHub auth configured (PAT or App)
-  const authMode = resolveGitHubAuthMode(loadConfig());
-  if (authMode === "none") {
-    t.skip("No GitHub auth configured (set GITHUB_TOKEN or GitHub App credentials) — skipping E2E test");
+  const skipReason = getE2EPipelineSkipReason();
+  if (skipReason) {
+    t.skip(skipReason);
     return;
   }
 
@@ -131,10 +145,9 @@ test("E2E: full default pipeline with epiccoders/pxls (dummy agent, dry-run)", a
 // ── E2E: Prompt contains task-type-specific instructions ──
 
 test("E2E: hydrate-context injects task-type-aware instructions", async (t) => {
-  // Skip if no GitHub auth configured (PAT or App)
-  const authMode2 = resolveGitHubAuthMode(loadConfig());
-  if (authMode2 === "none") {
-    t.skip("No GitHub auth configured (set GITHUB_TOKEN or GitHub App credentials) — skipping E2E test");
+  const skipReason = getE2EPipelineSkipReason();
+  if (skipReason) {
+    t.skip(skipReason);
     return;
   }
 

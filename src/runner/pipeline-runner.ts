@@ -162,6 +162,7 @@ export async function runPipelineRunner(
       artifactState: "complete",
       commitSha: result.commitSha,
       changedFiles: result.changedFiles,
+      internalArtifacts: result.internalArtifacts,
       prUrl: result.prUrl,
       tokenUsage: result.tokenUsage,
       title: result.title,

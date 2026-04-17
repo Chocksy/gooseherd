@@ -21,6 +21,7 @@ import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import { ContextBag } from "./context-bag.js";
 import { loadPipeline } from "./pipeline-loader.js";
 import { appendLog, runInSandboxContext } from "./shell.js";
+import { filterInternalGeneratedFiles } from "./internal-generated-files.js";
 import { logInfo } from "../logger.js";
 import type { ContainerManager } from "../sandbox/container-manager.js";
 import type { SandboxHandle } from "../sandbox/types.js";
@@ -195,7 +196,8 @@ export class PipelineEngine {
     // Build ExecutionResult from context bag
     const branchName = run.branchName;
     const commitSha = ctx.get<string>("commitSha") ?? "";
-    const changedFiles = ctx.get<string[]>("changedFiles") ?? [];
+    const changedFiles = filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []);
+    const internalArtifacts = ctx.get<string[]>("internalArtifacts");
     const prUrl = ctx.get<string>("prUrl");
 
     if (result.outcome === "failure") {
@@ -208,6 +210,7 @@ export class PipelineEngine {
       logsPath: logFile,
       commitSha,
       changedFiles,
+      internalArtifacts,
       prUrl,
       tokenUsage: tokenUsage ?? undefined,
       title: ctx.get<string>("generatedTitle")

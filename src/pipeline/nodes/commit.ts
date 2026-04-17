@@ -30,10 +30,10 @@ export async function commitNode(
   const taskSummary = (isFollowUp ? run.feedbackNote ?? run.task : run.task).slice(0, 72);
   const commitMsg = `${config.appSlug}: ${taskSummary}`;
 
-  const { commitSha, changedFiles } = await commitCaptureAndPush(repoDir, commitMsg, logFile);
+  const { commitSha, changedFiles, internalArtifacts } = await commitCaptureAndPush(repoDir, commitMsg, logFile);
 
   return {
     outcome: "success",
-    outputs: { commitSha, changedFiles }
+    outputs: { commitSha, changedFiles, internalArtifacts }
   };
 }

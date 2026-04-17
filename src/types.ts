@@ -61,6 +61,7 @@ export interface RunRecord {
   statusMessageTs?: string;
   commitSha?: string;
   changedFiles?: string[];
+  internalArtifacts?: string[];
   prUrl?: string;
   feedback?: RunFeedback;
   error?: string;
@@ -129,6 +130,7 @@ export interface ExecutionResult {
   logsPath: string;
   commitSha: string;
   changedFiles: string[];
+  internalArtifacts?: string[];
   prUrl?: string;
   tokenUsage?: TokenUsage;
   title?: string;

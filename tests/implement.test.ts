@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { analyzeAgentOutput } from "../src/pipeline/nodes/implement.js";
+import {
+  analyzeAgentOutput,
+  persistAutoReviewSummaryArtifact,
+} from "../src/pipeline/nodes/implement.js";
 import { runShellCapture } from "../src/pipeline/shell.js";
 
 // ── Helper: create a real git repo with changes ──
@@ -48,6 +51,91 @@ test("analyzeAgentOutput: AGENTS.md only → verdict empty", async (t) => {
   assert.equal(result.verdict, "empty");
   assert.deepEqual(result.filesChanged, []);
   assert.equal(result.diffStats.filesCount, 0);
+});
+
+test("analyzeAgentOutput: context conflict sentinel → verdict context_conflict", async (t) => {
+  const { dir, logFile, cleanup } = await makeGitRepo();
+  t.after(cleanup);
+
+  const result = await analyzeAgentOutput(
+    dir,
+    "GOOSEHERD_CONTEXT_CONFLICT: Jira describes a different scope than the current branch diff",
+    "",
+    logFile
+  );
+
+  assert.equal(result.verdict, "context_conflict");
+  assert.equal(result.contextConflictReason, "Jira describes a different scope than the current branch diff");
+  assert.deepEqual(result.filesChanged, []);
+  assert.equal(result.diffStats.filesCount, 0);
+});
+
+test("persistAutoReviewSummaryArtifact: writes parsed summary for auto-review runs", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-review-summary-"));
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const artifact = await persistAutoReviewSummaryArtifact(
+    "work-item:auto-review",
+    dir,
+    [
+      "Finished review.",
+      'GOOSEHERD_REVIEW_SUMMARY: {"selectedFindings":["race in queued message completion","missing bot_type filter"],"ignoredFindings":["stale naming comment"],"rationale":"I fixed the issues that still reproduced in the current diff and ignored the stale naming suggestion."}',
+    ].join("\n"),
+    ["queued_message_call_job.rb", "queued_message_service.rb"]
+  );
+
+  assert.ok(artifact, "Expected auto-review summary artifact to be created");
+  assert.equal(artifact?.path, "auto-review-summary.json");
+  assert.deepEqual(artifact?.summary.selectedFindings, [
+    "race in queued message completion",
+    "missing bot_type filter",
+  ]);
+  assert.deepEqual(artifact?.summary.ignoredFindings, ["stale naming comment"]);
+  assert.match(artifact?.summary.rationale ?? "", /fixed the issues/i);
+
+  const saved = JSON.parse(await readFile(path.join(dir, "auto-review-summary.json"), "utf8")) as {
+    selectedFindings: string[];
+    ignoredFindings: string[];
+    rationale: string;
+  };
+  assert.deepEqual(saved, artifact?.summary);
+});
+
+test("persistAutoReviewSummaryArtifact: falls back to context conflict rationale", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-review-conflict-"));
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const artifact = await persistAutoReviewSummaryArtifact(
+    "work-item:auto-review",
+    dir,
+    "GOOSEHERD_CONTEXT_CONFLICT: Jira describes a different scope than the current branch diff",
+    []
+  );
+
+  assert.ok(artifact, "Expected conflict runs to still emit a summary artifact");
+  assert.deepEqual(artifact?.summary.selectedFindings, []);
+  assert.deepEqual(artifact?.summary.ignoredFindings, []);
+  assert.equal(
+    artifact?.summary.rationale,
+    "Context conflict: Jira describes a different scope than the current branch diff"
+  );
+});
+
+test("persistAutoReviewSummaryArtifact: stores heuristic grounding metrics", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-review-grounding-"));
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const artifact = await persistAutoReviewSummaryArtifact(
+    "work-item:auto-review",
+    dir,
+    'GOOSEHERD_REVIEW_SUMMARY: {"selectedFindings":["queued message race","missing bot_type filter"],"ignoredFindings":["rename unrelated helper"],"rationale":"The queue-specific findings still matched the changed files."}',
+    ["app/jobs/queued_message_call_job.rb", "app/services/queued_message_service.rb"]
+  );
+
+  assert.ok(artifact?.summary.groundingMetrics, "Expected grounding metrics to be present");
+  assert.equal(artifact?.summary.groundingMetrics?.selectedFindingCount, 2);
+  assert.equal(artifact?.summary.groundingMetrics?.selectedFindingOverlapCount, 1);
+  assert.equal(artifact?.summary.groundingMetrics?.selectedFindingOverlapRatio, 0.5);
 });
 
 test("analyzeAgentOutput: normal changes → verdict clean", async (t) => {

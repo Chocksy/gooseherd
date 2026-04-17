@@ -8,6 +8,8 @@
  * Pure logic, no side effects. Testable without pipeline infra.
  */
 
+import { isInternalGeneratedFile } from "../internal-generated-files.js";
+
 export interface ForbiddenFilesResult {
   verdict: "pass" | "soft_fail" | "hard_fail";
   deniedFiles: string[];
@@ -95,6 +97,11 @@ export function checkForbiddenFiles(
 
   // Check each file against deny patterns
   for (const file of changedFiles) {
+    if (isInternalGeneratedFile(file)) {
+      deniedFiles.push(file);
+      reasons.push(`${file} is an internal-generated Gooseherd runtime file`);
+      continue;
+    }
     for (let i = 0; i < denyRegexes.length; i++) {
       if (denyRegexes[i]!.test(file)) {
         deniedFiles.push(file);

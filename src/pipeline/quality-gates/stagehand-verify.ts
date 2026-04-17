@@ -14,6 +14,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { extractJSON, type LLMCallerConfig } from "../../llm/caller.js";
 import { verifyFeatureVisually, type VisualVerifyResult } from "./browser-verify.js";
 import { appendLog } from "../shell.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 import { CdpScreencast } from "./cdp-screencast.js";
 import { CdpConsoleCapture } from "./cdp-console-capture.js";
 import { CdpNetworkCapture } from "./cdp-network-capture.js";
@@ -128,10 +129,11 @@ const RAILS_ROUTE_PATTERNS: Array<{ pattern: RegExp; route: (m: RegExpMatchArray
  * Helps the Stagehand agent navigate to the right page.
  */
 export function extractUrlHints(task: string, changedFiles: string[]): string[] {
+  const sanitizedChangedFiles = filterInternalGeneratedFiles(changedFiles);
   const hints = new Set<string>();
 
   // 1. Parse changed files for Rails routes
-  for (const file of changedFiles) {
+  for (const file of sanitizedChangedFiles) {
     for (const { pattern, route } of RAILS_ROUTE_PATTERNS) {
       const match = file.match(pattern);
       if (match) {
@@ -181,8 +183,9 @@ export function buildInstruction(
     password: string;
   }
 ): string {
-  const fileList = changedFiles.length > 0
-    ? changedFiles.map(f => `  - ${f}`).join("\n")
+  const sanitizedChangedFiles = filterInternalGeneratedFiles(changedFiles);
+  const fileList = sanitizedChangedFiles.length > 0
+    ? sanitizedChangedFiles.map(f => `  - ${f}`).join("\n")
     : "  (none available)";
 
   let instruction = `Verify that this task was implemented correctly on the live page.\n\nTask: ${task}\n\nFiles changed:\n${fileList}`;
@@ -192,7 +195,7 @@ export function buildInstruction(
   }
 
   // Add navigation hints from file analysis and task text
-  const urlHints = extractUrlHints(task, changedFiles);
+  const urlHints = extractUrlHints(task, sanitizedChangedFiles);
   if (urlHints.length > 0) {
     instruction += `\n\n## Navigation hints\nBased on the changed files and task, these pages are likely relevant:\n${urlHints.map(h => `  - ${h}`).join("\n")}\nNavigate to these paths on the review app URL to verify the changes.`;
   }

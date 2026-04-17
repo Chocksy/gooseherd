@@ -62,6 +62,14 @@ nodes:
       max_rounds: 2
       until: "local_test.exit_code == 0"
 
+  - id: ruby_syntax_gate
+    type: deterministic
+    action: ruby_syntax_gate
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
+
   # Quality gates — run after validation, before commit
   - id: diff_gate
     type: conditional

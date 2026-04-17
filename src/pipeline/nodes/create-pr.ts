@@ -1,7 +1,8 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import type { AgentAnalysis } from "./implement.js";
+import type { AgentAnalysis, AutoReviewGroundingMetrics } from "./implement.js";
 import { hasReusableBranch } from "../branch-reuse.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 /**
  * Create PR node: create or update pull request via GitHub API.
@@ -26,6 +27,7 @@ export async function createPrNode(
   const prTitle = `${config.appSlug}: ${titleText}`;
   const gateReport = ctx.get<Array<{ gate: string; verdict: string; reasons: string[] }>>("gateReport");
   const agentAnalysis = ctx.get<AgentAnalysis>("agentAnalysis");
+  const autoReviewGroundingMetrics = ctx.get<AutoReviewGroundingMetrics>("autoReviewGroundingMetrics");
   const commitSha = ctx.get<string>("commitSha");
   const changedFiles = ctx.get<string[]>("changedFiles");
 
@@ -36,7 +38,7 @@ export async function createPrNode(
   const prBody = buildPrBody(
     run, resolvedBaseBranch, config.appName, isFollowUp,
     gateReport, agentAnalysis, commitSha, changedFiles,
-    undefined, undefined, undefined, changeSummary
+    undefined, undefined, undefined, changeSummary, autoReviewGroundingMetrics
   );
 
   const prResult = reusesExistingBranch
@@ -76,7 +78,8 @@ export function buildPrBody(
   screenshotUrl?: string,
   videoUrl?: string,
   videoEmbedUrl?: string,
-  changeSummary?: string
+  changeSummary?: string,
+  autoReviewGroundingMetrics?: AutoReviewGroundingMetrics
 ): string {
   const lines: string[] = [];
 
@@ -111,7 +114,7 @@ export function buildPrBody(
     );
   }
 
-  const filesToShow = changedFiles ?? agentAnalysis?.filesChanged ?? [];
+  const filesToShow = filterInternalGeneratedFiles(changedFiles ?? agentAnalysis?.filesChanged ?? []);
   if (filesToShow.length > 0 && filesToShow.length <= 30) {
     lines.push("| File |", "|------|");
     for (const file of filesToShow) {
@@ -135,6 +138,16 @@ export function buildPrBody(
       }
       lines.push("");
     }
+  }
+
+  if (autoReviewGroundingMetrics && autoReviewGroundingMetrics.selectedFindingCount > 0) {
+    const overlapPercent = Math.round(autoReviewGroundingMetrics.selectedFindingOverlapRatio * 100);
+    lines.push(
+      "**Auto-review grounding (heuristic):**",
+      "",
+      `- Selected findings overlapping changed-file tokens: ${String(autoReviewGroundingMetrics.selectedFindingOverlapCount)}/${String(autoReviewGroundingMetrics.selectedFindingCount)} (${String(overlapPercent)}%)`,
+      ""
+    );
   }
 
   // ── Quality gates (always show all, not just warnings) ──

@@ -8,6 +8,7 @@ import { getExpectedOutput, buildRepoSummary, buildAgentsMd, hydrateContextNode 
 import { ContextBag } from "../src/pipeline/context-bag.js";
 import type { RunPrefetchContext } from "../src/runtime/run-context-types.js";
 import type { NodeDeps } from "../src/pipeline/types.js";
+import { runShellCapture } from "../src/pipeline/shell.js";
 
 // ── getExpectedOutput ──
 
@@ -54,6 +55,33 @@ test("getExpectedOutput: empty string falls back to chore", () => {
 
 async function makeTempRepo(prefix = "repo-test-"): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+async function makeRepoWithRemoteBranchDiff(prefix = "repo-diff-test-"): Promise<{ rootDir: string; repoDir: string }> {
+  const rootDir = await makeTempRepo(prefix);
+  const originDir = path.join(rootDir, "origin.git");
+  const seedDir = path.join(rootDir, "seed");
+  const logFile = path.join(rootDir, "git.log");
+  await writeFile(logFile, "", "utf8");
+
+  await runShellCapture("git init --bare origin.git", { cwd: rootDir, logFile });
+  await runShellCapture(`git clone ${originDir} ${seedDir}`, { cwd: rootDir, logFile });
+  await runShellCapture("git config user.email 'test@test.com'", { cwd: seedDir, logFile });
+  await runShellCapture("git config user.name 'Test User'", { cwd: seedDir, logFile });
+  await runShellCapture("git checkout -b main", { cwd: seedDir, logFile });
+
+  await writeFile(path.join(seedDir, "base.txt"), "base\n", "utf8");
+  await runShellCapture("git add -A", { cwd: seedDir, logFile });
+  await runShellCapture("git commit -m 'base'", { cwd: seedDir, logFile });
+  await runShellCapture("git push -u origin main", { cwd: seedDir, logFile });
+
+  await runShellCapture("git checkout -b feature/current-diff", { cwd: seedDir, logFile });
+  await writeFile(path.join(seedDir, "feature.txt"), "feature branch change\n", "utf8");
+  await runShellCapture("git add -A", { cwd: seedDir, logFile });
+  await runShellCapture("git commit -m 'feature change'", { cwd: seedDir, logFile });
+  await runShellCapture("git push -u origin feature/current-diff", { cwd: seedDir, logFile });
+
+  return { rootDir, repoDir: seedDir };
 }
 
 test("buildRepoSummary: returns directory structure for repo with subdirs", async (t) => {
@@ -432,6 +460,66 @@ test("hydrateContextNode: renders prefetched context sections ahead of instructi
   assert.ok(content.includes("src/pipeline/nodes/hydrate-context.ts:123"), "Should include inline comment location");
   assert.ok(content.includes("Expected ordering to include prefetched sections."), "Should include CI annotations");
   assert.ok(content.includes("Eve"), "Should include Jira comment author");
+});
+
+test("hydrateContextNode: includes current branch diff and conflict instructions for prefetched review context", async (t) => {
+  const { rootDir, repoDir } = await makeRepoWithRemoteBranchDiff();
+  const promptFile = path.join(rootDir, "task.md");
+  const logFile = path.join(rootDir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(rootDir, { recursive: true, force: true }); });
+
+  const ctx = new ContextBag({
+    repoDir,
+    promptFile,
+    resolvedBaseBranch: "main",
+    prefetchContext: makePrefetchContext({
+      meta: {
+        fetchedAt: "2026-04-17T00:00:00.000Z",
+        sources: ["github_pr"],
+      },
+      jira: undefined,
+    }),
+  });
+  const deps = makeMockDeps({ logFile });
+
+  await hydrateContextNode({ id: "hydrate", type: "deterministic", action: "hydrate_context" }, ctx, deps);
+
+  const content = await readFile(promptFile, "utf8");
+  assert.ok(content.includes("### Current Branch Diff"), "Should include current branch diff section");
+  assert.ok(content.includes("feature branch change"), "Should include the current branch diff content");
+  assert.ok(content.includes("source of truth for code changes"), "Should instruct the agent to trust the current diff");
+  assert.ok(content.includes("Do not treat comments as mandatory tasks"), "Should frame comments as advisory only");
+  assert.ok(content.includes("Only act on a comment if the current diff and branch state show the problem still exists"), "Should require proving comment relevance");
+  assert.ok(content.includes("Ignore comments that would require expanding scope"), "Should tell the agent to ignore off-scope comments");
+  assert.ok(content.includes("GOOSEHERD_CONTEXT_CONFLICT"), "Should document the explicit refusal sentinel");
+});
+
+test("hydrateContextNode: auto-review runs require structured review summary output", async (t) => {
+  const dir = await makeTempRepo();
+  const repoDir = path.join(dir, "repo");
+  await mkdir(repoDir, { recursive: true });
+  const promptFile = path.join(dir, "task.md");
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const ctx = new ContextBag({ repoDir, promptFile });
+  const deps = makeMockDeps({
+    logFile,
+    run: {
+      ...makeMockDeps().run,
+      requestedBy: "work-item:auto-review",
+    },
+  });
+
+  await hydrateContextNode({ id: "hydrate", type: "deterministic", action: "hydrate_context" }, ctx, deps);
+
+  const content = await readFile(promptFile, "utf8");
+  assert.ok(content.includes("GOOSEHERD_REVIEW_SUMMARY"), "Should require the structured review summary sentinel");
+  assert.ok(content.includes("selectedFindings"), "Should document the summary JSON shape");
+  assert.ok(content.includes("ignoredFindings"), "Should document the ignored findings field");
+  assert.ok(content.includes("rationale"), "Should document the rationale field");
 });
 
 test("hydrateContextNode: falls back to run prefetch context and omits empty prefetched sections", async (t) => {

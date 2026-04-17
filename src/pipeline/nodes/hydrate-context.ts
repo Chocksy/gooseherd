@@ -4,7 +4,7 @@ import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import type { RunRecord } from "../../types.js";
 import type { RunPrefetchContext } from "../../runtime/run-context-types.js";
-import { runShellCapture } from "../shell.js";
+import { runShellCapture, shellEscape } from "../shell.js";
 
 /**
  * Hydrate context node: build prompt file with run context and instructions.
@@ -88,10 +88,20 @@ export async function hydrateContextNode(
   if (prefetchSections.length > 0) {
     sections.push(...prefetchSections, "");
   }
+  const currentBranchDiff = await getCurrentBranchDiff(
+    repoDir,
+    deps.logFile,
+    ctx.get<string>("resolvedBaseBranch") ?? run.baseBranch
+  );
+  if (currentBranchDiff) {
+    sections.push("### Current Branch Diff", "", "```diff", currentBranchDiff, "```", "");
+  }
 
   const implementationPlan = ctx.get<string>("implementationPlan");
 
   const executionMode = ctx.get<string>("executionMode") ?? "standard";
+  const externalContextInstructions = getExternalContextInstructions(prefetchContext);
+  const autoReviewSummaryInstructions = getAutoReviewSummaryInstructions(run);
 
   sections.push(
     "## Instructions",
@@ -102,6 +112,10 @@ export async function hydrateContextNode(
     "",
     `Task type: ${taskType}`,
     "",
+    ...externalContextInstructions,
+    ...(externalContextInstructions.length > 0 ? [""] : []),
+    ...autoReviewSummaryInstructions,
+    ...(autoReviewSummaryInstructions.length > 0 ? [""] : []),
     "Task:",
     parentContext?.feedbackNote ?? run.task,
     "",
@@ -642,6 +656,7 @@ export function buildAgentsMd(
 // ── Parent diff extraction for follow-up runs ──
 
 const MAX_DIFF_CHARS = 3000;
+const MAX_CURRENT_BRANCH_DIFF_CHARS = 4000;
 
 async function getParentDiff(repoDir: string, logFile: string): Promise<string | undefined> {
   try {
@@ -662,6 +677,67 @@ async function getParentDiff(repoDir: string, logFile: string): Promise<string |
   } catch {
     return undefined;
   }
+}
+
+async function getCurrentBranchDiff(repoDir: string, logFile: string, baseBranch?: string): Promise<string | undefined> {
+  if (!baseBranch?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const remoteBaseRef = shellEscape(`origin/${baseBranch}`);
+    const localBaseRef = shellEscape(baseBranch);
+    let diffResult = await runShellCapture(
+      `git diff ${remoteBaseRef}...HEAD --unified=3`,
+      { cwd: repoDir, logFile }
+    );
+    if (diffResult.code !== 0 || !diffResult.stdout.trim()) {
+      diffResult = await runShellCapture(
+        `git diff ${localBaseRef}...HEAD --unified=3`,
+        { cwd: repoDir, logFile }
+      );
+    }
+    if (diffResult.code !== 0 || !diffResult.stdout.trim()) {
+      return undefined;
+    }
+
+    const diff = diffResult.stdout;
+    if (diff.length <= MAX_CURRENT_BRANCH_DIFF_CHARS) {
+      return diff;
+    }
+    return diff.slice(0, MAX_CURRENT_BRANCH_DIFF_CHARS) + "\n... (truncated)";
+  } catch {
+    return undefined;
+  }
+}
+
+function getExternalContextInstructions(prefetchContext: RunPrefetchContext | undefined): string[] {
+  if (!prefetchContext?.github && !prefetchContext?.jira) {
+    return [];
+  }
+
+  return [
+    "- Use the current branch state and diff as the source of truth for code changes.",
+    "- Treat PR body, Jira, discussion comments, and review comments as hints that may be stale or contradictory.",
+    "- Comments may be stale, speculative, or already addressed elsewhere in the branch.",
+    "- Do not treat comments as mandatory tasks.",
+    "- Only act on a comment if the current diff and branch state show the problem still exists.",
+    "- Ignore comments that would require expanding scope beyond the current PR or changing unrelated code.",
+    "- If the hints cannot be reconciled with the current diff without guessing intent or expanding scope, make no code changes and print `GOOSEHERD_CONTEXT_CONFLICT: <reason>` before exiting.",
+  ];
+}
+
+function getAutoReviewSummaryInstructions(run: RunRecord): string[] {
+  if (run.requestedBy !== "work-item:auto-review") {
+    return [];
+  }
+
+  return [
+    "Auto-review reporting requirements:",
+    '- Before exiting, print exactly one line that starts with `GOOSEHERD_REVIEW_SUMMARY:` followed by compact JSON.',
+    '- Use this exact JSON shape: `{"selectedFindings":["..."],"ignoredFindings":["..."],"rationale":"..."}`.',
+    "- Keep each finding short and concrete. Use empty arrays when there is nothing to list.",
+  ];
 }
 
 function isUiHeavyTask(task: string): boolean {

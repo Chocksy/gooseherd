@@ -6,6 +6,7 @@ import { runShell, runShellCapture, appendLog, sleep } from "../shell.js";
 import { buildAgentCommand } from "../agent-command.js";
 import { commitCaptureAndPush } from "../git-ops.js";
 import { isNonCodeFixFailure, type BrowserVerifyFailureCode } from "../quality-gates/browser-verify-routing.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 /**
  * Fix Browser node: "fat" agent node that fixes browser verification failures.
@@ -103,7 +104,7 @@ export async function fixBrowserNode(
 
   // Commit, capture SHA + changed files, and push
   const commitMsg = `${config.appSlug}: fix browser verification (attempt ${String(attempt)})`;
-  const { commitSha: newSha, changedFiles: newChangedFiles } = await commitCaptureAndPush(
+  const { commitSha: newSha, changedFiles: newChangedFiles, internalArtifacts } = await commitCaptureAndPush(
     repoDir, commitMsg, logFile, run.branchName
   );
 
@@ -117,7 +118,7 @@ export async function fixBrowserNode(
 
   return {
     outcome: "success",
-    outputs: { commitSha: newSha, changedFiles: newChangedFiles }
+    outputs: { commitSha: newSha, changedFiles: newChangedFiles, internalArtifacts }
   };
 }
 
@@ -133,6 +134,7 @@ export function buildBrowserFixPrompt(
   failureHistory?: Array<{ round: number; verdict?: string }>,
   failureCode?: BrowserVerifyFailureCode
 ): string {
+  const sanitizedChangedFiles = filterInternalGeneratedFiles(changedFiles);
   const parts: string[] = [
     "# Browser Verification Fix Required\n",
     `## Original Task\n${task}\n`,
@@ -164,8 +166,8 @@ export function buildBrowserFixPrompt(
     parts.push(`### DOM Inspection Results\n${domFindings.map(f => `- ${f}`).join("\n")}\n`);
   }
 
-  if (changedFiles.length > 0) {
-    parts.push(`### Files Changed\n${changedFiles.map(f => `- ${f}`).join("\n")}\n`);
+  if (sanitizedChangedFiles.length > 0) {
+    parts.push(`### Files Changed\n${sanitizedChangedFiles.map(f => `- ${f}`).join("\n")}\n`);
   }
 
   if (failureHistory && failureHistory.length > 0) {

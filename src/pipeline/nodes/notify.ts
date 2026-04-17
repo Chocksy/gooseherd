@@ -18,6 +18,7 @@ import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { appendLog } from "../shell.js";
 import { logInfo } from "../../logger.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 interface WebhookConfig {
   webhook_url?: string;
@@ -52,7 +53,7 @@ export async function notifyNode(
     branch_name: run.branchName,
     pr_url: ctx.get<string>("prUrl"),
     commit_sha: ctx.get<string>("commitSha"),
-    changed_files: ctx.get<string[]>("changedFiles"),
+    changed_files: filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []),
     gate_report: ctx.get<unknown>("gateReport"),
     timestamp: new Date().toISOString()
   };

@@ -136,6 +136,23 @@ test("buildPrBody: collapses individual files when more than 30", () => {
   assert.ok(body.includes("`src/file0.ts`"), "Files should still be listed inside collapse");
 });
 
+test("buildPrBody: filters internal-generated files from changed files", () => {
+  const analysis: AgentAnalysis = {
+    verdict: "clean",
+    filesChanged: ["AGENTS.md", "src/index.ts"],
+    diffSummary: "2 files changed",
+    diffStats: { added: 10, removed: 0, filesCount: 2 },
+    signals: []
+  };
+  const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, analysis, undefined, [
+    "AGENTS.md",
+    "src/index.ts"
+  ]);
+
+  assert.ok(body.includes("`src/index.ts`"));
+  assert.ok(!body.includes("`AGENTS.md`"));
+});
+
 test("buildPrBody: includes signals when present", () => {
   const analysis: AgentAnalysis = {
     verdict: "clean",
@@ -147,6 +164,41 @@ test("buildPrBody: includes signals when present", () => {
   const body = buildPrBody(BASE_RUN, "main", "Gooseherd", false, undefined, analysis);
   assert.ok(body.includes("**Signals detected:**"));
   assert.ok(body.includes("deprecated"));
+});
+
+test("buildPrBody: includes auto-review grounding metrics when present", () => {
+  const analysis: AgentAnalysis = {
+    verdict: "clean",
+    filesChanged: ["app/jobs/queued_message_call_job.rb"],
+    diffSummary: "1 file changed",
+    diffStats: { added: 10, removed: 2, filesCount: 1 },
+    signals: []
+  };
+  const body = buildPrBody(
+    { ...BASE_RUN, requestedBy: "work-item:auto-review" },
+    "main",
+    "Gooseherd",
+    false,
+    undefined,
+    analysis,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      selectedFindingCount: 2,
+      selectedFindingOverlapCount: 1,
+      selectedFindingOverlapRatio: 0.5,
+      ignoredFindingCount: 1,
+      ignoredFindingOverlapCount: 0
+    }
+  );
+
+  assert.ok(body.includes("Auto-review grounding"));
+  assert.ok(body.includes("1/2"));
+  assert.ok(body.includes("50%"));
 });
 
 test("buildPrBody: no Signals section when signals array is empty", () => {
@@ -860,6 +912,7 @@ test("JiraClient: comments paginate across pages", async () => {
 
     const client = new JiraClient({
       jiraBaseUrl: "https://example.atlassian.net",
+      jiraCloudId: "cloud-123",
       jiraUser: "jira-user@example.com",
       jiraApiToken: "jira-token",
       jiraRequestTimeoutMs: 5_000
@@ -868,8 +921,8 @@ test("JiraClient: comments paginate across pages", async () => {
     const comments = await client.getComments("ABC-1");
 
     assert.deepEqual(calls, [
-      "https://example.atlassian.net/rest/api/3/issue/ABC-1/comment?startAt=0&maxResults=100",
-      "https://example.atlassian.net/rest/api/3/issue/ABC-1/comment?startAt=100&maxResults=100"
+      "https://api.atlassian.com/ex/jira/cloud-123/rest/api/3/issue/ABC-1/comment?startAt=0&maxResults=100",
+      "https://api.atlassian.com/ex/jira/cloud-123/rest/api/3/issue/ABC-1/comment?startAt=100&maxResults=100"
     ]);
     assert.equal(comments.length, 101);
     assert.deepEqual(comments[0], {
@@ -883,6 +936,57 @@ test("JiraClient: comments paginate across pages", async () => {
       authorDisplayName: "Bob",
       createdAt: "2026-04-17T12:00:00Z",
       body: "Comment 101"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("JiraClient: resolves cloudId from tenant_info for scoped requests", async () => {
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === "https://example.atlassian.net/_edge/tenant_info") {
+        return new Response(JSON.stringify({ cloudId: "cloud-tenant-123" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url === "https://api.atlassian.com/ex/jira/cloud-tenant-123/rest/api/3/issue/ABC-1?fields=summary,status,description") {
+        return new Response(JSON.stringify({
+          key: "ABC-1",
+          fields: {
+            summary: "Scoped issue",
+            status: { name: "Open" },
+            description: "Scoped description"
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = new JiraClient({
+      jiraBaseUrl: "https://example.atlassian.net",
+      jiraUser: "jira-user@example.com",
+      jiraApiToken: "jira-token",
+      jiraRequestTimeoutMs: 5_000
+    });
+
+    const issue = await client.getIssue("ABC-1");
+
+    assert.deepEqual(calls, [
+      "https://example.atlassian.net/_edge/tenant_info",
+      "https://api.atlassian.com/ex/jira/cloud-tenant-123/rest/api/3/issue/ABC-1?fields=summary,status,description"
+    ]);
+    assert.deepEqual(issue, {
+      key: "ABC-1",
+      url: "https://example.atlassian.net/browse/ABC-1",
+      summary: "Scoped issue",
+      status: "Open",
+      description: "Scoped description"
     });
   } finally {
     globalThis.fetch = originalFetch;

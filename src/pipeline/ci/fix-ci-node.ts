@@ -63,7 +63,7 @@ export async function fixCiNode(
 
   // Commit, capture SHA + changed files, and push
   const commitMsg = `${config.appSlug}: fix CI (attempt ${String(attempt)})`;
-  const { commitSha: newSha, changedFiles: newChangedFiles } = await commitCaptureAndPush(
+  const { commitSha: newSha, changedFiles: newChangedFiles, internalArtifacts } = await commitCaptureAndPush(
     repoDir, commitMsg, logFile, run.branchName
   );
 
@@ -71,6 +71,6 @@ export async function fixCiNode(
 
   return {
     outcome: "success",
-    outputs: { commitSha: newSha, changedFiles: newChangedFiles }
+    outputs: { commitSha: newSha, changedFiles: newChangedFiles, internalArtifacts }
   };
 }

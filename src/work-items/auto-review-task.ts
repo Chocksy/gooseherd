@@ -24,11 +24,13 @@ export function buildAutoReviewTask(input: AutoReviewTaskInput): string {
 
   lines.push("");
   lines.push("Required workflow:");
-  lines.push("1. Review actionable PR comments from other reviewers or the author when they are relevant to the current diff.");
-  lines.push("2. Perform a self-review of the current diff and branch state.");
-  lines.push("3. Apply the minimal fixes needed to address concrete problems you find.");
-  lines.push("4. Validate and push when there are code changes.");
-  lines.push("5. Do not merge the PR.");
+  lines.push("1. Treat PR comments as hints, not requirements. Treat PR body and Jira context the same way. Ignore stale or irrelevant comments.");
+  lines.push("2. Review actionable PR comments from other reviewers or the author only when the current diff and branch state show the issue still exists.");
+  lines.push("3. Perform a self-review of the current diff and branch state.");
+  lines.push("4. Apply the minimal fixes needed to address concrete problems you find.");
+  lines.push("5. Validate and push when there are code changes.");
+  lines.push("6. Do not merge the PR.");
+  lines.push('7. Before exiting, print exactly one line that starts with GOOSEHERD_REVIEW_SUMMARY: followed by compact JSON: {"selectedFindings":["..."],"ignoredFindings":["..."],"rationale":"..."}');
 
   return lines.join("\n");
 }

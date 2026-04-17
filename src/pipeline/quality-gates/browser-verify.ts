@@ -13,6 +13,7 @@ import {
   type ContentPart,
   type LLMResponse
 } from "../../llm/caller.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 export interface BrowserCheck {
   name: string;
@@ -166,8 +167,9 @@ Guidelines:
  * Build the text prompt describing the task and changed files.
  */
 export function buildVerifyPrompt(task: string, changedFiles: string[], domFindings?: string[]): string {
-  const fileList = changedFiles.length > 0
-    ? changedFiles.map(f => `  - ${f}`).join("\n")
+  const sanitizedChangedFiles = filterInternalGeneratedFiles(changedFiles);
+  const fileList = sanitizedChangedFiles.length > 0
+    ? sanitizedChangedFiles.map(f => `  - ${f}`).join("\n")
     : "  (no file list available)";
 
   let prompt = `Task that was implemented:\n${task}\n\nFiles changed:\n${fileList}`;

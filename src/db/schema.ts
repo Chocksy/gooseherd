@@ -55,6 +55,7 @@ export const runs = pgTable(
     statusMessageTs: text("status_message_ts"),
     commitSha: text("commit_sha"),
     changedFiles: text("changed_files").array(),
+    internalArtifacts: text("internal_artifacts").array(),
     prUrl: text("pr_url"),
     feedback: jsonb("feedback"),
     error: text("error"),

@@ -207,6 +207,13 @@ test("checkForbiddenFiles: deny .pem file → hard_fail", () => {
   assert.deepEqual(result.deniedFiles, ["certs/server.pem"]);
 });
 
+test("checkForbiddenFiles: deny internal generated file → hard_fail", () => {
+  const result = checkForbiddenFiles(["AGENTS.md", "src/index.ts"], "add feature");
+  assert.equal(result.verdict, "hard_fail");
+  assert.deepEqual(result.deniedFiles, ["AGENTS.md"]);
+  assert.ok(result.reasons.some((reason) => reason.includes("internal-generated")));
+});
+
 test("checkForbiddenFiles: guarded workflow file → soft_fail", () => {
   const result = checkForbiddenFiles([".github/workflows/ci.yml", "src/index.ts"], "add feature");
   assert.equal(result.verdict, "soft_fail");

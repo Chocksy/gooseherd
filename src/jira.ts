@@ -17,6 +17,7 @@ export interface JiraComment {
 
 interface JiraClientConfig {
   jiraBaseUrl?: string;
+  jiraCloudId?: string;
   jiraUser?: string;
   jiraApiToken?: string;
   jiraRequestTimeoutMs: number;
@@ -44,7 +45,13 @@ interface JiraCommentsResponse {
   total?: number;
 }
 
+interface JiraTenantInfoResponse {
+  cloudId?: string;
+}
+
 export class JiraClient {
+  private discoveredApiBaseUrl?: Promise<string>;
+
   constructor(private readonly config: JiraClientConfig) {}
 
   static create(config: AppConfig): JiraClient | undefined {
@@ -53,6 +60,7 @@ export class JiraClient {
     }
     return new JiraClient({
       jiraBaseUrl: config.jiraBaseUrl,
+      jiraCloudId: config.jiraCloudId,
       jiraUser: config.jiraUser,
       jiraApiToken: config.jiraApiToken,
       jiraRequestTimeoutMs: config.jiraRequestTimeoutMs
@@ -64,7 +72,7 @@ export class JiraClient {
     const fields = issue.fields ?? {};
     return {
       key: issue.key ?? issueKey,
-      url: `${this.baseUrl}/browse/${encodeURIComponent(issueKey)}`,
+      url: `${this.browseBaseUrl}/browse/${encodeURIComponent(issueKey)}`,
       summary: fields.summary,
       status: fields.status?.name,
       description: normalizeJiraText(fields.description)
@@ -109,7 +117,7 @@ export class JiraClient {
       });
   }
 
-  private get baseUrl(): string {
+  private get browseBaseUrl(): string {
     const baseUrl = this.config.jiraBaseUrl?.trim();
     if (!baseUrl || !this.config.jiraUser || !this.config.jiraApiToken) {
       throw new Error("Jira client is not configured");
@@ -125,8 +133,9 @@ export class JiraClient {
   }
 
   private async fetchIssue(issueKey: string, signal?: AbortSignal): Promise<JiraIssueResponse> {
+    const apiBaseUrl = await this.resolveApiBaseUrl();
     const response = await fetch(
-      `${this.baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=summary,status,description`,
+      `${apiBaseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=summary,status,description`,
       {
         headers: {
           Accept: "application/json",
@@ -147,8 +156,9 @@ export class JiraClient {
   }
 
   private async fetchComments(issueKey: string, startAt: number, signal?: AbortSignal): Promise<JiraCommentsResponse> {
+    const apiBaseUrl = await this.resolveApiBaseUrl();
     const response = await fetch(
-      `${this.baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment?startAt=${startAt}&maxResults=100`,
+      `${apiBaseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment?startAt=${startAt}&maxResults=100`,
       {
         headers: {
           Accept: "application/json",
@@ -166,6 +176,38 @@ export class JiraClient {
     }
 
     return response.json() as Promise<JiraCommentsResponse>;
+  }
+
+  private async resolveApiBaseUrl(): Promise<string> {
+    const configuredCloudId = this.config.jiraCloudId?.trim();
+    if (configuredCloudId) {
+      return `https://api.atlassian.com/ex/jira/${encodeURIComponent(configuredCloudId)}`;
+    }
+
+    this.discoveredApiBaseUrl ??= this.discoverApiBaseUrl();
+    return this.discoveredApiBaseUrl;
+  }
+
+  private async discoverApiBaseUrl(): Promise<string> {
+    const response = await fetch(`${this.browseBaseUrl}/_edge/tenant_info`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(this.config.jiraRequestTimeoutMs)
+    });
+
+    if (!response.ok) {
+      const message = await safeReadResponseText(response);
+      throw new Error(
+        `Jira cloudId lookup failed: ${response.status} ${response.statusText}${message ? ` - ${message}` : ""}. Set JIRA_CLOUD_ID to override auto-discovery.`
+      );
+    }
+
+    const tenantInfo = await response.json() as JiraTenantInfoResponse;
+    const cloudId = tenantInfo.cloudId?.trim();
+    if (!cloudId) {
+      throw new Error("Jira cloudId lookup failed: tenant_info response did not include cloudId. Set JIRA_CLOUD_ID to override auto-discovery.");
+    }
+
+    return `https://api.atlassian.com/ex/jira/${encodeURIComponent(cloudId)}`;
   }
 }
 

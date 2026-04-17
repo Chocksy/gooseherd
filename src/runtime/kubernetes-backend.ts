@@ -162,6 +162,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
         logsPath: run.logsPath ?? path.resolve(this.deps.workRoot, run.id, "run.log"),
         commitSha: completion.payload.commitSha ?? "",
         changedFiles: completion.payload.changedFiles ?? [],
+        internalArtifacts: completion.payload.internalArtifacts,
         prUrl: completion.payload.prUrl,
         tokenUsage: completion.payload.tokenUsage,
         title: completion.payload.title,

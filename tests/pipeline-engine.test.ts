@@ -8,6 +8,8 @@ import { ContextBag } from "../src/pipeline/context-bag.js";
 import type { AppConfig } from "../src/config.js";
 import type { RunRecord } from "../src/types.js";
 import type { NodeConfig, NodeResult } from "../src/pipeline/types.js";
+import { NODE_HANDLERS } from "../src/pipeline/node-registry.js";
+import { runShellCapture } from "../src/pipeline/shell.js";
 
 // ── Helpers ──
 
@@ -219,6 +221,198 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
 test("PipelineEngine: unified pipeline is the single pipeline file", () => {
   const resolved = "pipelines/pipeline.yml";
   assert.equal(resolved, "pipelines/pipeline.yml");
+});
+
+test("PipelineEngine: filters internal-generated files from execution result changedFiles", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-changed-files-"));
+  const workDir = path.join(tmpDir, "work");
+  await mkdir(workDir, { recursive: true });
+  const pipelinePath = path.join(tmpDir, "pipeline.yml");
+  await writeFile(
+    pipelinePath,
+    [
+      "version: 1",
+      "name: test-pipeline",
+      "nodes:",
+      "  - id: classify_task",
+      "    type: deterministic",
+      "    action: classify_task"
+    ].join("\n"),
+    "utf8"
+  );
+  t.after(async () => { await rm(tmpDir, { recursive: true, force: true }); });
+
+  const run = makeRun({ id: "test-run-changed-files" });
+  const config = makeConfig({ workRoot: workDir, dryRun: true });
+  const engine = new PipelineEngine(config);
+
+  (engine as unknown as {
+    executePipeline: (
+      pipeline: unknown,
+      ctx: ContextBag,
+      deps: unknown,
+      startIndex: number,
+      eventLogger?: unknown,
+      skipNodeIds?: Set<string>,
+      enableNodeIds?: Set<string>,
+      abortSignal?: AbortSignal,
+      sandboxRef?: { handle?: unknown }
+    ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
+  }).executePipeline = async (_pipeline, ctx) => {
+    ctx.set("changedFiles", ["AGENTS.md", "src/index.ts"]);
+    ctx.set("internalArtifacts", ["AGENTS.md"]);
+    return {
+      outcome: "success",
+      steps: [],
+      warnings: [],
+    };
+  };
+
+  const result = await engine.execute(run, async () => undefined, pipelinePath);
+  assert.deepEqual(result.changedFiles, ["src/index.ts"]);
+  assert.deepEqual(result.internalArtifacts, ["AGENTS.md"]);
+});
+
+test("PipelineEngine: context conflict stops before commit and push", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-context-conflict-"));
+  const workDir = path.join(tmpDir, "work");
+  await mkdir(workDir, { recursive: true });
+  const pipelinePath = path.join(tmpDir, "pipeline.yml");
+  await writeFile(
+    pipelinePath,
+    [
+      "version: 1",
+      "name: context-conflict-pipeline",
+      "nodes:",
+      "  - id: clone",
+      "    type: deterministic",
+      "    action: clone",
+      "  - id: hydrate_context",
+      "    type: deterministic",
+      "    action: hydrate_context",
+      "  - id: implement",
+      "    type: agentic",
+      "    action: implement",
+      "  - id: commit",
+      "    type: deterministic",
+      "    action: commit",
+      "  - id: push",
+      "    type: deterministic",
+      "    action: push",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const originalClone = NODE_HANDLERS.clone;
+  const originalCommit = NODE_HANDLERS.commit;
+  const originalPush = NODE_HANDLERS.push;
+  let commitCalls = 0;
+  let pushCalls = 0;
+
+  t.after(async () => {
+    NODE_HANDLERS.clone = originalClone;
+    NODE_HANDLERS.commit = originalCommit;
+    NODE_HANDLERS.push = originalPush;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  NODE_HANDLERS.clone = async (_nodeConfig, ctx, deps) => {
+    const runDir = path.join(deps.workRoot, deps.run.id);
+    const repoDir = path.join(runDir, "repo");
+    const promptFile = path.join(runDir, "task.md");
+    await mkdir(repoDir, { recursive: true });
+    await runShellCapture("git init", { cwd: repoDir, logFile: deps.logFile });
+    await runShellCapture("git config user.email 'test@test.com'", { cwd: repoDir, logFile: deps.logFile });
+    await runShellCapture("git config user.name 'Test User'", { cwd: repoDir, logFile: deps.logFile });
+    await runShellCapture("git checkout -b main", { cwd: repoDir, logFile: deps.logFile });
+    await writeFile(path.join(repoDir, "queue.txt"), "base queue behavior\n", "utf8");
+    await runShellCapture("git add -A && git commit -m 'base'", { cwd: repoDir, logFile: deps.logFile });
+    await runShellCapture(`git checkout -b ${deps.run.branchName}`, { cwd: repoDir, logFile: deps.logFile });
+    await writeFile(path.join(repoDir, "queue.txt"), "current branch changes queued-message behavior\n", "utf8");
+    await runShellCapture("git add -A && git commit -m 'queue change'", { cwd: repoDir, logFile: deps.logFile });
+
+    const outputs = {
+      repoDir,
+      runDir,
+      promptFile,
+      resolvedBaseBranch: "main",
+      isFollowUp: false,
+      reusesExistingBranch: false,
+    };
+    return { outcome: "success", outputs };
+  };
+  NODE_HANDLERS.commit = async () => {
+    commitCalls += 1;
+    return { outcome: "success", outputs: { commitSha: "abc123", changedFiles: ["queue.txt"] } };
+  };
+  NODE_HANDLERS.push = async () => {
+    pushCalls += 1;
+    return { outcome: "success" };
+  };
+
+  const run = makeRun({
+    id: "test-run-context-conflict",
+    requestedBy: "work-item:auto-review",
+    task: "Rewrite the billing controller to match Jira, even if the current branch diff is about queue handling.",
+    prefetchContext: {
+      meta: {
+        fetchedAt: new Date("2026-04-17T00:00:00.000Z").toISOString(),
+        sources: ["github_pr", "jira"],
+      },
+      workItem: {
+        id: "work-item-context-conflict",
+        title: "Conflicting auto-review fixture",
+        workflow: "feature_delivery",
+        jiraIssueKey: "HBL-900",
+        githubPrUrl: "https://github.com/owner/repo/pull/99",
+        githubPrNumber: 99,
+      },
+      github: {
+        pr: {
+          number: 99,
+          url: "https://github.com/owner/repo/pull/99",
+          title: "Queue worker changes",
+          body: "This PR only changes queue handling code.",
+          state: "open",
+          baseRef: "main",
+          headRef: "testherd/test-run",
+          headSha: "abc123",
+        },
+        discussionComments: [],
+        reviews: [],
+        reviewComments: [],
+        ci: {
+          conclusion: "success",
+          headSha: "abc123",
+        },
+      },
+      jira: {
+        issue: {
+          key: "HBL-900",
+          description: "Jira still talks about a billing controller rewrite.",
+        },
+        comments: [],
+      },
+    },
+  });
+  const config = makeConfig({
+    workRoot: workDir,
+    dryRun: true,
+    agentCommandTemplate: "printf 'GOOSEHERD_CONTEXT_CONFLICT: Jira asks for billing controller work, but the current diff only changes queue.txt\\n'",
+  });
+  const engine = new PipelineEngine(config);
+
+  await assert.rejects(
+    () => engine.execute(run, async () => undefined, pipelinePath),
+    /Agent reported context conflict: Jira asks for billing controller work, but the current diff only changes queue\.txt/
+  );
+
+  assert.equal(commitCalls, 0, "commit should never run after a context conflict");
+  assert.equal(pushCalls, 0, "push should never run after a context conflict");
+
+  const prompt = await readFile(path.join(workDir, run.id, "task.md"), "utf8");
+  assert.ok(prompt.includes("### Current Branch Diff"), "Prompt should include the actual diff");
+  assert.ok(prompt.includes("current branch changes queued-message behavior"), "Prompt should show the conflicting branch diff");
 });
 
 test("PipelineEngine: passes CODEX_API_KEY into sandbox env", async (t) => {

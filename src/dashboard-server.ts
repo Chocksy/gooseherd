@@ -61,6 +61,7 @@ import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { formatSandboxRuntimeLabel } from "./runtime/runtime-mode.js";
 import type { ReviewRequestRecord, WorkItemEventRecord, WorkItemLinkedRunRecord, WorkItemRecord } from "./work-items/types.js";
 import { UserDirectoryService } from "./user-directory/service.js";
+import { filterInternalGeneratedFiles } from "./pipeline/internal-generated-files.js";
 
 /** Lean interface — dashboard only reads observer state, never mutates it. */
 export interface DashboardObserver {
@@ -322,7 +323,7 @@ async function captureCommand(command: string, cwd: string): Promise<{ code: num
 
 async function getChangedFiles(config: AppConfig, run: RunRecord): Promise<string[]> {
   if (run.changedFiles && run.changedFiles.length > 0) {
-    return run.changedFiles;
+    return filterInternalGeneratedFiles(run.changedFiles);
   }
 
   // Only fall back to git if the run actually committed (has a commitSha)
@@ -335,10 +336,12 @@ async function getChangedFiles(config: AppConfig, run: RunRecord): Promise<strin
   if (result.code !== 0) {
     return [];
   }
-  return result.stdout
-    .split("\n")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0 && !entry.startsWith("---"));
+  return filterInternalGeneratedFiles(
+    result.stdout
+      .split("\n")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0 && !entry.startsWith("---"))
+  );
 }
 
 interface FileChangeDetail {
@@ -396,7 +399,7 @@ async function getChangedFilesDetailed(config: AppConfig, run: RunRecord): Promi
     }
   }
 
-  return results;
+  return results.filter((result) => filterInternalGeneratedFiles([result.path]).length > 0);
 }
 
 

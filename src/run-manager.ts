@@ -680,6 +680,7 @@ export class RunManager {
         logsPath: result.logsPath,
         commitSha: result.commitSha,
         changedFiles: result.changedFiles,
+        internalArtifacts: result.internalArtifacts,
         prUrl: result.prUrl,
         tokenUsage: result.tokenUsage,
         title: result.title,

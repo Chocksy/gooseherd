@@ -26,6 +26,7 @@ function rowToRecord(row: RunRow): RunRecord {
     statusMessageTs: row.statusMessageTs ?? undefined,
     commitSha: row.commitSha ?? undefined,
     changedFiles: row.changedFiles ?? undefined,
+    internalArtifacts: row.internalArtifacts ?? undefined,
     prUrl: row.prUrl ?? undefined,
     feedback: row.feedback as RunFeedback | undefined,
     error: row.error ?? undefined,
@@ -226,6 +227,7 @@ export class RunStore {
         | "statusMessageTs"
         | "commitSha"
         | "changedFiles"
+        | "internalArtifacts"
         | "prUrl"
         | "feedback"
         | "error"
@@ -254,6 +256,7 @@ export class RunStore {
     if (update.statusMessageTs !== undefined) dbUpdate.statusMessageTs = update.statusMessageTs;
     if (update.commitSha !== undefined) dbUpdate.commitSha = update.commitSha;
     if (update.changedFiles !== undefined) dbUpdate.changedFiles = update.changedFiles;
+    if (update.internalArtifacts !== undefined) dbUpdate.internalArtifacts = update.internalArtifacts;
     if (update.prUrl !== undefined) dbUpdate.prUrl = update.prUrl;
     if (update.feedback !== undefined) dbUpdate.feedback = update.feedback;
     if (update.error !== undefined) dbUpdate.error = update.error;

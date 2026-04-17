@@ -50,6 +50,7 @@ export class RuntimeReconciler {
         finishedAt: new Date().toISOString(),
         commitSha: completion.payload.commitSha,
         changedFiles: completion.payload.changedFiles,
+        internalArtifacts: completion.payload.internalArtifacts,
         prUrl: completion.payload.prUrl,
         tokenUsage: completion.payload.tokenUsage,
         title: completion.payload.title,

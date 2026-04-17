@@ -13,6 +13,7 @@ import { createPrNode } from "./nodes/create-pr.js";
 import { notifyNode } from "./nodes/notify.js";
 import { planTaskNode } from "./nodes/plan-task.js";
 import { localTestNode } from "./nodes/local-test.js";
+import { rubySyntaxGateNode } from "./nodes/ruby-syntax-gate.js";
 import { uploadScreenshotNode } from "./nodes/upload-screenshot.js";
 import { generateTitleNode } from "./nodes/generate-title.js";
 import { summarizeChangesNode } from "./nodes/summarize-changes.js";
@@ -63,6 +64,7 @@ export const NODE_HANDLERS: Record<string, NodeHandler> = {
   browser_verify: browserVerifyNode,
   plan_task: planTaskNode,
   local_test: localTestNode,
+  ruby_syntax_gate: rubySyntaxGateNode,
   upload_screenshot: uploadScreenshotNode,
   generate_title: generateTitleNode,
   summarize_changes: summarizeChangesNode,

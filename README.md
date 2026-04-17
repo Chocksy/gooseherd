@@ -116,10 +116,13 @@ Optional controls:
 
 Optional Jira read-access envs:
 
-- `JIRA_BASE_URL` — Jira base URL, for example `https://your-company.atlassian.net`
+- `JIRA_BASE_URL` — Jira site base URL, for example `https://your-company.atlassian.net`. Gooseherd uses it for issue browse links and `cloudId` discovery.
+- `JIRA_CLOUD_ID` — optional Atlassian Cloud ID override. If unset, Gooseherd auto-discovers it from `JIRA_BASE_URL/_edge/tenant_info`.
 - `JIRA_USER` — Jira service-account identity; use the account email for Jira Cloud
-- `JIRA_API_TOKEN` — API token / password equivalent for the service account
+- `JIRA_API_TOKEN` — Atlassian scoped API token for the Jira service account
 - `JIRA_REQUEST_TIMEOUT_MS` — optional timeout override for Jira reads; defaults to `10000`
+
+Gooseherd's Jira reader expects a scoped token and talks to Jira through `https://api.atlassian.com/ex/jira/{cloudId}/...`. Classic site-scoped tokens are not supported by this integration path.
 
 These envs are the canonical Jira read-access contract for future product discovery / work-items flows. The intended usage is to resolve Jira issue details after Gooseherd already has context from the Slack thread and discovery flow. This keeps Jira as a read-only source of task content, not a source of routing metadata.
 

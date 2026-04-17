@@ -244,12 +244,14 @@ test("Jira read access envs are exposed through config", () => {
     process.env = {
       ...originalEnv,
       JIRA_BASE_URL: " https://example.atlassian.net ",
+      JIRA_CLOUD_ID: " cloud-123 ",
       JIRA_USER: " jira-service-account@example.com ",
       JIRA_API_TOKEN: " jira-token ",
       JIRA_REQUEST_TIMEOUT_MS: "25000",
     };
     const config = loadConfig();
     assert.equal(config.jiraBaseUrl, "https://example.atlassian.net");
+    assert.equal(config.jiraCloudId, "cloud-123");
     assert.equal(config.jiraUser, "jira-service-account@example.com");
     assert.equal(config.jiraApiToken, "jira-token");
     assert.equal(config.jiraRequestTimeoutMs, 25000);
@@ -264,12 +266,14 @@ test("Jira read access defaults stay unset without env vars", () => {
     process.env = {
       ...originalEnv,
       JIRA_BASE_URL: undefined,
+      JIRA_CLOUD_ID: undefined,
       JIRA_USER: undefined,
       JIRA_API_TOKEN: undefined,
       JIRA_REQUEST_TIMEOUT_MS: undefined,
     };
     const config = loadConfig();
     assert.equal(config.jiraBaseUrl, undefined);
+    assert.equal(config.jiraCloudId, undefined);
     assert.equal(config.jiraUser, undefined);
     assert.equal(config.jiraApiToken, undefined);
     assert.equal(config.jiraRequestTimeoutMs, 10_000);

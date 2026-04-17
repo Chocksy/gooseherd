@@ -54,6 +54,7 @@ export interface RunnerCompletionPayload {
   artifactState: ArtifactState;
   commitSha?: string;
   changedFiles?: string[];
+  internalArtifacts?: string[];
   prUrl?: string;
   tokenUsage?: TokenUsage;
   title?: string;

@@ -162,6 +162,12 @@ test("buildCIFixPrompt: includes changed files", () => {
   assert.ok(prompt.includes("Your Changed Files"));
 });
 
+test("buildCIFixPrompt: filters internal-generated files from changed files", () => {
+  const prompt = buildCIFixPrompt([], "", ["AGENTS.md", "src/app.ts"]);
+  assert.ok(prompt.includes("src/app.ts"));
+  assert.ok(!prompt.includes("AGENTS.md"));
+});
+
 test("buildCIFixPrompt: includes fix instructions", () => {
   const prompt = buildCIFixPrompt([], "", []);
   assert.ok(prompt.includes("Fix only the CI failures"));

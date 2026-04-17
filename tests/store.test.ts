@@ -35,12 +35,14 @@ test("createRun stores queued phase and metadata updates persist", async (t) => 
     phase: "agent",
     commitSha: "abc123",
     changedFiles: ["a.ts", "b.ts"],
+    internalArtifacts: ["AGENTS.md"],
     statusMessageTs: "1234.55"
   });
 
   assert.equal(updated.phase, "agent");
   assert.equal(updated.commitSha, "abc123");
   assert.deepEqual(updated.changedFiles, ["a.ts", "b.ts"]);
+  assert.deepEqual(updated.internalArtifacts, ["AGENTS.md"]);
   assert.equal(updated.statusMessageTs, "1234.55");
 
   const formatted = store.formatRunStatus(updated);

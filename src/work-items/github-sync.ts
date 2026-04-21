@@ -14,7 +14,11 @@ import { WorkItemEventsStore } from "./events-store.js";
 import { logError } from "../logger.js";
 import { WorkItemService } from "./service.js";
 import { WorkItemStore } from "./store.js";
-import type { WorkItemRecord } from "./types.js";
+import { GITHUB_PR_ADOPTED_FLAG, type WorkItemRecord } from "./types.js";
+
+const ENGINEERING_REVIEW_PASSED_LABEL = "code review passed";
+const QA_PASSED_LABEL = "qa passed";
+const REVIEW_RESULT_FLAGS = ["engineering_review_done", "qa_review_done"] as const;
 
 export interface GitHubWorkItemWebhookPayload {
   eventType: "pull_request" | "pull_request_review" | "check_suite";
@@ -194,13 +198,16 @@ export class GitHubWorkItemSync {
 
     const existing = await this.findExistingWorkItemForPullRequest(payload.repo, prNumber, payload.prUrl);
     if (existing) {
-      const current = await this.syncStoredPullRequestContext(existing, {
+      let current = await this.syncStoredPullRequestContext(existing, {
         repo: payload.repo,
         githubPrUrl: payload.prUrl,
         githubPrBaseBranch: payload.baseBranch,
         githubPrHeadBranch: payload.headBranch,
         githubPrHeadSha: payload.headSha,
       });
+      if (payload.action !== "synchronize") {
+        current = await this.syncReviewFlagsFromPullRequestLabels(current, payload.labels);
+      }
       await this.events.append({
         workItemId: current.id,
         eventType: "github.label_observed",
@@ -254,7 +261,7 @@ export class GitHubWorkItemSync {
         const updated = await this.workItems.updateState(existingByJira.id, {
           state: "auto_review",
           substate: initialAutoReviewSubstate,
-          flagsToAdd: ["pr_opened"],
+          flagsToAdd: ["pr_opened", GITHUB_PR_ADOPTED_FLAG, ...this.reviewFlagsFromLabels(payload.labels)],
         });
         await this.events.append({
           workItemId: updated.id,
@@ -323,7 +330,7 @@ export class GitHubWorkItemSync {
           githubPrHeadSha: payload.headSha,
           initialState: "auto_review",
           initialSubstate: initialAutoReviewSubstate,
-          flags: ["pr_opened"],
+          flags: ["pr_opened", GITHUB_PR_ADOPTED_FLAG, ...this.reviewFlagsFromLabels(payload.labels)],
         })
       : await this.workItemService.createDeliveryFromPullRequest({
           title,
@@ -342,7 +349,7 @@ export class GitHubWorkItemSync {
           githubPrHeadSha: payload.headSha,
           initialState: "auto_review",
           initialSubstate: initialAutoReviewSubstate,
-          flags: ["pr_opened"],
+          flags: ["pr_opened", GITHUB_PR_ADOPTED_FLAG, ...this.reviewFlagsFromLabels(payload.labels)],
         });
 
     await this.events.append({
@@ -641,6 +648,40 @@ export class GitHubWorkItemSync {
   private hasAdoptionLabel(labels: string[] | undefined): boolean {
     const normalized = (labels ?? []).map((label) => label.trim().toLowerCase());
     return normalized.some((label) => this.adoptionLabels.includes(label));
+  }
+
+  private reviewFlagsFromLabels(labels: string[] | undefined): string[] {
+    const normalized = new Set((labels ?? []).map((label) => label.trim().toLowerCase()));
+    const flags: string[] = [];
+
+    if (normalized.has(ENGINEERING_REVIEW_PASSED_LABEL)) {
+      flags.push("engineering_review_done");
+    }
+    if (normalized.has(QA_PASSED_LABEL)) {
+      flags.push("qa_review_done");
+    }
+
+    return flags;
+  }
+
+  private async syncReviewFlagsFromPullRequestLabels(
+    workItem: WorkItemRecord,
+    labels: string[] | undefined
+  ): Promise<WorkItemRecord> {
+    const flagsToAdd = this.reviewFlagsFromLabels(labels);
+    const normalizedFlagsToAdd = new Set(flagsToAdd);
+    const flagsToRemove = REVIEW_RESULT_FLAGS.filter((flag) => !normalizedFlagsToAdd.has(flag));
+
+    if (flagsToAdd.length === 0 && flagsToRemove.every((flag) => !workItem.flags.includes(flag))) {
+      return workItem;
+    }
+
+    return this.workItems.updateState(workItem.id, {
+      state: workItem.state,
+      substate: workItem.substate,
+      flagsToAdd,
+      flagsToRemove,
+    });
   }
 
   private async findWorkItemByPullRequestNumbers(

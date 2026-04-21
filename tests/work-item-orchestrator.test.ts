@@ -64,6 +64,61 @@ async function createAutoReviewFixture(substate: AutoReviewSubstate = "pr_adopte
   };
 }
 
+async function createFeatureDeliveryFixture(options: {
+  state: "auto_review" | "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge";
+  substate?: string;
+  flags?: string[];
+}) {
+  const testDb = await createTestDb();
+  const ownerUserId = randomUUID();
+  const ownerTeamId = randomUUID();
+
+  await testDb.db.insert(users).values({
+    id: ownerUserId,
+    slackUserId: "U_OWNER",
+    displayName: "Owner",
+  });
+  await testDb.db.insert(teams).values({
+    id: ownerTeamId,
+    name: "core",
+    slackChannelId: "C_CORE",
+  });
+  await testDb.db.insert(teamMembers).values({
+    teamId: ownerTeamId,
+    userId: ownerUserId,
+    functionalRoles: ["pm"],
+  });
+
+  const workItemService = new WorkItemService(testDb.db);
+  const runStore = new RunStore(testDb.db);
+  await runStore.init();
+
+  const workItem = await workItemService.createDeliveryFromJira({
+    title: "Maintain long-lived PR branch",
+    summary: "Keep the feature branch rebased while the PR is waiting.",
+    ownerTeamId,
+    homeChannelId: "C_CORE",
+    homeThreadTs: "1740000000.701",
+    jiraIssueKey: "HBL-405",
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 90,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/90",
+    githubPrBaseBranch: "release/2026.04",
+    githubPrHeadBranch: "feature/hbl-405",
+    createdByUserId: ownerUserId,
+    initialState: options.state,
+    initialSubstate: options.substate,
+    flags: ["pr_opened", ...(options.flags ?? [])],
+  });
+
+  return {
+    db: testDb.db,
+    cleanup: testDb.cleanup,
+    workItem,
+    runStore,
+  };
+}
+
 async function createActiveLinkedRun(
   runStore: RunStore,
   workItemId: string,
@@ -178,6 +233,50 @@ test("orchestrator launches a standalone ci-fix run for auto_review ci_failed", 
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_failed");
   assert.equal(runRows[0]?.runtime, "kubernetes");
+});
+
+test("orchestrator queues a standalone branch-sync run for stale ready_for_merge work items", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "ready_for_merge",
+    substate: "waiting_merge",
+    flags: ["ci_green", "engineering_review_done", "qa_review_done"],
+  });
+  t.after(cleanup);
+  const { queueBranchSyncRun } = await import("../src/work-items/orchestrator.js");
+
+  await queueBranchSyncRun(db, workItem.id, "periodic.branch_stale", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.state, "ready_for_merge");
+  assert.equal(workItemRow?.substate, "waiting_merge");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:branch-sync");
+  assert.equal(runRows[0]?.pipelineHint, "branch-sync");
+  assert.equal(runRows[0]?.branchName, "feature/hbl-405");
+  assert.equal(runRows[0]?.parentBranchName, "feature/hbl-405");
+  assert.equal(runRows[0]?.autoReviewSourceSubstate, "waiting_merge");
+  assert.equal(runRows[0]?.runtime, "kubernetes");
+});
+
+test("orchestrator does not queue branch-sync runs until engineering and QA reviews are complete", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "ready_for_merge",
+    substate: "waiting_merge",
+    flags: ["ci_green", "engineering_review_done"],
+  });
+  t.after(cleanup);
+  const { queueBranchSyncRun } = await import("../src/work-items/orchestrator.js");
+
+  await queueBranchSyncRun(db, workItem.id, "periodic.branch_stale", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+  assert.equal(runRows.length, 0);
 });
 
 test("orchestrator writeback marks self_review_done when auto-review run reaches awaiting_ci", async (t) => {

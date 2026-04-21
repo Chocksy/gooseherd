@@ -1,5 +1,7 @@
 export type WorkItemWorkflow = "product_discovery" | "feature_delivery";
 
+export const GITHUB_PR_ADOPTED_FLAG = "github_pr_adopted";
+
 export type ProductDiscoveryState =
   | "backlog"
   | "in_progress"

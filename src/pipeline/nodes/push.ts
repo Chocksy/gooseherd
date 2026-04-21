@@ -3,6 +3,11 @@ import type { ContextBag } from "../context-bag.js";
 import { runShell, shellEscape } from "../shell.js";
 import { buildAuthenticatedGitUrl } from "../../github.js";
 
+export function buildPushCommand(branchName: string, forcePushWithLease: boolean): string {
+  const pushFlag = forcePushWithLease ? " --force-with-lease" : "";
+  return `git push origin ${shellEscape(branchName)}${pushFlag}`;
+}
+
 /**
  * Push node: git push to origin.
  * Refreshes git remote URL with a fresh token before pushing to handle
@@ -18,6 +23,7 @@ export async function pushNode(
   const repoDir = ctx.getRequired<string>("repoDir");
   const run = deps.run;
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
+  const forcePushWithLease = ctx.get<boolean>("forcePushWithLease") ?? false;
 
   if (config.dryRun) {
     return {
@@ -43,9 +49,7 @@ export async function pushNode(
     logFile
   });
 
-  // Follow-ups use --force-with-lease since we're pushing to an existing branch
-  const pushFlag = isFollowUp ? " --force-with-lease" : "";
-  await runShell(`git push origin ${shellEscape(run.branchName)}${pushFlag}`, {
+  await runShell(buildPushCommand(run.branchName, isFollowUp || forcePushWithLease), {
     cwd: repoDir,
     logFile
   });

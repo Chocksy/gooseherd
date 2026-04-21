@@ -5,6 +5,7 @@ export interface AutoReviewTaskInput {
   jiraIssueKey?: string;
   title: string;
   summary?: string;
+  maxBehindCommits?: number;
 }
 
 export function buildAutoReviewTask(input: AutoReviewTaskInput): string {
@@ -60,6 +61,34 @@ export function buildCiFixTask(input: AutoReviewTaskInput): string {
   lines.push("2. Focus on the failing CI signal for the current PR head and apply only the minimal code changes needed to make CI pass.");
   lines.push("3. Validate your fix before finishing.");
   lines.push("4. Do not merge the PR.");
+
+  return lines.join("\n");
+}
+
+export function buildBranchSyncTask(input: AutoReviewTaskInput): string {
+  const maxBehindCommits = input.maxBehindCommits ?? 5;
+  const lines = [
+    `Bring pull request #${String(input.prNumber)} in ${input.repo} up to date with its base branch.`,
+    `PR URL: ${input.prUrl}`,
+    `Work item title: ${input.title}`,
+  ];
+
+  if (input.jiraIssueKey) {
+    lines.push(`Jira issue: ${input.jiraIssueKey}`);
+  }
+
+  if (input.summary?.trim()) {
+    lines.push(`Context: ${input.summary.trim()}`);
+  }
+
+  lines.push("");
+  lines.push("Required workflow:");
+  lines.push(`1. Check whether the current PR branch is behind its base branch by more than ${String(maxBehindCommits)} commits.`);
+  lines.push("2. If it is not behind enough, make no changes and exit cleanly.");
+  lines.push("3. If it is behind enough, rebase the existing PR branch onto the current base branch.");
+  lines.push("4. Resolve conflicts automatically, preferring the current PR branch content when a deterministic choice is needed.");
+  lines.push("5. Push the rebased branch back with --force-with-lease.");
+  lines.push("6. Do not create a new branch, new PR, or unrelated code changes.");
 
   return lines.join("\n");
 }

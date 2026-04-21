@@ -9,6 +9,13 @@ type FeatureDeliveryState = Extract<WorkItemRecord["state"],
   | "ready_for_merge"
 >;
 
+const AUTO_REBASE_REQUIRED_FLAGS = ["engineering_review_done", "qa_review_done"] as const;
+
+export function canAutoRebaseFeatureDeliveryBranch(flags: readonly string[]): boolean {
+  const flagSet = new Set(flags);
+  return AUTO_REBASE_REQUIRED_FLAGS.every((flag) => flagSet.has(flag));
+}
+
 export function nextFeatureDeliveryStateAfterAutoReview(input: {
   ciGreen: boolean;
   selfReviewDone: boolean;

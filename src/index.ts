@@ -40,6 +40,13 @@ import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { RuntimeReconciler } from "./runtime/reconciler.js";
 import { recoverRunsAfterRestart } from "./runtime/startup-recovery.js";
 import { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
+import {
+  resolveKubernetesInternalBaseUrl,
+  resolveKubernetesNamespace,
+  resolveKubernetesRunnerEnvConfigMapName,
+  resolveKubernetesRunnerEnvSecretName,
+  resolveKubernetesRunnerImage,
+} from "./runtime/kubernetes-env.js";
 import type { WorkItemActor } from "./work-items/actor.js";
 import {
   hasSandboxRuntimeHotReloadChange,
@@ -124,35 +131,6 @@ interface WorkItemServicesBundle {
 interface DashboardWorkItemsBundle {
   dashboardWorkItemsSource?: DashboardWorkItemsSource;
   workItemOrchestrator?: WorkItemOrchestrator;
-}
-
-function resolveKubernetesRunnerImage(): string {
-  return process.env.KUBERNETES_RUNNER_IMAGE?.trim() || "gooseherd/k8s-runner:dev";
-}
-
-function resolveKubernetesNamespace(): string {
-  return process.env.KUBERNETES_NAMESPACE?.trim() || "default";
-}
-
-function resolveKubernetesRunnerEnvSecretName(): string | undefined {
-  return process.env.KUBERNETES_RUNNER_ENV_SECRET?.trim() || "gooseherd-env";
-}
-
-function resolveKubernetesRunnerEnvConfigMapName(): string | undefined {
-  return process.env.KUBERNETES_RUNNER_ENV_CONFIGMAP?.trim() || "gooseherd-config";
-}
-
-function resolveKubernetesInternalBaseUrl(config: AppConfig): string {
-  const explicit = process.env.KUBERNETES_INTERNAL_BASE_URL?.trim();
-  if (explicit) {
-    return explicit;
-  }
-
-  if (config.dashboardPublicUrl && !/localhost|127\.0\.0\.1/.test(config.dashboardPublicUrl)) {
-    return config.dashboardPublicUrl;
-  }
-
-  return `http://host.minikube.internal:${String(config.dashboardPort)}`;
 }
 
 function systemActor(userId: string): WorkItemActor {
@@ -472,6 +450,7 @@ async function createDashboardWorkItemsBundle(
   db: Database,
   store: RunStore,
   runManager: RunManager,
+  githubService: GitHubService | undefined,
   webClient: import("@slack/web-api").WebClient | undefined,
   workItemServices: WorkItemServicesBundle,
 ): Promise<DashboardWorkItemsBundle> {
@@ -631,10 +610,29 @@ async function createDashboardWorkItemsBundle(
     config: {
       defaultBaseBranch: config.defaultBaseBranch,
       sandboxRuntime: config.sandboxRuntime,
+      autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
     },
     runManager,
   });
   workItemOrchestratorRef.current = workItemOrchestrator;
+
+  if (
+    config.autoReviewBranchSyncEnabled &&
+    githubService &&
+    typeof githubService.compareBranchRefs === "function"
+  ) {
+    const { startBranchSyncMonitor } = await import("./work-items/branch-sync-monitor.js");
+    startBranchSyncMonitor({
+      workItems: requiredWorkItemStore,
+      runs: store,
+      maxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
+      intervalMs: config.autoReviewBranchSyncIntervalMs,
+      compareBranchRefs: githubService.compareBranchRefs.bind(githubService),
+      queueBranchSyncRun: async (workItemId, reason) => {
+        await workItemOrchestrator.queueBranchSyncRun(workItemId, reason);
+      },
+    });
+  }
 
   return {
     dashboardWorkItemsSource,
@@ -728,6 +726,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     db,
     coreServices.store,
     runManager,
+    coreServices.githubService,
     coreServices.webClient,
     workItemServices,
   );

@@ -1,15 +1,16 @@
 import type { Database } from "../db/index.js";
 import { sql } from "drizzle-orm";
 import type { SandboxRuntime } from "../runtime/runtime-mode.js";
-import { nextFeatureDeliveryStateAfterAutoReview } from "./feature-delivery-policy.js";
+import { canAutoRebaseFeatureDeliveryBranch, nextFeatureDeliveryStateAfterAutoReview } from "./feature-delivery-policy.js";
 import { RunStore } from "../store.js";
-import { buildAutoReviewTask, buildCiFixTask } from "./auto-review-task.js";
+import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { WorkItemStore } from "./store.js";
 import type { FeatureDeliveryAutoReviewSubstate, WorkItemRecord } from "./types.js";
 
 const AUTO_REVIEW_REQUESTED_BY = "work-item:auto-review";
 const CI_FIX_REQUESTED_BY = "work-item:ci-fix";
+const BRANCH_SYNC_REQUESTED_BY = "work-item:branch-sync";
 const WORK_ITEM_SYSTEM_RUN_REQUESTERS = new Set([AUTO_REVIEW_REQUESTED_BY, CI_FIX_REQUESTED_BY]);
 const ACTIVE_AUTO_REVIEW_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
 const PREFETCH_FAILURE_PATTERN = /prefetch/i;
@@ -18,6 +19,7 @@ export interface WorkItemOrchestratorDeps {
   config?: {
     defaultBaseBranch: string;
     sandboxRuntime?: SandboxRuntime;
+    autoReviewBranchSyncMaxBehindCommits?: number;
   };
   runManager?: {
     requeueExistingRun(runId: string): void;
@@ -165,6 +167,69 @@ export class WorkItemOrchestrator {
 
     return rolledBack;
   }
+
+  async queueBranchSyncRun(workItemId: string, reason = "periodic.branch_stale"): Promise<WorkItemRecord | undefined> {
+    let launchedRunId: string | undefined;
+    let currentWorkItem: WorkItemRecord | undefined;
+    const baseBranch = this.deps.config?.defaultBaseBranch ?? "main";
+    const runtime = this.deps.config?.sandboxRuntime ?? "local";
+    const maxBehindCommits = this.deps.config?.autoReviewBranchSyncMaxBehindCommits ?? 5;
+
+    await this.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Database;
+      const txWorkItems = new WorkItemStore(txDb);
+      const txRuns = new RunStore(txDb);
+      const txEvents = new WorkItemEventsStore(txDb);
+
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${workItemId}))`);
+
+      const current = await txWorkItems.getWorkItem(workItemId);
+      if (!current || !shouldQueueBranchSyncRun(current)) {
+        currentWorkItem = current;
+        return;
+      }
+
+      const existingRuns = await txRuns.listRunsForWorkItem(workItemId);
+      if (existingRuns.some((run) => ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status) || run.status === "cancel_requested")) {
+        currentWorkItem = current;
+        return;
+      }
+
+      const queuedRun = await txRuns.createRun({
+        repoSlug: requireWorkItemRepo(current),
+        task: buildBranchSyncTask({
+          ...buildTaskInput(current),
+          maxBehindCommits,
+        }),
+        baseBranch: current.githubPrBaseBranch ?? baseBranch,
+        requestedBy: BRANCH_SYNC_REQUESTED_BY,
+        channelId: current.homeChannelId,
+        threadTs: current.homeThreadTs,
+        runtime,
+        workItemId: current.id,
+        autoReviewSourceSubstate: current.substate,
+        pipelineHint: "branch-sync",
+      }, "gooseherd", requireWorkItemPrHeadBranch(current));
+      launchedRunId = queuedRun.id;
+      currentWorkItem = current;
+
+      await txEvents.append({
+        workItemId: current.id,
+        eventType: "run.branch_sync_launched",
+        payload: {
+          runId: queuedRun.id,
+          reason,
+          requestedBy: BRANCH_SYNC_REQUESTED_BY,
+        },
+      });
+    });
+
+    if (launchedRunId) {
+      this.deps.runManager?.requeueExistingRun(launchedRunId);
+    }
+
+    return currentWorkItem;
+  }
 }
 
 export async function reconcileWorkItem(
@@ -194,6 +259,15 @@ export async function handlePrefetchFailure(
   return new WorkItemOrchestrator(db, deps).handlePrefetchFailure(runId);
 }
 
+export async function queueBranchSyncRun(
+  db: Database,
+  workItemId: string,
+  reason = "periodic.branch_stale",
+  deps?: WorkItemOrchestratorDeps,
+): Promise<WorkItemRecord | undefined> {
+  return new WorkItemOrchestrator(db, deps).queueBranchSyncRun(workItemId, reason);
+}
+
 function shouldAutoLaunchSystemRun(workItem: WorkItemRecord): boolean {
   if (workItem.workflow !== "feature_delivery" || workItem.state !== "auto_review") {
     return false;
@@ -203,6 +277,21 @@ function shouldAutoLaunchSystemRun(workItem: WorkItemRecord): boolean {
     workItem.substate === "pr_adopted" ||
     workItem.substate === "applying_review_feedback" ||
     workItem.substate === "ci_failed"
+  );
+}
+
+function shouldQueueBranchSyncRun(workItem: WorkItemRecord): boolean {
+  return (
+    workItem.workflow === "feature_delivery" &&
+    workItem.state !== "done" &&
+    workItem.state !== "cancelled" &&
+    canAutoRebaseFeatureDeliveryBranch(workItem.flags) &&
+    typeof workItem.repo === "string" &&
+    workItem.repo.length > 0 &&
+    typeof workItem.githubPrBaseBranch === "string" &&
+    workItem.githubPrBaseBranch.length > 0 &&
+    typeof workItem.githubPrHeadBranch === "string" &&
+    workItem.githubPrHeadBranch.length > 0
   );
 }
 

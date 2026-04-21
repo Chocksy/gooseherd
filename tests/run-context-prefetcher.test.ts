@@ -185,6 +185,7 @@ test("RunContextPrefetcher returns undefined when the linked work item has no PR
 
 test("RunContextPrefetcher normalizes GitHub and Jira bundles into a prefetched snapshot", async () => {
   const workItem = makeWorkItem({
+    flags: ["github_pr_adopted"],
     githubPrUrl: "https://github.com/owner/repo/pull/17?expand=1#discussion_r1",
     jiraIssueKey: "HBL-17",
   });
@@ -309,6 +310,7 @@ test("RunContextPrefetcher normalizes GitHub and Jira bundles into a prefetched 
   assert.deepEqual(result.meta.sources.sort(), ["github_ci", "github_pr", "jira"]);
   assert.equal(result.workItem.id, workItem.id);
   assert.equal(result.workItem.title, "Prefetch work item");
+  assert.equal(result.workItem.isAdoptedPr, true);
   assert.equal(result.github?.pr.number, 17);
   assert.equal(result.github?.pr.headSha, "sha-123");
   assert.equal(result.workItem.githubPrNumber, 17);

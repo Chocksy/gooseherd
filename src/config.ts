@@ -166,6 +166,9 @@ export interface AppConfig {
   featureDeliveryResetEngineeringReviewOnNewCommits: boolean;
   featureDeliveryResetQaReviewOnNewCommits: boolean;
   workItemGithubAdoptionLabels: string[];
+  autoReviewBranchSyncEnabled: boolean;
+  autoReviewBranchSyncMaxBehindCommits: number;
+  autoReviewBranchSyncIntervalMs: number;
 
   dashboardToken?: string;
 

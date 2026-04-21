@@ -1,0 +1,26 @@
+version: 1
+name: "branch-sync"
+description: "Rebase an existing PR branch onto its base branch and push it back."
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: sync_base_branch
+    type: deterministic
+    action: sync_base_branch
+
+  - id: push
+    type: deterministic
+    action: push
+    if: "ctx.rebasePerformed"
+
+  - id: wait_ci
+    type: async
+    action: wait_ci
+    if: "ctx.rebasePerformed"
+
+  - id: notify
+    type: deterministic
+    action: notify

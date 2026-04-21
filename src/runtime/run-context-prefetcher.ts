@@ -3,7 +3,7 @@ import type { JiraClient, JiraComment, JiraIssueDetails } from "../jira.js";
 import type { RunPrefetchContext } from "./run-context-types.js";
 import type { RunRecord } from "../types.js";
 import type { WorkItemStore } from "../work-items/store.js";
-import type { WorkItemRecord } from "../work-items/types.js";
+import { GITHUB_PR_ADOPTED_FLAG, type WorkItemRecord } from "../work-items/types.js";
 
 type GitHubDeps = Pick<
   GitHubService,
@@ -53,6 +53,8 @@ export class RunContextPrefetcher {
         title: workItem.title,
         workflow: workItem.workflow,
         state: workItem.state,
+        isAdoptedPr: workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG),
+        flags: workItem.flags,
         jiraIssueKey: workItem.jiraIssueKey,
         githubPrUrl: workItem.githubPrUrl,
         githubPrNumber,

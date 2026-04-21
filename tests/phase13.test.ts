@@ -765,10 +765,12 @@ describe("ObserverDaemon tokenGetter", () => {
 
 describe("push node githubService guard", () => {
   let pushNode: typeof import("../src/pipeline/nodes/push.js").pushNode;
+  let buildPushCommand: typeof import("../src/pipeline/nodes/push.js").buildPushCommand;
 
   test("load pushNode", async () => {
     const mod = await import("../src/pipeline/nodes/push.js");
     pushNode = mod.pushNode;
+    buildPushCommand = mod.buildPushCommand;
   });
 
   test("push node succeeds in dry-run mode without githubService", async () => {
@@ -786,6 +788,17 @@ describe("push node githubService guard", () => {
     assert.equal(result.outcome, "failure");
     assert.ok(result.error?.includes("GitHub authentication required"));
     assert.ok(result.error?.includes("GitHub App credentials"));
+  });
+
+  test("buildPushCommand adds --force-with-lease after a rebase", () => {
+    assert.equal(
+      buildPushCommand("gooseherd/test", true),
+      "git push origin 'gooseherd/test' --force-with-lease",
+    );
+    assert.equal(
+      buildPushCommand("gooseherd/test", false),
+      "git push origin 'gooseherd/test'",
+    );
   });
 });
 

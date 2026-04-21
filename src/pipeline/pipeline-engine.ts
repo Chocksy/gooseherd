@@ -30,7 +30,7 @@ import { NODE_HANDLERS } from "./node-registry.js";
 import { isNonCodeFixFailure, type BrowserVerifyFailureCode } from "./quality-gates/browser-verify-routing.js";
 import { escalateMode, type ExecutionMode } from "./quality-gates/task-classifier.js";
 
-export type PipelinePhase = "cloning" | "agent" | "validating" | "pushing" | "awaiting_ci" | "ci_fixing";
+export type PipelinePhase = "cloning" | "rebasing" | "agent" | "validating" | "pushing" | "awaiting_ci" | "ci_fixing";
 
 /**
  * Evaluate a pipeline node `if` condition.

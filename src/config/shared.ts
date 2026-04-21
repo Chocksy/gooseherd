@@ -135,6 +135,9 @@ export const envSchema = z.object({
   FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: z.string().optional(),
   FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: z.string().optional(),
   WORK_ITEM_GITHUB_ADOPTION_LABELS: z.string().optional(),
+  AUTO_REVIEW_BRANCH_SYNC_ENABLED: z.string().optional(),
+  AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: z.string().optional(),
+  AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS: z.string().optional(),
 
   DASHBOARD_TOKEN: z.string().optional(),
 
@@ -157,6 +160,13 @@ export const envSchema = z.object({
 
   DATABASE_URL: z.string().optional(),
   ENCRYPTION_KEY: z.string().optional(),
+  ENCRYPTION_KEY_FILE: z.string().optional(),
+
+  KUBERNETES_RUNNER_IMAGE: z.string().optional(),
+  KUBERNETES_INTERNAL_BASE_URL: z.string().optional(),
+  KUBERNETES_NAMESPACE: z.string().optional(),
+  KUBERNETES_RUNNER_ENV_SECRET: z.string().optional(),
+  KUBERNETES_RUNNER_ENV_CONFIGMAP: z.string().optional(),
 });
 
 export type ParsedEnv = z.infer<typeof envSchema>;

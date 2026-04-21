@@ -120,6 +120,13 @@
       "when": 1779489600000,
       "tag": "0016_run_internal_artifacts",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1779493200000,
+      "tag": "0017_work_item_pr_head_sha",
+      "breakpoints": true
     }
   ]
 }

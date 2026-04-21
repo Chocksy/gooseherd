@@ -242,6 +242,34 @@ export class WorkItemStore {
     });
   }
 
+  async setFlagState(id: string, flag: string, enabled: boolean): Promise<WorkItemRecord> {
+    const current = await this.getWorkItem(id);
+    if (!current) {
+      throw new Error(`WorkItem not found: ${id}`);
+    }
+
+    const nextFlags = new Set(current.flags);
+    if (enabled) {
+      nextFlags.add(flag);
+    } else {
+      nextFlags.delete(flag);
+    }
+
+    if (nextFlags.size === current.flags.length && current.flags.every((value) => nextFlags.has(value))) {
+      return current;
+    }
+
+    await this.db
+      .update(workItems)
+      .set({
+        flags: Array.from(nextFlags),
+        updatedAt: new Date(),
+      })
+      .where(eq(workItems.id, id));
+
+    return this.requireWorkItem(id);
+  }
+
   async setJiraIssueKey(id: string, jiraIssueKey: string): Promise<WorkItemRecord> {
     await this.db
       .update(workItems)

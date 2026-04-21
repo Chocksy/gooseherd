@@ -162,9 +162,19 @@ The repository now includes a minimal local deployment bundle for this shape:
 - `kubernetes/local/gooseherd-configmap.yaml`
 - `kubernetes/local/gooseherd-deployment.yaml`
 - `kubernetes/local/gooseherd-service.yaml`
+- `kubernetes/local/gooseherd-runner-network-policy.yaml` (optional, not applied by `local-up.sh`)
 - `scripts/kubernetes/local-up.sh`
 - `scripts/kubernetes/local-down.sh`
 - `scripts/kubernetes/local-status.sh`
+
+Two local verification shapes exist in this repository today:
+
+- `npm run k8s:local-up`
+  Runs Gooseherd inside `minikube` and sets `KUBERNETES_INTERNAL_BASE_URL` to cluster DNS (`http://gooseherd.<namespace>.svc.cluster.local:8787`).
+- `npm run k8s:smoke` / `npm run k8s:harness`
+  Seed standalone manifests and default `GOOSEHERD_INTERNAL_BASE_URL` to `http://host.minikube.internal:8787`, which is useful when the control plane runs outside the cluster.
+
+Both are valid local checks, but only the first one matches the intended steady-state in-cluster deployment model.
 
 ## Images
 
@@ -244,6 +254,14 @@ This is the URL runner jobs use for:
 
 Do not point `KUBERNETES_INTERNAL_BASE_URL` at a public ingress unless that is intentionally how runner jobs should reach the service.
 
+Current fallback behavior in code:
+
+- if `KUBERNETES_INTERNAL_BASE_URL` is set, Gooseherd uses it directly
+- otherwise, Gooseherd falls back to `DASHBOARD_PUBLIC_URL` when it is non-localhost
+- otherwise, Gooseherd falls back to `http://host.minikube.internal:<DASHBOARD_PORT>`
+
+That fallback is convenient for host-driven local smoke tests, but for real Kubernetes deployment you should set `KUBERNETES_INTERNAL_BASE_URL` explicitly.
+
 ## Storage Contract
 
 ### Stateful
@@ -292,6 +310,15 @@ These values are appropriate for a `ConfigMap` or Helm values file.
 | `DASHBOARD_HOST` | No | `127.0.0.1` in code | In Kubernetes set `0.0.0.0` so the container binds on the pod interface. |
 | `DASHBOARD_PORT` | No | `8787` | Main app port. |
 | `DASHBOARD_PUBLIC_URL` | Recommended | unset | Public external URL of the dashboard. Useful for links and public-facing integrations. |
+
+### Slack and browser auth
+
+| Variable | Required | Default | Purpose / Recommendation |
+| --- | --- | --- | --- |
+| `SLACK_COMMAND_NAME` | No | derived from app slug | Slash command / mention prefix. |
+| `SLACK_ALLOWED_CHANNELS` | No | empty | Restrict bot operation to specific channels. |
+| `SLACK_CLIENT_ID` | No | unset | Needed for Sign in with Slack / browser auth flows. |
+| `SLACK_AUTH_REDIRECT_URI` | No | unset | Optional explicit callback URL. When unset, Gooseherd derives it from `DASHBOARD_PUBLIC_URL`. |
 
 ### GitHub and repo targeting
 
@@ -348,6 +375,7 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 
 | Variable | Required | Default | Purpose / Recommendation |
 | --- | --- | --- | --- |
+| `SANDBOX_ENABLED` | Legacy compatibility only | unset | Deprecated boolean compatibility switch. Prefer `SANDBOX_RUNTIME=local|docker|kubernetes` in new configs. |
 | `SANDBOX_IMAGE` | No | `gooseherd/sandbox:default` | Docker sandbox image, not used by Kubernetes runner jobs. |
 | `SANDBOX_HOST_WORK_PATH` | No | empty | Docker sandbox host path, not needed in Kubernetes mode. |
 | `SANDBOX_CPUS` | No | `2` | Docker sandbox tuning. |
@@ -361,9 +389,13 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `PLAN_TASK_MODEL` | No | uses `DEFAULT_LLM_MODEL` | Planning model override. |
 | `SCOPE_JUDGE_MODEL` | No | uses `DEFAULT_LLM_MODEL` | Scope judge model override. |
 | `ORCHESTRATOR_MODEL` | No | `openai/gpt-4.1-mini` | Orchestrator model override. |
+| `ORCHESTRATOR_TIMEOUT_MS` | No | `180000` | Orchestrator request timeout. |
+| `ORCHESTRATOR_WALL_CLOCK_TIMEOUT_MS` | No | `480000` | Orchestrator wall-clock budget. |
 | `BROWSER_VERIFY_MODEL` | No | uses `DEFAULT_LLM_MODEL` | Browser verify model. |
 | `BROWSER_VERIFY_EXECUTION_MODEL` | No | unset | Separate execution model for browser verify. |
+| `OBSERVER_SMART_TRIAGE_ENABLED` | No | `false` | Enables observer smart triage. |
 | `OBSERVER_SMART_TRIAGE_MODEL` | No | uses `DEFAULT_LLM_MODEL` | Smart triage model override. |
+| `OBSERVER_SMART_TRIAGE_TIMEOUT_MS` | No | `10000` | Smart triage request timeout. |
 | `OPENROUTER_PROVIDER_PREFERENCES` | No | unset | JSON routing preferences for OpenRouter. |
 
 ### Feature toggles and operational settings
@@ -382,6 +414,9 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `CI_MAX_WAIT_SECONDS` | No | `1800` | Max CI waiting time. |
 | `CI_CHECK_FILTER` | No | empty | Optional CI job filters. |
 | `CI_MAX_FIX_ROUNDS` | No | `2` | Max CI fix attempts. |
+| `WORK_ITEMS_ENABLED` | No | `false` | Enables work item flows. |
+| `EVAL_ENABLED` | No | `false` | Enables eval workflows. |
+| `SESSIONS_ENABLED` | No | `false` | Enables conversation/session persistence features. |
 | `SUPERVISOR_ENABLED` | No | `true` | Enables run watchdog/retry supervisor. |
 | `SUPERVISOR_RUN_TIMEOUT_SECONDS` | No | `7200` | Total run timeout. |
 | `SUPERVISOR_NODE_STALE_SECONDS` | No | `1800` | Node stale threshold. |
@@ -392,6 +427,12 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `AUTONOMOUS_SCHEDULER_ENABLED` | No | `false` | Enables autonomous scheduler. |
 | `AUTONOMOUS_SCHEDULER_MAX_DEFERRED` | No | `100` | Max deferred runs. |
 | `AUTONOMOUS_SCHEDULER_INTERVAL_MS` | No | `300000` | Scheduler interval. |
+| `FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets engineering review when new commits arrive on adopted work. |
+| `FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets QA review when new commits arrive on adopted work. |
+| `WORK_ITEM_GITHUB_ADOPTION_LABELS` | No | `ai:assist` | Labels that mark GitHub PRs/issues as work-item adoption candidates. |
+| `AUTO_REVIEW_BRANCH_SYNC_ENABLED` | No | `true` | Enables automatic branch-sync monitoring for auto-review. |
+| `AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS` | No | `5` | Max allowed behind-commit count before branch sync is recommended. |
+| `AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS` | No | `900000` | Branch-sync monitor polling interval. |
 | `TEAM_CHANNEL_MAP` | No | empty | JSON map of team-to-channel IDs. |
 | `JIRA_BASE_URL` | No | unset | Jira site base URL used for browse links and scoped-token `cloudId` discovery. |
 | `JIRA_CLOUD_ID` | No | unset | Optional Atlassian Cloud ID override for Jira scoped-token requests. |
@@ -425,13 +466,12 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `OBSERVER_SLACK_BOT_ALLOWLIST` | No | empty | Allowed Slack bot IDs. |
 | `OBSERVER_REPO_MAP` | No | empty | Project-to-repo mapping. |
 | `OBSERVER_SENTRY_POLL_INTERVAL_SECONDS` | No | `300` | Sentry polling interval. |
+| `SENTRY_ORG_SLUG` | No | unset | Sentry organization slug used by observer integrations. |
 | `CEMS_ENABLED` | No | `false` | Enables CEMS memory backend. |
 | `CEMS_API_URL` | No | unset | CEMS endpoint URL. |
 | `CEMS_TEAM_ID` | No | unset | CEMS team identifier. |
 | `PI_AGENT_EXTENSIONS` | No | empty | Comma-separated pi-agent extensions. |
 | `MCP_EXTENSIONS` | No | empty | Additional MCP extension paths. |
-| `SLACK_COMMAND_NAME` | No | derived from app slug | Slash command / mention prefix. |
-| `SLACK_ALLOWED_CHANNELS` | No | empty | Restrict bot operation to specific channels. |
 
 At startup, Gooseherd bootstraps or updates the default team record from `DEFAULT_TEAM_NAME` and `DEFAULT_TEAM_SLACK_CHANNEL_ID`.
 
@@ -445,6 +485,8 @@ These values should live in a Kubernetes `Secret`, external secret manager, or s
 | --- | --- | --- |
 | `DATABASE_URL` | Yes | PostgreSQL connection string used by the app. Usually includes credentials, so treat as secret. |
 | `ENCRYPTION_KEY` | Strongly recommended | Key used for encryption of stored secrets. |
+
+`ENCRYPTION_KEY_FILE` is also supported as a non-secret path override when you intentionally rely on a local key file. In Kubernetes, setting `ENCRYPTION_KEY` explicitly is usually simpler and safer than depending on pod-local key-file persistence.
 
 ### GitHub
 
@@ -487,6 +529,7 @@ The following GitHub App values are usually not treated as secrets, but many tea
 | `SLACK_BOT_TOKEN` | Required for Slack mode | Slack bot token. |
 | `SLACK_APP_TOKEN` | Required for Slack Socket Mode | Slack app-level token. |
 | `SLACK_SIGNING_SECRET` | Required for webhook/signing validation | Slack signing secret. |
+| `SLACK_CLIENT_SECRET` | Optional | Secret for Sign in with Slack / browser auth flows. |
 
 ### Dashboard and access control
 
@@ -595,7 +638,7 @@ More concretely, the current backend uses:
 - `get/list/delete` on `jobs`
 - `get/list/delete/deletecollection` on `pods`
 - `get` on `pods/log`
-- `create/get/delete` on `secrets`
+- `create/delete` on `secrets`
 
 Without these permissions, Kubernetes execution mode will fail.
 
@@ -613,12 +656,12 @@ If observer webhooks are enabled, also expose:
 
 Ensure cluster nodes can pull the image referenced by `KUBERNETES_RUNNER_IMAGE`.
 
-This is especially important because the current generated Job spec does not expose settings for:
+The current generated Job spec includes a fixed container security context and fixed resource requests/limits, but it does not expose operator-level settings for:
 
 - `imagePullSecrets`
 - `serviceAccountName`
 - custom pod security context
-- custom resource limits/requests
+- custom resource requests/limits
 
 If your registry is private, you may need one of these operator-side solutions:
 
@@ -666,6 +709,8 @@ Current generated runner jobs include:
 - one `Job`
 - one container
 - one `/work` `emptyDir`
+- fixed container resource requests/limits
+- fixed container security context
 
 They do not currently include:
 
@@ -673,7 +718,7 @@ They do not currently include:
 - repo-specific database/cache services
 - `imagePullSecrets`
 - explicit `serviceAccountName`
-- resource requests/limits
+- operator-configurable resource requests/limits
 
 If your repositories need PostgreSQL, Redis, or other dependencies during validation, those dependencies must already be reachable externally from the runner pod.
 
@@ -713,7 +758,13 @@ But local `minikube` does not prove production-specific concerns such as:
 - ingress/load balancer behavior
 - cluster policies, quotas, and admission controls
 
-For local `minikube`, runner jobs typically reach Gooseherd through:
+For the helper path that actually deploys Gooseherd inside `minikube` (`npm run k8s:local-up`), runner jobs should reach Gooseherd through cluster DNS, for example:
+
+```text
+http://gooseherd.gooseherd.svc.cluster.local:8787
+```
+
+For the host-driven smoke/harness scripts (`npm run k8s:smoke` / `npm run k8s:harness`), runner jobs typically reach Gooseherd through:
 
 ```text
 http://host.minikube.internal:8787
@@ -746,7 +797,7 @@ Current important caveats:
 - runner job spec currently has no built-in support for:
   - `imagePullSecrets`
   - `serviceAccountName`
-  - resource requests/limits
+  - configurable resource requests/limits
   - sidecars for repo dependencies
 
 So the correct mental model is:
@@ -759,9 +810,10 @@ So the correct mental model is:
 Useful source files when handing this off to DevOps:
 
 - [`docker-compose.yml`](../docker-compose.yml)
-- [`/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/.env.example`](../.env.example)
-- [`/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/src/config.ts`](../src/config.ts)
-- [`/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/src/index.ts`](../src/index.ts)
-- [`/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/src/runtime/kubernetes-backend.ts`](../src/runtime/kubernetes-backend.ts)
-- [`/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/src/runtime/kubernetes/job-spec.ts`](../src/runtime/kubernetes/job-spec.ts)
-- [`/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/kubernetes/runner.Dockerfile`](../kubernetes/runner.Dockerfile)
+- [`.env.example`](../.env.example)
+- [`src/config.ts`](../src/config.ts)
+- [`src/index.ts`](../src/index.ts)
+- [`src/runtime/kubernetes-env.ts`](../src/runtime/kubernetes-env.ts)
+- [`src/runtime/kubernetes-backend.ts`](../src/runtime/kubernetes-backend.ts)
+- [`src/runtime/kubernetes/job-spec.ts`](../src/runtime/kubernetes/job-spec.ts)
+- [`kubernetes/runner.Dockerfile`](../kubernetes/runner.Dockerfile)

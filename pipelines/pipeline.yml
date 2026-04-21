@@ -29,6 +29,10 @@ nodes:
     action: plan_task
     enabled: false
 
+  - id: sync_base_branch
+    type: deterministic
+    action: sync_base_branch
+
   - id: hydrate
     type: deterministic
     action: hydrate_context

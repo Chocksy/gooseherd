@@ -19,6 +19,7 @@ import { generateTitleNode } from "./nodes/generate-title.js";
 import { summarizeChangesNode } from "./nodes/summarize-changes.js";
 import { runNode } from "./nodes/run.js";
 import { setupSandboxNode } from "./nodes/setup-sandbox.js";
+import { syncBaseBranchNode } from "./nodes/sync-base-branch.js";
 
 // Quality gate node imports
 import { classifyTaskNode } from "./quality-gates/classify-task-node.js";
@@ -95,7 +96,8 @@ export const NODE_HANDLERS: Record<string, NodeHandler> = {
   summarize_changes: summarizeChangesNode,
   decide_next_step: lazyNodeHandler("./nodes/decide-next-step.js", "decideNextStepNode"),
   run: runNode,
-  setup_sandbox: setupSandboxNode
+  setup_sandbox: setupSandboxNode,
+  sync_base_branch: syncBaseBranchNode,
 };
 
 /** Set of valid action names, derived from the handler registry. */

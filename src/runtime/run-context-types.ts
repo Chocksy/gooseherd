@@ -10,6 +10,8 @@ export interface RunPrefetchContext {
     title: string;
     workflow: string;
     state?: string;
+    isAdoptedPr?: boolean;
+    flags?: string[];
     jiraIssueKey?: string;
     githubPrUrl?: string;
     githubPrNumber?: number;

@@ -16,6 +16,7 @@ export type RunStatus =
 export type RunPhase =
   | "queued"
   | "cloning"
+  | "rebasing"
   | "agent"
   | "validating"
   | "pushing"

@@ -10,19 +10,24 @@ The intended flow is:
 1. build/load the Gooseherd app image
 2. build/load the runner image
 3. create the `gooseherd` namespace and local PostgreSQL
-4. create the Gooseherd app secret from your local `.env`
-5. apply RBAC, NetworkPolicy, config, deployment, and service
-6. bootstrap the setup wizard through a temporary local `port-forward`
-7. reach the dashboard with `kubectl port-forward`
+4. create the Gooseherd app `Secret` from your local `.env`
+5. create the Gooseherd runtime `ConfigMap` with Kubernetes-specific values
+6. apply RBAC, deployment, PVC, and service
+7. bootstrap the setup wizard through a temporary local `port-forward`
+8. reach the dashboard with `kubectl port-forward`
+
+`npm run k8s:local-up` applies the namespace, PostgreSQL deployment, work PVC, RBAC, and service manifests directly, then creates `gooseherd-env` and `gooseherd-config` dynamically so the current runner image tag and cluster DNS callback URL are injected into the deployment.
 
 The local bundle keeps `/app/.work` on a `PersistentVolumeClaim` named `gooseherd-work`.
 That means run logs and artifacts survive normal `gooseherd` pod restarts inside the namespace.
+
+The repo also includes `kubernetes/local/gooseherd-runner-network-policy.yaml` as an optional restrictive egress policy for runner pods. `npm run k8s:local-up` does not apply it by default.
 
 Recommended commands:
 
 ```bash
 npm run k8s:local-up
-kubectl -n gooseherd port-forward svc/gooseherd 8787:8787
+kubectl -n gooseherd port-forward svc/gooseherd 8787:8787 9090:9090
 ```
 
 The local helper prints the bootstrap dashboard password after deployment.

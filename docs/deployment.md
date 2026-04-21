@@ -24,6 +24,8 @@ This is the recommended local path when Gooseherd runs in:
 - `SANDBOX_RUNTIME=local`
 - `SANDBOX_RUNTIME=docker`
 
+Legacy `SANDBOX_ENABLED=true` is still accepted for backward compatibility, but `SANDBOX_RUNTIME` is the canonical runtime switch.
+
 For a real Kubernetes local deployment path, run Gooseherd inside `minikube` instead and use [docs/installation-kubernetes.md](docs/installation-kubernetes.md).
 
 The repo now includes local `minikube` helpers:

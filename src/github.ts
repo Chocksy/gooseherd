@@ -9,6 +9,7 @@ interface PullRequestParams {
   body: string;
   head: string;
   base: string;
+  updateExistingBody?: boolean;
 }
 
 export interface PullRequestResult {
@@ -106,6 +107,12 @@ export interface PullRequestCiSnapshot {
   primaryFailedRun?: FailedCIRun;
   failedAnnotations?: FailedCIAnnotation[];
   failedLogTail?: string;
+}
+
+export interface BranchComparison {
+  aheadBy: number;
+  behindBy: number;
+  status?: string;
 }
 
 export interface AccessibleRepository {
@@ -438,6 +445,27 @@ export class GitHubService {
     return { headSha, conclusion: "success" };
   }
 
+  async compareBranchRefs(
+    repoSlug: string,
+    baseRef: string,
+    headRef: string,
+    signal?: AbortSignal,
+  ): Promise<BranchComparison> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const response = await this.octokit.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${baseRef}...${headRef}`,
+      ...(signal ? { request: { signal } } : {}),
+    });
+
+    return {
+      aheadBy: response.data.ahead_by,
+      behindBy: response.data.behind_by,
+      status: response.data.status ?? undefined,
+    };
+  }
+
   async collectCiFailureContext(
     owner: string,
     repo: string,
@@ -495,14 +523,24 @@ export class GitHubService {
 
     if (existing.data.length > 0) {
       const pr = existing.data[0];
-      // Update the existing PR title and body with latest run info
-      await this.octokit.pulls.update({
+      // Update the existing PR title, and preserve the body when the caller
+      // explicitly marks this as an adopted PR that Gooseherd should not rewrite.
+      const updateParams: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        title: string;
+        body?: string;
+      } = {
         owner,
         repo,
         pull_number: pr.number,
         title: params.title,
-        body: params.body
-      });
+      };
+      if (params.updateExistingBody !== false) {
+        updateParams.body = params.body;
+      }
+      await this.octokit.pulls.update(updateParams);
       return { url: pr.html_url, number: pr.number };
     }
 

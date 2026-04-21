@@ -283,6 +283,92 @@ test("createPrNode reuses an existing PR branch for auto-review runs without a p
   assert.equal(ctxStore.get("prNumber"), 77);
 });
 
+test("createPrNode preserves the existing PR body for adopted PRs", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const ctxStore = new Map<string, unknown>([["resolvedBaseBranch", "main"]]);
+  const deps = {
+    config: {
+      appSlug: "gooseherd",
+      appName: "Gooseherd",
+      dryRun: false,
+    },
+    run: {
+      id: "run-abc12345",
+      task: "Self-review adopted PR",
+      requestedBy: "work-item:auto-review",
+      repoSlug: "hubstaff/gooseherd",
+      baseBranch: "main",
+      branchName: "feature/hbl-404",
+      parentBranchName: "feature/hbl-404",
+      prefetchContext: {
+        meta: { fetchedAt: "2026-04-21T00:00:00.000Z", sources: [] },
+        workItem: {
+          id: "wi-1",
+          title: "Adopted work item",
+          workflow: "feature_delivery",
+          githubPrNumber: 77,
+          isAdoptedPr: true,
+        },
+      },
+    },
+    githubService: {
+      findOrCreatePullRequest: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return { url: "https://github.com/hubstaff/gooseherd/pull/77", number: 77 };
+      },
+      createPullRequest: async () => {
+        throw new Error("createPullRequest should not be called for reused adopted PRs");
+      },
+    },
+  } as any;
+  const ctx = {
+    get: <T>(key: string): T | undefined => ctxStore.get(key) as T | undefined,
+    set: (key: string, value: unknown) => { ctxStore.set(key, value); },
+  } as any;
+
+  const result = await createPrNode({}, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.updateExistingBody, false);
+  assert.equal(ctxStore.get("prNumber"), 77);
+});
+
+test("GitHubService.findOrCreatePullRequest preserves body when updateExistingBody is false", async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    pulls: {
+      list: async () => ({
+        data: [
+          {
+            number: 77,
+            html_url: "https://github.com/hubstaff/gooseherd/pull/77",
+          },
+        ],
+      }),
+      update: async (params: Record<string, unknown>) => {
+        updates.push(params);
+        return { data: { html_url: "https://github.com/hubstaff/gooseherd/pull/77", number: 77 } };
+      },
+    },
+  };
+
+  const result = await service.findOrCreatePullRequest({
+    repoSlug: "hubstaff/gooseherd",
+    title: "gooseherd: Preserve body",
+    body: "new body that should not be sent",
+    head: "feature/hbl-404",
+    base: "main",
+    updateExistingBody: false,
+  });
+
+  assert.equal(result.number, 77);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.title, "gooseherd: Preserve body");
+  assert.ok(!Object.hasOwn(updates[0]!, "body"));
+});
+
 test("GitHubService: unresolved review comments keep only unresolved threads", async () => {
   const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
   service.octokit = {

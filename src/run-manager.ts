@@ -74,6 +74,9 @@ function formatPhase(phase: string): string {
   if (phase === "cloning") {
     return "cloning repo";
   }
+  if (phase === "rebasing") {
+    return "rebasing branch";
+  }
   if (phase === "agent") {
     return "agent coding";
   }

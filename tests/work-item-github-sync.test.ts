@@ -349,6 +349,7 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
   assert.equal(adopted?.githubPrHeadBranch, "feature/hbl-404");
   assert.equal(adopted?.githubPrHeadSha, "abc12345");
   assert.ok(adopted?.flags.includes("pr_opened"));
+  assert.ok(adopted?.flags.includes("github_pr_adopted"));
 
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, adopted!.id));
   assert.ok(events.some((event) => event.eventType === "github.label_observed"));
@@ -510,6 +511,7 @@ test("github sync links labeled PR to existing delivery item with same jira key"
   assert.equal(adopted?.githubPrHeadBranch, "feature/hbl-499");
   assert.equal(adopted?.githubPrHeadSha, "feedface");
   assert.ok(adopted?.flags.includes("pr_opened"));
+  assert.ok(adopted?.flags.includes("github_pr_adopted"));
   assert.deepEqual(reconcileCalls, [{ workItemId: existing.id, reason: "github.pr_adopted" }]);
 });
 
@@ -1096,6 +1098,78 @@ test("github sync routes engineering review outcomes back into delivery flow", a
   assert.equal(approved?.state, "qa_preparation");
 });
 
+test("github sync maps review result labels into delivery flags", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Review labels sync",
+    summary: "PR labels should unlock branch sync gating",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7015",
+    jiraIssueKey: "HBL-407A",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1001,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1001",
+    initialState: "engineering_review",
+    initialSubstate: "waiting_engineering_review",
+    flags: ["pr_opened", "ci_green", "self_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1001,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1001",
+    labels: ["code review passed", "QA passed"],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "engineering_review");
+  assert.equal(updated?.substate, "waiting_engineering_review");
+  assert.ok(updated?.flags.includes("engineering_review_done"));
+  assert.ok(updated?.flags.includes("qa_review_done"));
+});
+
+test("github sync removes review result flags when the corresponding label is removed", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Review labels unsync",
+    summary: "Removing a PR label should remove the matching delivery flag",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7016",
+    jiraIssueKey: "HBL-407B",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1002,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1002",
+    initialState: "engineering_review",
+    initialSubstate: "waiting_engineering_review",
+    flags: ["pr_opened", "engineering_review_done", "qa_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "unlabeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1002,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1002",
+    labels: ["QA passed"],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "engineering_review");
+  assert.equal(updated?.substate, "waiting_engineering_review");
+  assert.ok(!updated?.flags.includes("engineering_review_done"));
+  assert.ok(updated?.flags.includes("qa_review_done"));
+});
+
 test("github sync ignores review callbacks for pull requests without a linked work item", async (t) => {
   const { cleanup, sync } = await createGitHubSyncFixture();
   t.after(cleanup);
@@ -1274,12 +1348,15 @@ test("github sync resets ready_for_merge to auto review on synchronize", async (
     action: "synchronize",
     repo: "hubstaff/gooseherd",
     prNumber: 104,
+    labels: ["code review passed", "QA passed"],
   });
 
   assert.equal(updated?.id, delivery.id);
   assert.equal(updated?.state, "auto_review");
   assert.equal(updated?.substate, "waiting_ci");
   assert.ok(!updated?.flags.includes("ci_green"));
+  assert.ok(!updated?.flags.includes("engineering_review_done"));
+  assert.ok(!updated?.flags.includes("qa_review_done"));
 });
 
 test("github sync clears ci_green and self_review_done on synchronize for auto_review items", async (t) => {

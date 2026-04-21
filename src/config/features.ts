@@ -67,6 +67,9 @@ type FeatureConfigSlice = Pick<
   | "featureDeliveryResetEngineeringReviewOnNewCommits"
   | "featureDeliveryResetQaReviewOnNewCommits"
   | "workItemGithubAdoptionLabels"
+  | "autoReviewBranchSyncEnabled"
+  | "autoReviewBranchSyncMaxBehindCommits"
+  | "autoReviewBranchSyncIntervalMs"
 >;
 
 export function loadFeatureFlags(parsed: ParsedEnv): AppFeatures {
@@ -151,5 +154,8 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     workItemGithubAdoptionLabels: workItemGithubAdoptionLabels.length > 0
       ? workItemGithubAdoptionLabels
       : ["ai:assist"],
+    autoReviewBranchSyncEnabled: parseBoolean(parsed.AUTO_REVIEW_BRANCH_SYNC_ENABLED, true),
+    autoReviewBranchSyncMaxBehindCommits: parseInteger(parsed.AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS, 5),
+    autoReviewBranchSyncIntervalMs: parseInteger(parsed.AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS, 900_000),
   };
 }

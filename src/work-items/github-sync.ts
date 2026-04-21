@@ -792,7 +792,9 @@ export class GitHubWorkItemSync {
 
     const nextState = workItem.state === "engineering_review" && normalizedFlagsToAdd.has("engineering_review_done")
       ? nextFeatureDeliveryStateAfterEngineeringReview("approved")
-      : workItem.state;
+      : workItem.state === "qa_review" && normalizedFlagsToAdd.has("qa_review_done")
+        ? nextFeatureDeliveryStateAfterQaReview("approved")
+        : workItem.state;
     const nextSubstate = nextState === workItem.state
       ? workItem.substate
       : nextFeatureDeliverySubstateForState(nextState, { fallback: workItem.substate });

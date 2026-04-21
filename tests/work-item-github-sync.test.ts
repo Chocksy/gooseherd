@@ -1378,6 +1378,41 @@ test("github sync removes review result flags when the corresponding label is re
   assert.ok(updated?.flags.includes("ai_assist_disabled"));
 });
 
+test("github sync advances qa review when QA passed label is present", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "QA label sync",
+    summary: "QA label should move the work item to merge-ready",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.70165",
+    jiraIssueKey: "HBL-407BQ",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 10021,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/10021",
+    initialState: "qa_review",
+    initialSubstate: "waiting_qa_review",
+    flags: ["pr_opened", "engineering_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 10021,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/10021",
+    labels: ["code review passed", "QA passed"],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "ready_for_merge");
+  assert.equal(updated?.substate, "waiting_merge");
+  assert.ok(updated?.flags.includes("qa_review_done"));
+});
+
 test("github sync does not launch self review after green CI when ai:assist automation is disabled", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
     githubService: {

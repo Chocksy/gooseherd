@@ -259,6 +259,76 @@ test("work item store preserves repo on create and read", async (t) => {
   assert.equal(workItem.repo, "acme/widgets");
 });
 
+test("work item store serializes concurrent state updates for the same work item", async (t) => {
+  const { cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  const delivery = await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "engineering_review",
+    substate: "waiting_engineering_review",
+    title: "Concurrent webhook updates",
+    summary: "Two webhook callbacks should not clobber each other's flags",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.203",
+    createdByUserId: ownerUserId,
+    flags: ["pr_opened"],
+  });
+
+  const originalGetWorkItem = WorkItemStore.prototype.getWorkItem;
+  let signalFirstRead: (() => void) | undefined;
+  const firstReadReached = new Promise<void>((resolve) => {
+    signalFirstRead = resolve;
+  });
+  let releaseFirstRead: (() => void) | undefined;
+  const firstReadReleased = new Promise<void>((resolve) => {
+    releaseFirstRead = resolve;
+  });
+  let shouldHoldFirstRead = true;
+
+  WorkItemStore.prototype.getWorkItem = async function patchedGetWorkItem(id: string) {
+    const current = await originalGetWorkItem.call(this, id);
+    if (id === delivery.id && shouldHoldFirstRead) {
+      shouldHoldFirstRead = false;
+      signalFirstRead?.();
+      await firstReadReleased;
+    }
+    return current;
+  };
+  t.after(() => {
+    WorkItemStore.prototype.getWorkItem = originalGetWorkItem;
+  });
+
+  const firstUpdate = workItems.updateState(delivery.id, {
+    state: "engineering_review",
+    substate: "waiting_engineering_review",
+    flagsToAdd: ["engineering_review_done"],
+  });
+
+  await firstReadReached;
+
+  const secondUpdate = workItems.updateState(delivery.id, {
+    state: "engineering_review",
+    substate: "waiting_engineering_review",
+    flagsToAdd: ["qa_review_done"],
+  });
+
+  const secondFinishedWhileFirstWasBlocked = await Promise.race([
+    secondUpdate.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+  ]);
+
+  assert.equal(secondFinishedWhileFirstWasBlocked, false);
+
+  releaseFirstRead?.();
+  await Promise.all([firstUpdate, secondUpdate]);
+
+  const updated = await workItems.requireWorkItem(delivery.id);
+  assert.ok(updated.flags.includes("engineering_review_done"));
+  assert.ok(updated.flags.includes("qa_review_done"));
+});
+
 test("work item store allows multiple feature deliveries to share the same source work item id", async (t) => {
   const { db, cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
   t.after(cleanup);

@@ -39,6 +39,14 @@ function rowToRecord(row: WorkItemRow): WorkItemRecord {
 export class WorkItemStore {
   constructor(private readonly db: Database) {}
 
+  private async withLockedWorkItem<T>(id: string, callback: (store: WorkItemStore) => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Database;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${id}))`);
+      return callback(new WorkItemStore(txDb));
+    });
+  }
+
   async createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord> {
     const id = randomUUID();
     const now = new Date();
@@ -186,29 +194,31 @@ export class WorkItemStore {
   }
 
   async updateState(id: string, input: UpdateWorkItemStateInput): Promise<WorkItemRecord> {
-    const current = await this.getWorkItem(id);
-    if (!current) throw new Error(`WorkItem not found: ${id}`);
+    return this.withLockedWorkItem(id, async (txWorkItems) => {
+      const current = await txWorkItems.getWorkItem(id);
+      if (!current) throw new Error(`WorkItem not found: ${id}`);
 
-    assertStateTransitionAllowed(current, input.state);
+      assertStateTransitionAllowed(current, input.state);
 
-    const nextFlags = new Set(current.flags);
-    for (const flag of input.flagsToAdd ?? []) nextFlags.add(flag);
-    for (const flag of input.flagsToRemove ?? []) nextFlags.delete(flag);
+      const nextFlags = new Set(current.flags);
+      for (const flag of input.flagsToAdd ?? []) nextFlags.add(flag);
+      for (const flag of input.flagsToRemove ?? []) nextFlags.delete(flag);
 
-    await this.db
-      .update(workItems)
-      .set({
-        state: input.state,
-        substate: input.substate ?? null,
-        flags: Array.from(nextFlags),
-        completedAt: input.state === "done" || input.state === "cancelled" ? new Date() : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(workItems.id, id));
+      await txWorkItems.db
+        .update(workItems)
+        .set({
+          state: input.state,
+          substate: input.substate ?? null,
+          flags: Array.from(nextFlags),
+          completedAt: input.state === "done" || input.state === "cancelled" ? new Date() : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(workItems.id, id));
 
-    const updated = await this.getWorkItem(id);
-    if (!updated) throw new Error(`WorkItem not found after update: ${id}`);
-    return updated;
+      const updated = await txWorkItems.getWorkItem(id);
+      if (!updated) throw new Error(`WorkItem not found after update: ${id}`);
+      return updated;
+    });
   }
 
   async rollbackAutoReviewCollectingContext(input: {
@@ -243,45 +253,49 @@ export class WorkItemStore {
   }
 
   async setFlagState(id: string, flag: string, enabled: boolean): Promise<WorkItemRecord> {
-    const current = await this.getWorkItem(id);
-    if (!current) {
-      throw new Error(`WorkItem not found: ${id}`);
-    }
+    return this.withLockedWorkItem(id, async (txWorkItems) => {
+      const current = await txWorkItems.getWorkItem(id);
+      if (!current) {
+        throw new Error(`WorkItem not found: ${id}`);
+      }
 
-    const nextFlags = new Set(current.flags);
-    if (enabled) {
-      nextFlags.add(flag);
-    } else {
-      nextFlags.delete(flag);
-    }
+      const nextFlags = new Set(current.flags);
+      if (enabled) {
+        nextFlags.add(flag);
+      } else {
+        nextFlags.delete(flag);
+      }
 
-    if (nextFlags.size === current.flags.length && current.flags.every((value) => nextFlags.has(value))) {
-      return current;
-    }
+      if (nextFlags.size === current.flags.length && current.flags.every((value) => nextFlags.has(value))) {
+        return current;
+      }
 
-    await this.db
-      .update(workItems)
-      .set({
-        flags: Array.from(nextFlags),
-        updatedAt: new Date(),
-      })
-      .where(eq(workItems.id, id));
+      await txWorkItems.db
+        .update(workItems)
+        .set({
+          flags: Array.from(nextFlags),
+          updatedAt: new Date(),
+        })
+        .where(eq(workItems.id, id));
 
-    return this.requireWorkItem(id);
+      return txWorkItems.requireWorkItem(id);
+    });
   }
 
   async setJiraIssueKey(id: string, jiraIssueKey: string): Promise<WorkItemRecord> {
-    await this.db
-      .update(workItems)
-      .set({
-        jiraIssueKey,
-        updatedAt: new Date(),
-      })
-      .where(eq(workItems.id, id));
+    return this.withLockedWorkItem(id, async (txWorkItems) => {
+      await txWorkItems.db
+        .update(workItems)
+        .set({
+          jiraIssueKey,
+          updatedAt: new Date(),
+        })
+        .where(eq(workItems.id, id));
 
-    const updated = await this.getWorkItem(id);
-    if (!updated) throw new Error(`WorkItem not found after Jira link: ${id}`);
-    return updated;
+      const updated = await txWorkItems.getWorkItem(id);
+      if (!updated) throw new Error(`WorkItem not found after Jira link: ${id}`);
+      return updated;
+    });
   }
 
   async linkPullRequest(
@@ -295,21 +309,23 @@ export class WorkItemStore {
       githubPrHeadSha?: string;
     }
   ): Promise<WorkItemRecord> {
-    await this.db
-      .update(workItems)
-      .set({
-        repo: input.repo,
-        githubPrNumber: input.githubPrNumber,
-        githubPrUrl: input.githubPrUrl ?? null,
-        githubPrBaseBranch: input.githubPrBaseBranch ?? null,
-        githubPrHeadBranch: input.githubPrHeadBranch ?? null,
-        githubPrHeadSha: input.githubPrHeadSha ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(workItems.id, id));
+    return this.withLockedWorkItem(id, async (txWorkItems) => {
+      await txWorkItems.db
+        .update(workItems)
+        .set({
+          repo: input.repo,
+          githubPrNumber: input.githubPrNumber,
+          githubPrUrl: input.githubPrUrl ?? null,
+          githubPrBaseBranch: input.githubPrBaseBranch ?? null,
+          githubPrHeadBranch: input.githubPrHeadBranch ?? null,
+          githubPrHeadSha: input.githubPrHeadSha ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(workItems.id, id));
 
-    const updated = await this.getWorkItem(id);
-    if (!updated) throw new Error(`WorkItem not found after PR link: ${id}`);
-    return updated;
+      const updated = await txWorkItems.getWorkItem(id);
+      if (!updated) throw new Error(`WorkItem not found after PR link: ${id}`);
+      return updated;
+    });
   }
 }

@@ -8,6 +8,7 @@ import { WorkItemService } from "../src/work-items/service.js";
 import { WorkItemIdentityStore } from "../src/work-items/identity-store.js";
 import { UserDirectoryService } from "../src/user-directory/service.js";
 import { WorkItemContextResolver } from "../src/work-items/context-resolver.js";
+import { RunStore } from "../src/store.js";
 import {
   GitHubWorkItemSync,
   parseGitHubWorkItemWebhookPayload,
@@ -350,6 +351,7 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
   assert.equal(adopted?.githubPrHeadSha, "abc12345");
   assert.ok(adopted?.flags.includes("pr_opened"));
   assert.ok(adopted?.flags.includes("github_pr_adopted"));
+  assert.ok(adopted?.flags.includes("ai_assist_enabled"));
 
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, adopted!.id));
   assert.ok(events.some((event) => event.eventType === "github.label_observed"));
@@ -776,8 +778,12 @@ test("github sync keeps same PR number isolated by repo", async (t) => {
   assert.equal(otherRepoUpdated?.repo, "hubstaff/another-repo");
 });
 
-test("github sync advances auto review item to engineering review after green CI", async (t) => {
-  const { cleanup, service, sync, ownerTeamId, pmUserId, db } = await createGitHubSyncFixture();
+test("github sync advances auto review item to engineering review after green aggregate CI", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, db } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "green-head-sha", conclusion: "success" }),
+    },
+  });
   t.after(cleanup);
 
   const delivery = await service.createDeliveryFromJira({
@@ -791,9 +797,10 @@ test("github sync advances auto review item to engineering review after green CI
     repo: "hubstaff/gooseherd",
     githubPrNumber: 88,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/88",
+    githubPrHeadSha: "green-head-sha",
     initialState: "auto_review",
     initialSubstate: "waiting_ci",
-    flags: ["pr_opened", "self_review_done"],
+    flags: ["pr_opened", "self_review_done", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -802,6 +809,7 @@ test("github sync advances auto review item to engineering review after green CI
     repo: "hubstaff/gooseherd",
     conclusion: "success",
     status: "completed",
+    headSha: "green-head-sha",
     pullRequestNumbers: [88],
   });
 
@@ -811,6 +819,90 @@ test("github sync advances auto review item to engineering review after green CI
 
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, delivery.id));
   assert.ok(events.some((event) => event.eventType === "github.ci_updated"));
+});
+
+test("github sync launches self review once after aggregate green CI when self review is still pending", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "green-self-review-sha", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Green CI needs self review",
+    summary: "Wait for aggregate green before re-running self review",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.6005",
+    jiraIssueKey: "HBL-405G",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 880,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/880",
+    githubPrHeadSha: "green-self-review-sha",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "success",
+    status: "completed",
+    headSha: "green-self-review-sha",
+    pullRequestNumbers: [880],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "ci_green_pending_self_review");
+  assert.ok(updated?.flags.includes("ci_green"));
+  assert.ok(!updated?.flags.includes("self_review_done"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.ci_green_pending_self_review" }]);
+});
+
+test("github sync does not relaunch self review on repeated aggregate green CI after ci_green is already set", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "green-self-review-sha", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Repeated green CI",
+    summary: "Do not duplicate self review launches",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.6006",
+    jiraIssueKey: "HBL-405H",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 881,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/881",
+    githubPrHeadSha: "green-self-review-sha",
+    initialState: "auto_review",
+    initialSubstate: "ci_green_pending_self_review",
+    flags: ["pr_opened", "ci_green", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "success",
+    status: "completed",
+    headSha: "green-self-review-sha",
+    pullRequestNumbers: [881],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "ci_green_pending_self_review");
+  assert.deepEqual(reconcileCalls, []);
 });
 
 test("github sync adopts a labeled PR with already failed current CI into ci_failed", async (t) => {
@@ -845,6 +937,34 @@ test("github sync adopts a labeled PR with already failed current CI into ci_fai
   assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
 });
 
+test("github sync adopts a labeled PR with already green current CI into ci_green_pending_self_review", async (t) => {
+  const { cleanup, sync, reconcileCalls } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "feedface", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 79,
+    prTitle: "Adopt from labeled webhook",
+    prBody: "Fixes HBL-406",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/79",
+    baseBranch: "main",
+    headBranch: "feature/hbl-406",
+    headSha: "feedface",
+    labels: ["ai:assist"],
+  } as never);
+
+  assert.equal(adopted?.state, "auto_review");
+  assert.equal(adopted?.substate, "ci_green_pending_self_review");
+  assert.ok(adopted?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
+});
+
 test("github sync adopts a labeled PR with pending current CI into pr_adopted", async (t) => {
   const { cleanup, sync } = await createGitHubSyncFixture({
     githubService: {
@@ -870,8 +990,17 @@ test("github sync adopts a labeled PR with pending current CI into pr_adopted", 
   assert.equal(adopted?.substate, "pr_adopted");
 });
 
-test("github sync returns auto_review items to ci_failed and reconciles on failed CI", async (t) => {
-  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+test("github sync returns auto_review items to ci_failed and reconciles on aggregate failed CI", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({
+        headSha: "failure-head-sha",
+        conclusion: "failure",
+        failedRuns: [{ id: 1, name: "unit-tests", status: "completed", conclusion: "failure" }],
+        failedAnnotations: [],
+      }),
+    },
+  });
   t.after(cleanup);
 
   const delivery = await service.createDeliveryFromJira({
@@ -885,9 +1014,10 @@ test("github sync returns auto_review items to ci_failed and reconciles on faile
     repo: "hubstaff/gooseherd",
     githubPrNumber: 89,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/89",
+    githubPrHeadSha: "failure-head-sha",
     initialState: "auto_review",
     initialSubstate: "waiting_ci",
-    flags: ["pr_opened", "ci_green", "self_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -896,6 +1026,7 @@ test("github sync returns auto_review items to ci_failed and reconciles on faile
     repo: "hubstaff/gooseherd",
     conclusion: "failure",
     status: "completed",
+    headSha: "failure-head-sha",
     pullRequestNumbers: [89],
   });
 
@@ -904,6 +1035,75 @@ test("github sync returns auto_review items to ci_failed and reconciles on faile
   assert.equal(updated?.substate, "ci_failed");
   assert.ok(!updated?.flags.includes("ci_green"));
   assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.ci_failed" }]);
+});
+
+test("github sync clears ci_green but suppresses ci-fix launch when aggregate CI fails during an active system run", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls, db } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({
+        headSha: "failure-active-sha",
+        conclusion: "failure",
+        failedRuns: [{ id: 1, name: "unit-tests", status: "completed", conclusion: "failure" }],
+        failedAnnotations: [],
+      }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "CI failure while active run is already processing",
+    summary: "Do not launch ci-fix twice",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.6011",
+    jiraIssueKey: "HBL-405I",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 892,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/892",
+    githubPrHeadSha: "failure-active-sha",
+    initialState: "auto_review",
+    initialSubstate: "ci_green_pending_self_review",
+    flags: ["pr_opened", "ci_green", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  const runStore = new RunStore(db);
+  await runStore.init();
+  const activeRun = await runStore.createRun(
+    {
+      repoSlug: delivery.repo!,
+      task: "Existing system run",
+      baseBranch: "main",
+      requestedBy: "work-item:auto-review",
+      channelId: delivery.homeChannelId,
+      threadTs: delivery.homeThreadTs,
+      runtime: "local",
+      workItemId: delivery.id,
+      autoReviewSourceSubstate: "ci_green_pending_self_review",
+    },
+    "gooseherd",
+    delivery.githubPrHeadBranch,
+  );
+  await runStore.updateRun(activeRun.id, {
+    status: "running",
+    phase: "agent",
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "failure",
+    status: "completed",
+    headSha: "failure-active-sha",
+    pullRequestNumbers: [892],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "ci_green_pending_self_review");
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, []);
 });
 
 test("github sync ignores stale failed CI for an older head sha", async (t) => {
@@ -935,7 +1135,7 @@ test("github sync ignores stale failed CI for an older head sha", async (t) => {
     githubPrHeadSha: "new-head-sha",
     initialState: "auto_review",
     initialSubstate: "waiting_ci",
-    flags: ["pr_opened", "ci_green", "self_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -959,6 +1159,12 @@ test("github sync handles check_suite using stored head sha without fetching the
   let getPullRequestCalls = 0;
   const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
     githubService: {
+      getPullRequestCiSnapshot: async () => ({
+        headSha: "current-head-sha",
+        conclusion: "failure",
+        failedRuns: [{ id: 1, name: "unit-tests", status: "completed", conclusion: "failure" }],
+        failedAnnotations: [],
+      }),
       getPullRequest: async () => {
         getPullRequestCalls += 1;
         throw new Error("check_suite should not fetch pull request details");
@@ -981,7 +1187,7 @@ test("github sync handles check_suite using stored head sha without fetching the
     githubPrHeadSha: "current-head-sha",
     initialState: "auto_review",
     initialSubstate: "waiting_ci",
-    flags: ["pr_opened", "ci_green", "self_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -1054,7 +1260,7 @@ test("github sync routes engineering review outcomes back into delivery flow", a
     githubPrNumber: 99,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/99",
     initialState: "engineering_review",
-    flags: ["pr_opened", "ci_green", "self_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   const sentBack = await sync.handleWebhookPayload({
@@ -1082,7 +1288,7 @@ test("github sync routes engineering review outcomes back into delivery flow", a
     githubPrNumber: 100,
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/100",
     initialState: "engineering_review",
-    flags: ["pr_opened", "ci_green", "self_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   const approved = await sync.handleWebhookPayload({
@@ -1151,7 +1357,7 @@ test("github sync removes review result flags when the corresponding label is re
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1002",
     initialState: "engineering_review",
     initialSubstate: "waiting_engineering_review",
-    flags: ["pr_opened", "engineering_review_done", "qa_review_done"],
+    flags: ["pr_opened", "engineering_review_done", "qa_review_done", "ai_assist_enabled"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -1168,6 +1374,119 @@ test("github sync removes review result flags when the corresponding label is re
   assert.equal(updated?.substate, "waiting_engineering_review");
   assert.ok(!updated?.flags.includes("engineering_review_done"));
   assert.ok(updated?.flags.includes("qa_review_done"));
+  assert.ok(!updated?.flags.includes("ai_assist_enabled"));
+  assert.ok(updated?.flags.includes("ai_assist_disabled"));
+});
+
+test("github sync does not launch self review after green CI when ai:assist automation is disabled", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "green-disabled-sha", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Green CI while automation is disabled",
+    summary: "Keep status in sync without launching self review",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7017",
+    jiraIssueKey: "HBL-407C",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1003,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1003",
+    githubPrHeadSha: "green-disabled-sha",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_disabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "success",
+    status: "completed",
+    headSha: "green-disabled-sha",
+    pullRequestNumbers: [1003],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "ci_green_pending_self_review");
+  assert.ok(updated?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, []);
+});
+
+test("github sync does not auto-launch follow-up review when changes are requested and ai:assist automation is disabled", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Review requested while automation is disabled",
+    summary: "Do not auto-launch a new review run",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7018",
+    jiraIssueKey: "HBL-407D",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1004,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1004",
+    initialState: "engineering_review",
+    flags: ["pr_opened", "ci_green", "self_review_done", "github_pr_adopted", "ai_assist_disabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request_review",
+    action: "submitted",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1004,
+    state: "changes_requested",
+    reviewer: "reviewer-a",
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "applying_review_feedback");
+  assert.deepEqual(reconcileCalls, []);
+});
+
+test("github sync re-enables automation for an existing linked PR when ai:assist is added back", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Re-enable automation",
+    summary: "Adding ai:assist back should resume auto review",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7019",
+    jiraIssueKey: "HBL-407E",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1005,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1005",
+    initialState: "auto_review",
+    initialSubstate: "ci_green_pending_self_review",
+    flags: ["pr_opened", "ci_green", "github_pr_adopted", "ai_assist_disabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1005,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1005",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.ok(updated?.flags.includes("ai_assist_enabled"));
+  assert.ok(!updated?.flags.includes("ai_assist_disabled"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.automation_enabled" }]);
 });
 
 test("github sync ignores review callbacks for pull requests without a linked work item", async (t) => {

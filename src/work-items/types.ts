@@ -1,6 +1,8 @@
 export type WorkItemWorkflow = "product_discovery" | "feature_delivery";
 
 export const GITHUB_PR_ADOPTED_FLAG = "github_pr_adopted";
+export const AI_ASSIST_ENABLED_FLAG = "ai_assist_enabled";
+export const AI_ASSIST_DISABLED_FLAG = "ai_assist_disabled";
 
 export type ProductDiscoveryState =
   | "backlog"
@@ -28,6 +30,7 @@ export const FEATURE_DELIVERY_AUTO_REVIEW_SUBSTATES = [
   "pr_adopted",
   "collecting_context",
   "waiting_ci",
+  "ci_green_pending_self_review",
   "applying_review_feedback",
   "ci_failed",
   "revalidating_after_rebase",

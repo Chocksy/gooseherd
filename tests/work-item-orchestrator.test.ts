@@ -8,7 +8,7 @@ import { WorkItemService } from "../src/work-items/service.js";
 import { WorkItemStore } from "../src/work-items/store.js";
 import { RunStore } from "../src/store.js";
 
-type AutoReviewSubstate = "pr_adopted" | "applying_review_feedback" | "ci_failed";
+type AutoReviewSubstate = "pr_adopted" | "applying_review_feedback" | "ci_failed" | "ci_green_pending_self_review";
 
 async function createAutoReviewFixture(substate: AutoReviewSubstate = "pr_adopted") {
   const testDb = await createTestDb();
@@ -50,7 +50,7 @@ async function createAutoReviewFixture(substate: AutoReviewSubstate = "pr_adopte
     createdByUserId: ownerUserId,
     initialState: "auto_review",
     initialSubstate: substate,
-    flags: ["pr_opened"],
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
   });
 
   return {
@@ -108,7 +108,7 @@ async function createFeatureDeliveryFixture(options: {
     createdByUserId: ownerUserId,
     initialState: options.state,
     initialSubstate: options.substate,
-    flags: ["pr_opened", ...(options.flags ?? [])],
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled", ...(options.flags ?? [])],
   });
 
   return {
@@ -235,6 +235,50 @@ test("orchestrator launches a standalone ci-fix run for auto_review ci_failed", 
   assert.equal(runRows[0]?.runtime, "kubernetes");
 });
 
+test("orchestrator launches a self-review run for auto_review ci_green_pending_self_review", async (t) => {
+  const { db, cleanup, workItem } = await createAutoReviewFixture("ci_green_pending_self_review");
+  t.after(cleanup);
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await reconcileWorkItem(db, workItem.id, "github.ci_green_pending_self_review", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.state, "auto_review");
+  assert.equal(workItemRow?.substate, "collecting_context");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:auto-review");
+  assert.equal(runRows[0]?.pipelineHint, "pipeline");
+  assert.equal(runRows[0]?.branchName, "feature/hbl-404");
+  assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
+  assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_green_pending_self_review");
+  assert.equal(runRows[0]?.runtime, "kubernetes");
+});
+
+test("orchestrator does not auto-launch runs when ai:assist automation is disabled", async (t) => {
+  const { db, cleanup, workItem } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const workItemStore = new WorkItemStore(db);
+  await workItemStore.updateState(workItem.id, {
+    state: "auto_review",
+    substate: "ci_failed",
+    flagsToRemove: ["ai_assist_enabled"],
+    flagsToAdd: ["ai_assist_disabled"],
+  });
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await reconcileWorkItem(db, workItem.id, "github.ci_failed");
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.substate, "ci_failed");
+  assert.equal(runRows.length, 0);
+});
+
 test("orchestrator queues a standalone branch-sync run for stale ready_for_merge work items", async (t) => {
   const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
     state: "ready_for_merge",
@@ -269,6 +313,28 @@ test("orchestrator does not queue branch-sync runs until engineering and QA revi
     flags: ["ci_green", "engineering_review_done"],
   });
   t.after(cleanup);
+  const { queueBranchSyncRun } = await import("../src/work-items/orchestrator.js");
+
+  await queueBranchSyncRun(db, workItem.id, "periodic.branch_stale", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+  assert.equal(runRows.length, 0);
+});
+
+test("orchestrator does not queue branch-sync runs when ai:assist automation is disabled", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "ready_for_merge",
+    substate: "waiting_merge",
+    flags: ["ci_green", "engineering_review_done", "qa_review_done", "ai_assist_disabled"],
+  });
+  t.after(cleanup);
+  const workItemStore = new WorkItemStore(db);
+  await workItemStore.updateState(workItem.id, {
+    state: "ready_for_merge",
+    flagsToRemove: ["ai_assist_enabled"],
+  });
   const { queueBranchSyncRun } = await import("../src/work-items/orchestrator.js");
 
   await queueBranchSyncRun(db, workItem.id, "periodic.branch_stale", {

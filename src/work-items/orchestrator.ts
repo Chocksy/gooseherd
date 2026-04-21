@@ -6,7 +6,13 @@ import { RunStore } from "../store.js";
 import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { WorkItemStore } from "./store.js";
-import type { FeatureDeliveryAutoReviewSubstate, WorkItemRecord } from "./types.js";
+import {
+  AI_ASSIST_DISABLED_FLAG,
+  AI_ASSIST_ENABLED_FLAG,
+  GITHUB_PR_ADOPTED_FLAG,
+  type FeatureDeliveryAutoReviewSubstate,
+  type WorkItemRecord,
+} from "./types.js";
 
 const AUTO_REVIEW_REQUESTED_BY = "work-item:auto-review";
 const CI_FIX_REQUESTED_BY = "work-item:ci-fix";
@@ -269,12 +275,17 @@ export async function queueBranchSyncRun(
 }
 
 function shouldAutoLaunchSystemRun(workItem: WorkItemRecord): boolean {
-  if (workItem.workflow !== "feature_delivery" || workItem.state !== "auto_review") {
+  if (
+    workItem.workflow !== "feature_delivery" ||
+    workItem.state !== "auto_review" ||
+    !isAiAssistAutomationEnabled(workItem)
+  ) {
     return false;
   }
 
   return (
     workItem.substate === "pr_adopted" ||
+    workItem.substate === "ci_green_pending_self_review" ||
     workItem.substate === "applying_review_feedback" ||
     workItem.substate === "ci_failed"
   );
@@ -285,6 +296,7 @@ function shouldQueueBranchSyncRun(workItem: WorkItemRecord): boolean {
     workItem.workflow === "feature_delivery" &&
     workItem.state !== "done" &&
     workItem.state !== "cancelled" &&
+    isAiAssistAutomationEnabled(workItem) &&
     canAutoRebaseFeatureDeliveryBranch(workItem.flags) &&
     typeof workItem.repo === "string" &&
     workItem.repo.length > 0 &&
@@ -354,6 +366,14 @@ function resolveLaunchPlan(workItem: WorkItemRecord): {
     case "applying_review_feedback":
       return {
         nextSubstate: workItem.substate,
+        requestedBy: AUTO_REVIEW_REQUESTED_BY,
+        pipelineHint: "pipeline",
+        existingBranchName: workItem.githubPrHeadBranch,
+        buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
+      };
+    case "ci_green_pending_self_review":
+      return {
+        nextSubstate: "collecting_context",
         requestedBy: AUTO_REVIEW_REQUESTED_BY,
         pipelineHint: "pipeline",
         existingBranchName: workItem.githubPrHeadBranch,
@@ -430,4 +450,12 @@ function isLatestRollbackCandidate(run: {
     typeof run.autoReviewSourceSubstate === "string" &&
     run.autoReviewSourceSubstate.length > 0
   );
+}
+
+function isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {
+  if (workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
+    return false;
+  }
+
+  return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
 }

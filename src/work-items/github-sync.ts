@@ -12,13 +12,21 @@ import {
 } from "./feature-delivery-policy.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { logError } from "../logger.js";
+import { RunStore } from "../store.js";
 import { WorkItemService } from "./service.js";
 import { WorkItemStore } from "./store.js";
-import { GITHUB_PR_ADOPTED_FLAG, type WorkItemRecord } from "./types.js";
+import {
+  AI_ASSIST_DISABLED_FLAG,
+  AI_ASSIST_ENABLED_FLAG,
+  GITHUB_PR_ADOPTED_FLAG,
+  type WorkItemRecord,
+} from "./types.js";
 
 const ENGINEERING_REVIEW_PASSED_LABEL = "code review passed";
 const QA_PASSED_LABEL = "qa passed";
 const REVIEW_RESULT_FLAGS = ["engineering_review_done", "qa_review_done"] as const;
+const ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
+const WORK_ITEM_SYSTEM_RUN_REQUESTERS = new Set(["work-item:auto-review", "work-item:ci-fix"]);
 
 export interface GitHubWorkItemWebhookPayload {
   eventType: "pull_request" | "pull_request_review" | "check_suite";
@@ -158,6 +166,7 @@ export class GitHubWorkItemSync {
   private readonly workItems: WorkItemStore;
   private readonly workItemService: WorkItemService;
   private readonly events: WorkItemEventsStore;
+  private readonly runs: RunStore;
   private readonly adoptionLabels: string[];
   private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
@@ -169,6 +178,7 @@ export class GitHubWorkItemSync {
     this.workItems = new WorkItemStore(db);
     this.workItemService = new WorkItemService(db);
     this.events = new WorkItemEventsStore(db);
+    this.runs = new RunStore(db);
     this.adoptionLabels = (options.adoptionLabels ?? ["ai:assist"]).map((label) => label.trim().toLowerCase()).filter(Boolean);
     this.githubService = options.githubService;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
@@ -198,6 +208,7 @@ export class GitHubWorkItemSync {
 
     const existing = await this.findExistingWorkItemForPullRequest(payload.repo, prNumber, payload.prUrl);
     if (existing) {
+      const automationWasEnabled = this.isAiAssistAutomationEnabled(existing);
       let current = await this.syncStoredPullRequestContext(existing, {
         repo: payload.repo,
         githubPrUrl: payload.prUrl,
@@ -205,6 +216,7 @@ export class GitHubWorkItemSync {
         githubPrHeadBranch: payload.headBranch,
         githubPrHeadSha: payload.headSha,
       });
+      current = await this.syncAiAssistAutomationFlag(current, payload.labels);
       if (payload.action !== "synchronize") {
         current = await this.syncReviewFlagsFromPullRequestLabels(current, payload.labels);
       }
@@ -227,6 +239,10 @@ export class GitHubWorkItemSync {
         return this.handlePullRequestSynchronize(current, payload);
       }
 
+      if (!automationWasEnabled && this.isAiAssistAutomationEnabled(current) && current.state === "auto_review") {
+        await this.reconcileIfConfigured(current.id, "github.automation_enabled");
+      }
+
       return current;
     }
 
@@ -235,7 +251,7 @@ export class GitHubWorkItemSync {
     }
 
     const jiraIssueKey = parseJiraIssueKey(payload.prBody);
-    const initialAutoReviewSubstate = await this.resolveInitialAutoReviewSubstate(payload);
+    const initialAutoReviewStatus = await this.resolveInitialAutoReviewStatus(payload);
     if (jiraIssueKey) {
       const adoptionCandidates = await this.workItems.listFeatureDeliveryAdoptionCandidatesByJiraIssueKey(jiraIssueKey);
       if (adoptionCandidates.length === 1) {
@@ -260,8 +276,15 @@ export class GitHubWorkItemSync {
         });
         const updated = await this.workItems.updateState(existingByJira.id, {
           state: "auto_review",
-          substate: initialAutoReviewSubstate,
-          flagsToAdd: ["pr_opened", GITHUB_PR_ADOPTED_FLAG, ...this.reviewFlagsFromLabels(payload.labels)],
+          substate: initialAutoReviewStatus.substate,
+          flagsToAdd: [
+            "pr_opened",
+            GITHUB_PR_ADOPTED_FLAG,
+            AI_ASSIST_ENABLED_FLAG,
+            ...initialAutoReviewStatus.flagsToAdd,
+            ...this.reviewFlagsFromLabels(payload.labels),
+          ],
+          flagsToRemove: [AI_ASSIST_DISABLED_FLAG],
         });
         await this.events.append({
           workItemId: updated.id,
@@ -329,8 +352,14 @@ export class GitHubWorkItemSync {
           githubPrHeadBranch: payload.headBranch,
           githubPrHeadSha: payload.headSha,
           initialState: "auto_review",
-          initialSubstate: initialAutoReviewSubstate,
-          flags: ["pr_opened", GITHUB_PR_ADOPTED_FLAG, ...this.reviewFlagsFromLabels(payload.labels)],
+          initialSubstate: initialAutoReviewStatus.substate,
+          flags: [
+            "pr_opened",
+            GITHUB_PR_ADOPTED_FLAG,
+            AI_ASSIST_ENABLED_FLAG,
+            ...initialAutoReviewStatus.flagsToAdd,
+            ...this.reviewFlagsFromLabels(payload.labels),
+          ],
         })
       : await this.workItemService.createDeliveryFromPullRequest({
           title,
@@ -348,8 +377,14 @@ export class GitHubWorkItemSync {
           githubPrHeadBranch: payload.headBranch,
           githubPrHeadSha: payload.headSha,
           initialState: "auto_review",
-          initialSubstate: initialAutoReviewSubstate,
-          flags: ["pr_opened", GITHUB_PR_ADOPTED_FLAG, ...this.reviewFlagsFromLabels(payload.labels)],
+          initialSubstate: initialAutoReviewStatus.substate,
+          flags: [
+            "pr_opened",
+            GITHUB_PR_ADOPTED_FLAG,
+            AI_ASSIST_ENABLED_FLAG,
+            ...initialAutoReviewStatus.flagsToAdd,
+            ...this.reviewFlagsFromLabels(payload.labels),
+          ],
         });
 
     await this.events.append({
@@ -402,8 +437,35 @@ export class GitHubWorkItemSync {
       return workItem;
     }
 
-    const conclusion = payload.conclusion?.toLowerCase();
+    if (payload.status !== "completed" && payload.action !== "completed") {
+      return undefined;
+    }
+
+    const conclusion = await this.resolveCheckSuiteConclusion(payload, workItem);
+    const automationEnabled = this.isAiAssistAutomationEnabled(workItem);
     if (conclusion === "success") {
+      if (workItem.state === "auto_review" && !workItem.flags.includes("self_review_done")) {
+        const hadGreenCi = workItem.flags.includes("ci_green");
+        const hasActiveSystemRun = hadGreenCi ? false : await this.hasActiveSystemRun(workItem.id);
+        const updated = await this.workItems.updateState(workItem.id, {
+          state: "auto_review",
+          substate: "ci_green_pending_self_review",
+          flagsToAdd: ["ci_green"],
+        });
+
+        await this.events.append({
+          workItemId: updated.id,
+          eventType: "github.ci_updated",
+          payload: { conclusion, state: updated.state, prNumbers: payload.pullRequestNumbers ?? [] },
+        });
+
+        if (automationEnabled && !hadGreenCi && !hasActiveSystemRun) {
+          await this.reconcileIfConfigured(updated.id, "github.ci_green_pending_self_review");
+        }
+
+        return updated;
+      }
+
       const nextState = workItem.state === "auto_review"
         ? nextFeatureDeliveryStateAfterAutoReview({
             ciGreen: true,
@@ -435,7 +497,28 @@ export class GitHubWorkItemSync {
       return updated;
     }
 
-    if (conclusion === "failure" || conclusion === "timed_out") {
+    if (conclusion === "failure") {
+      if (workItem.state === "auto_review") {
+        const hasActiveSystemRun = await this.hasActiveSystemRun(workItem.id);
+        const updated = await this.workItems.updateState(workItem.id, {
+          state: "auto_review",
+          substate: hasActiveSystemRun ? workItem.substate : "ci_failed",
+          flagsToRemove: ["ci_green"],
+        });
+
+        await this.events.append({
+          workItemId: updated.id,
+          eventType: "github.ci_updated",
+          payload: { conclusion, state: updated.state, prNumbers: payload.pullRequestNumbers ?? [] },
+        });
+
+        if (automationEnabled && !hasActiveSystemRun) {
+          await this.reconcileIfConfigured(updated.id, "github.ci_failed");
+        }
+
+        return updated;
+      }
+
       const nextState = workItem.state === "ready_for_merge"
         ? nextFeatureDeliveryStateAfterReadyForMergeRecovery("ci_failed_after_rebase")
         : "auto_review";
@@ -443,9 +526,7 @@ export class GitHubWorkItemSync {
         state: nextState,
         substate: workItem.state === "ready_for_merge"
           ? "revalidating_after_rebase"
-          : workItem.state === "auto_review"
-            ? "ci_failed"
-            : "waiting_ci",
+          : "waiting_ci",
         flagsToRemove: ["ci_green"],
       });
 
@@ -455,33 +536,39 @@ export class GitHubWorkItemSync {
         payload: { conclusion, state: updated.state, prNumbers: payload.pullRequestNumbers ?? [] },
       });
 
-      if (workItem.state === "auto_review") {
-        await this.reconcileIfConfigured(updated.id, "github.ci_failed");
-      }
       return updated;
     }
 
     return undefined;
   }
 
-  private async resolveInitialAutoReviewSubstate(
+  private async resolveInitialAutoReviewStatus(
     payload: GitHubWorkItemWebhookPayload,
-  ): Promise<"pr_adopted" | "ci_failed"> {
+  ): Promise<{
+    substate: "pr_adopted" | "ci_failed" | "ci_green_pending_self_review";
+    flagsToAdd: string[];
+  }> {
     if (!payload.repo || !payload.headSha || !this.githubService?.getPullRequestCiSnapshot) {
-      return "pr_adopted";
+      return { substate: "pr_adopted", flagsToAdd: [] };
     }
 
     try {
       const snapshot = await this.githubService.getPullRequestCiSnapshot(payload.repo, payload.headSha);
       // getPullRequestCiSnapshot() normalizes failed check suites, including timed_out, to "failure".
-      return snapshot.conclusion === "failure" ? "ci_failed" : "pr_adopted";
+      if (snapshot.conclusion === "failure") {
+        return { substate: "ci_failed", flagsToAdd: [] };
+      }
+      if (snapshot.conclusion === "success") {
+        return { substate: "ci_green_pending_self_review", flagsToAdd: ["ci_green"] };
+      }
+      return { substate: "pr_adopted", flagsToAdd: [] };
     } catch (error) {
       logError("Failed to resolve PR adoption CI snapshot", {
         repo: payload.repo,
         headSha: payload.headSha,
         error: error instanceof Error ? error.message : String(error),
       });
-      return "pr_adopted";
+      return { substate: "pr_adopted", flagsToAdd: [] };
     }
   }
 
@@ -554,7 +641,11 @@ export class GitHubWorkItemSync {
       },
     });
 
-    if (reviewState === "changes_requested" && updated.state === "auto_review") {
+    if (
+      reviewState === "changes_requested" &&
+      updated.state === "auto_review" &&
+      this.isAiAssistAutomationEnabled(updated)
+    ) {
       await this.reconcileIfConfigured(updated.id, "github.review_changes_requested");
     }
     return updated;
@@ -662,6 +753,29 @@ export class GitHubWorkItemSync {
     }
 
     return flags;
+  }
+
+  private async syncAiAssistAutomationFlag(
+    workItem: WorkItemRecord,
+    labels: string[] | undefined,
+  ): Promise<WorkItemRecord> {
+    const hasAdoptionLabel = this.hasAdoptionLabel(labels);
+    const automationEnabled = this.isAiAssistAutomationEnabled(workItem);
+
+    if (hasAdoptionLabel && automationEnabled && !workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
+      return workItem;
+    }
+
+    if (!hasAdoptionLabel && !automationEnabled && workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
+      return workItem;
+    }
+
+    return this.workItems.updateState(workItem.id, {
+      state: workItem.state,
+      substate: workItem.substate,
+      flagsToAdd: hasAdoptionLabel ? [AI_ASSIST_ENABLED_FLAG] : [AI_ASSIST_DISABLED_FLAG],
+      flagsToRemove: hasAdoptionLabel ? [AI_ASSIST_DISABLED_FLAG] : [AI_ASSIST_ENABLED_FLAG],
+    });
   }
 
   private async syncReviewFlagsFromPullRequestLabels(
@@ -791,6 +905,40 @@ export class GitHubWorkItemSync {
       logError("GitHub work item reconcile callback failed", { workItemId, reason, error: message });
     }
   }
+
+  private async hasActiveSystemRun(workItemId: string): Promise<boolean> {
+    const runs = await this.runs.listRunsForWorkItem(workItemId);
+    return runs.some((run) => WORK_ITEM_SYSTEM_RUN_REQUESTERS.has(run.requestedBy) && ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES.has(run.status));
+  }
+
+  private isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {
+    if (workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
+      return false;
+    }
+
+    return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
+  }
+
+  private async resolveCheckSuiteConclusion(
+    payload: GitHubWorkItemWebhookPayload,
+    workItem: WorkItemRecord,
+  ): Promise<"success" | "failure" | "pending" | "no_ci" | undefined> {
+    const currentHeadSha = workItem.githubPrHeadSha ?? payload.headSha;
+    if (payload.repo && currentHeadSha && this.githubService?.getPullRequestCiSnapshot) {
+      try {
+        const snapshot = await this.githubService.getPullRequestCiSnapshot(payload.repo, currentHeadSha);
+        return snapshot.conclusion;
+      } catch (error) {
+        logError("Failed to resolve aggregate CI snapshot for check_suite", {
+          repo: payload.repo,
+          headSha: currentHeadSha,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return normalizeCheckSuiteConclusion(payload.conclusion);
+  }
 }
 
 function nextFeatureDeliverySubstateForState(
@@ -812,5 +960,23 @@ function nextFeatureDeliverySubstateForState(
       return input.defaultValue ?? "waiting_ci";
     default:
       return input.fallback;
+  }
+}
+
+function normalizeCheckSuiteConclusion(
+  conclusion: string | undefined,
+): "success" | "failure" | "pending" | "no_ci" | undefined {
+  switch (conclusion?.toLowerCase()) {
+    case "success":
+      return "success";
+    case "failure":
+    case "timed_out":
+      return "failure";
+    case "pending":
+      return "pending";
+    case "no_ci":
+      return "no_ci";
+    default:
+      return undefined;
   }
 }

@@ -1304,7 +1304,7 @@ test("github sync routes engineering review outcomes back into delivery flow", a
   assert.equal(approved?.state, "qa_preparation");
 });
 
-test("github sync maps review result labels into delivery flags", async (t) => {
+test("github sync advances engineering review when code review passed label is present", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
   t.after(cleanup);
 
@@ -1334,8 +1334,8 @@ test("github sync maps review result labels into delivery flags", async (t) => {
   });
 
   assert.equal(updated?.id, delivery.id);
-  assert.equal(updated?.state, "engineering_review");
-  assert.equal(updated?.substate, "waiting_engineering_review");
+  assert.equal(updated?.state, "qa_preparation");
+  assert.equal(updated?.substate, "preparing_review_app");
   assert.ok(updated?.flags.includes("engineering_review_done"));
   assert.ok(updated?.flags.includes("qa_review_done"));
 });

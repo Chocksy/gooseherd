@@ -376,6 +376,24 @@ test("orchestrator writeback advances auto_review to engineering_review when ci_
   assert.equal(workItemRow?.state, "engineering_review");
 });
 
+test("orchestrator writeback skips engineering_review when it is already marked done", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("applying_review_feedback");
+  t.after(cleanup);
+
+  await (new WorkItemStore(db)).updateState(workItem.id, {
+    state: "auto_review",
+    flagsToAdd: ["ci_green", "engineering_review_done"],
+  });
+  const run = await createAwaitingCiLinkedRun(runStore, workItem.id, workItem);
+  const { writebackWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await writebackWorkItem(db, run.id);
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.equal(workItemRow?.state, "qa_preparation");
+  assert.equal(workItemRow?.substate, "preparing_review_app");
+});
+
 test("orchestrator writeback marks self_review_done when auto-review run completes without awaiting_ci", async (t) => {
   const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("applying_review_feedback");
   t.after(cleanup);

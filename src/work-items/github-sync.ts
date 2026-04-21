@@ -790,9 +790,16 @@ export class GitHubWorkItemSync {
       return workItem;
     }
 
+    const nextState = workItem.state === "engineering_review" && normalizedFlagsToAdd.has("engineering_review_done")
+      ? nextFeatureDeliveryStateAfterEngineeringReview("approved")
+      : workItem.state;
+    const nextSubstate = nextState === workItem.state
+      ? workItem.substate
+      : nextFeatureDeliverySubstateForState(nextState, { fallback: workItem.substate });
+
     return this.workItems.updateState(workItem.id, {
-      state: workItem.state,
-      substate: workItem.substate,
+      state: nextState,
+      substate: nextSubstate,
       flagsToAdd,
       flagsToRemove,
     });

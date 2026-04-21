@@ -1,7 +1,11 @@
 import type { Database } from "../db/index.js";
 import { sql } from "drizzle-orm";
 import type { SandboxRuntime } from "../runtime/runtime-mode.js";
-import { canAutoRebaseFeatureDeliveryBranch, nextFeatureDeliveryStateAfterAutoReview } from "./feature-delivery-policy.js";
+import {
+  canAutoRebaseFeatureDeliveryBranch,
+  nextFeatureDeliveryStateAfterAutoReview,
+  nextFeatureDeliveryStateAfterEngineeringReview,
+} from "./feature-delivery-policy.js";
 import { RunStore } from "../store.js";
 import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
@@ -122,15 +126,38 @@ export class WorkItemOrchestrator {
       return workItem;
     }
 
-    const nextState = nextFeatureDeliveryStateAfterAutoReview({
+    const nextStateAfterAutoReview = nextFeatureDeliveryStateAfterAutoReview({
       ciGreen: workItem.flags.includes("ci_green"),
       selfReviewDone: true,
       hasActiveAutoFixes: false,
     });
+    const shouldSkipEngineeringReview =
+      nextStateAfterAutoReview === "engineering_review" &&
+      workItem.flags.includes("engineering_review_done");
+
+    if (shouldSkipEngineeringReview) {
+      const engineeringReview = await this.workItems.updateState(workItem.id, {
+        state: "engineering_review",
+        substate: nextFeatureDeliverySubstateForState("engineering_review", {
+          fallback: workItem.substate,
+          defaultValue: "waiting_ci",
+        }),
+        flagsToAdd: ["self_review_done"],
+      });
+
+      const nextState = nextFeatureDeliveryStateAfterEngineeringReview("approved");
+      return this.workItems.updateState(engineeringReview.id, {
+        state: nextState,
+        substate: nextFeatureDeliverySubstateForState(nextState, {
+          fallback: engineeringReview.substate,
+          defaultValue: "waiting_ci",
+        }),
+      });
+    }
 
     return this.workItems.updateState(workItem.id, {
-      state: nextState,
-      substate: nextFeatureDeliverySubstateForState(nextState, {
+      state: nextStateAfterAutoReview,
+      substate: nextFeatureDeliverySubstateForState(nextStateAfterAutoReview, {
         fallback: workItem.substate,
         defaultValue: "waiting_ci",
       }),

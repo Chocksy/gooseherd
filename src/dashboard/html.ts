@@ -3786,6 +3786,13 @@ export function dashboardHtml(config: AppConfig): string {
           card.className = 'board-card' + (state.selectedWorkItemId === item.id ? ' selected' : '');
           card.onclick = (function(workItemId) {
             return function() {
+              if (state.selectedWorkItemId === workItemId) {
+                state.selectedWorkItemId = null;
+                window.location.hash = '';
+                renderBoard();
+                refreshSelectedWorkItem();
+                return;
+              }
               state.selectedWorkItemId = workItemId;
               window.location.hash = '#work-item/' + encodeURIComponent(workItemId.slice(0, 8));
               renderBoard();

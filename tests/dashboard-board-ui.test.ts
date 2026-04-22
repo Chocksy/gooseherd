@@ -147,3 +147,12 @@ test("dashboard HTML falls back to runs mode when work item APIs are unavailable
   assert.match(html, /state\.workItemsAvailable = false;/);
   assert.match(html, /state\.viewMode = 'runs';/);
 });
+
+test("dashboard HTML toggles selected work item cards off and clears permalink on repeat click", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /if \(state\.selectedWorkItemId === workItemId\) \{/);
+  assert.match(html, /state\.selectedWorkItemId = null;/);
+  assert.match(html, /window\.location\.hash = '';/);
+  assert.match(html, /refreshSelectedWorkItem\(\);/);
+});

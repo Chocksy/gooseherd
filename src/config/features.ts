@@ -4,6 +4,7 @@ import {
   parseBoolean,
   parseInteger,
   parseList,
+  parseNonNegativeInteger,
   parseProviderPreferences,
   parseRepoMap,
   parseWebhookSecrets,
@@ -165,7 +166,7 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
       ? workItemGithubAdoptionLabels
       : ["ai:assist"],
     autoReviewBranchSyncEnabled: parseBoolean(parsed.AUTO_REVIEW_BRANCH_SYNC_ENABLED, true),
-    autoReviewBranchSyncMaxBehindCommits: parseInteger(parsed.AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS, 5),
+    autoReviewBranchSyncMaxBehindCommits: parseNonNegativeInteger(parsed.AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS, 5),
     autoReviewBranchSyncIntervalMs: parseInteger(parsed.AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS, 900_000),
   };
 }

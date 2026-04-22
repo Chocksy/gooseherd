@@ -202,6 +202,17 @@ export function parseInteger(value: string | undefined, fallback: number): numbe
   return parsed;
 }
 
+export function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
 export function parseAutoReviewDebugLogMode(value?: string): "off" | "failures" | "always" {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "off" || normalized === "always") {

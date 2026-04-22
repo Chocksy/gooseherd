@@ -431,7 +431,7 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets QA review when new commits arrive on adopted work. |
 | `WORK_ITEM_GITHUB_ADOPTION_LABELS` | No | `ai:assist` | Labels that mark GitHub PRs/issues as work-item adoption candidates. |
 | `AUTO_REVIEW_BRANCH_SYNC_ENABLED` | No | `true` | Enables automatic branch-sync monitoring for auto-review. |
-| `AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS` | No | `5` | Max allowed behind-commit count before branch sync is recommended. |
+| `AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS` | No | `5` | Max allowed behind-commit count before branch sync is recommended. Set to `0` to trigger on any behind commit. |
 | `AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS` | No | `900000` | Branch-sync monitor polling interval. |
 | `TEAM_CHANNEL_MAP` | No | empty | JSON map of team-to-channel IDs. |
 | `JIRA_BASE_URL` | No | unset | Jira site base URL used for browse links and scoped-token `cloudId` discovery. |

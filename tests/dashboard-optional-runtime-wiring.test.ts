@@ -6,14 +6,19 @@ import test from "node:test";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
 test("dashboard server lazy-loads eval scenario loader", async () => {
-  const source = await readFile(path.join(repoRoot, "src/dashboard-server.ts"), "utf8");
+  const dashboardServerSource = await readFile(path.join(repoRoot, "src/dashboard-server.ts"), "utf8");
+  const featureRoutesSource = await readFile(path.join(repoRoot, "src/dashboard/routes/feature-routes.ts"), "utf8");
 
   assert.ok(
-    !source.includes('import { loadScenariosFromDir } from "./eval/scenario-loader.js";'),
-    "Expected dashboard-server to avoid top-level runtime import of eval scenario loader",
+    !dashboardServerSource.includes("scenario-loader"),
+    "Expected dashboard-server to stay decoupled from the eval scenario loader implementation",
   );
   assert.ok(
-    source.includes('await import("./eval/scenario-loader.js")'),
-    "Expected dashboard-server to lazy-load eval scenario loader inside the eval route",
+    !featureRoutesSource.includes('import { loadScenariosFromDir } from "../../eval/scenario-loader.js";'),
+    "Expected feature-routes to avoid top-level runtime import of eval scenario loader",
+  );
+  assert.ok(
+    featureRoutesSource.includes('await import("../../eval/scenario-loader.js")'),
+    "Expected feature-routes to lazy-load eval scenario loader inside the eval route",
   );
 });

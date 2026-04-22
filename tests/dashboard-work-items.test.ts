@@ -127,6 +127,7 @@ function makeConfig(port: number, dataDir: string): AppConfig {
 
 function createMockRunDatabase() {
   const query = {
+    leftJoin() { return this; },
     where() { return this; },
     orderBy() { return this; },
     limit() { return Promise.resolve([]); },

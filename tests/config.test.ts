@@ -203,6 +203,20 @@ test("branch sync max behind commits accepts zero", () => {
   }
 });
 
+test("branch sync max behind commits rejects trailing garbage", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: "0abc",
+    };
+    const config = loadConfig();
+    assert.equal(config.autoReviewBranchSyncMaxBehindCommits, 5);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
 test("work item GitHub adoption labels default to ai:assist", () => {
   const originalEnv = process.env;
   try {

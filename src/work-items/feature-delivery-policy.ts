@@ -29,22 +29,26 @@ export function nextFeatureDeliveryStateAfterAutoReview(input: {
 
 export function nextFeatureDeliveryStateAfterEngineeringReview(
   outcome: "approved" | "changes_requested",
-  input: {
+  input?: {
     skipQaPreparation?: boolean;
     productReviewRequired?: boolean;
     skipProductReview?: boolean;
-  } = {},
+  },
 ): FeatureDeliveryState {
+  const skipQaPreparation = input?.skipQaPreparation ?? false;
+  const productReviewRequired = input?.productReviewRequired ?? false;
+  const skipProductReview = input?.skipProductReview;
+
   if (outcome !== "approved") {
     return "auto_review";
   }
-  if (!input.skipQaPreparation) {
+  if (!skipQaPreparation) {
     return "qa_preparation";
   }
   return nextFeatureDeliveryStateAfterQaPreparation({
-    productReviewRequired: input.productReviewRequired ?? false,
+    productReviewRequired,
     qaPrepFoundIssue: false,
-    skipProductReview: input.skipProductReview,
+    skipProductReview,
   });
 }
 

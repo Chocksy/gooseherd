@@ -429,6 +429,8 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `AUTONOMOUS_SCHEDULER_INTERVAL_MS` | No | `300000` | Scheduler interval. |
 | `FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets engineering review when new commits arrive on adopted work. |
 | `FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets QA review when new commits arrive on adopted work. |
+| `FEATURE_DELIVERY_SKIP_QA_PREPARATION` | No | `false` | Skips the manual QA-preparation stage after engineering review approval and routes directly into the next delivery stage. |
+| `FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW` | No | `false` | Skips the product-review stage when delivery policy would otherwise require it. |
 | `WORK_ITEM_GITHUB_ADOPTION_LABELS` | No | `ai:assist` | Labels that mark GitHub PRs/issues as work-item adoption candidates. |
 | `AUTO_REVIEW_BRANCH_SYNC_ENABLED` | No | `true` | Enables automatic branch-sync monitoring for auto-review. |
 | `AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS` | No | `5` | Max allowed behind-commit count before branch sync is recommended. Set to `0` to trigger on any behind commit. |

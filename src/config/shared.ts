@@ -206,11 +206,12 @@ export function parseNonNegativeInteger(value: string | undefined, fallback: num
   if (!value) {
     return fallback;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed < 0) {
+
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) {
     return fallback;
   }
-  return parsed;
+  return Number.parseInt(normalized, 10);
 }
 
 export function parseAutoReviewDebugLogMode(value?: string): "off" | "failures" | "always" {

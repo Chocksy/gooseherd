@@ -177,6 +177,7 @@ function createMockPipelineStore(pipelines: StoredPipeline[] = [SAMPLE_STORED, S
 
 function createMockRunDatabase() {
   const query = {
+    leftJoin() { return this; },
     where() { return this; },
     orderBy() { return this; },
     limit() { return Promise.resolve([]); },

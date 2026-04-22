@@ -3,13 +3,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-test("createServices passes sandboxRuntime into WorkItemOrchestrator config", async () => {
+test("createServices passes runtime and delivery review config into WorkItemOrchestrator", async () => {
   const indexPath = path.resolve(import.meta.dirname, "../src/index.ts");
   const source = await readFile(indexPath, "utf8");
 
   assert.match(
     source,
-    /workItemOrchestrator\s*=\s*new WorkItemOrchestrator\(db,\s*\{\s*config:\s*\{\s*defaultBaseBranch:\s*config\.defaultBaseBranch,\s*sandboxRuntime:\s*config\.sandboxRuntime,\s*\},\s*runManager,\s*\}\);/s,
+    /workItemOrchestrator\s*=\s*new WorkItemOrchestrator\(db,\s*\{\s*config:\s*\{[\s\S]*defaultBaseBranch:\s*config\.defaultBaseBranch,[\s\S]*sandboxRuntime:\s*config\.sandboxRuntime,[\s\S]*featureDeliverySkipQaPreparation:\s*config\.featureDeliverySkipQaPreparation,[\s\S]*featureDeliverySkipProductReview:\s*config\.featureDeliverySkipProductReview,[\s\S]*\},\s*runManager,\s*\}\);/s,
   );
 });
 

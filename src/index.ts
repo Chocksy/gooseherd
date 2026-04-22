@@ -339,6 +339,8 @@ async function createWorkItemServices(
       githubService,
       resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
+      skipQaPreparation: config.featureDeliverySkipQaPreparation,
+      skipProductReview: config.featureDeliverySkipProductReview,
       reconcileWorkItem: async (workItemId, reason) => {
         await workItemOrchestratorRef.current?.reconcileWorkItem(workItemId, reason);
       },
@@ -611,6 +613,8 @@ async function createDashboardWorkItemsBundle(
       defaultBaseBranch: config.defaultBaseBranch,
       sandboxRuntime: config.sandboxRuntime,
       autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
+      featureDeliverySkipQaPreparation: config.featureDeliverySkipQaPreparation,
+      featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
     },
     runManager,
   });

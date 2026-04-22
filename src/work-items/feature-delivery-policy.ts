@@ -28,19 +28,35 @@ export function nextFeatureDeliveryStateAfterAutoReview(input: {
 }
 
 export function nextFeatureDeliveryStateAfterEngineeringReview(
-  outcome: "approved" | "changes_requested"
+  outcome: "approved" | "changes_requested",
+  input: {
+    skipQaPreparation?: boolean;
+    productReviewRequired?: boolean;
+    skipProductReview?: boolean;
+  } = {},
 ): FeatureDeliveryState {
-  return outcome === "approved" ? "qa_preparation" : "auto_review";
+  if (outcome !== "approved") {
+    return "auto_review";
+  }
+  if (!input.skipQaPreparation) {
+    return "qa_preparation";
+  }
+  return nextFeatureDeliveryStateAfterQaPreparation({
+    productReviewRequired: input.productReviewRequired ?? false,
+    qaPrepFoundIssue: false,
+    skipProductReview: input.skipProductReview,
+  });
 }
 
 export function nextFeatureDeliveryStateAfterQaPreparation(input: {
   productReviewRequired: boolean;
   qaPrepFoundIssue: boolean;
+  skipProductReview?: boolean;
 }): FeatureDeliveryState {
   if (input.qaPrepFoundIssue) {
     return "auto_review";
   }
-  return input.productReviewRequired ? "product_review" : "qa_review";
+  return input.productReviewRequired && !input.skipProductReview ? "product_review" : "qa_review";
 }
 
 export function nextFeatureDeliveryStateAfterProductReview(

@@ -30,6 +30,8 @@ export interface WorkItemOrchestratorDeps {
     defaultBaseBranch: string;
     sandboxRuntime?: SandboxRuntime;
     autoReviewBranchSyncMaxBehindCommits?: number;
+    featureDeliverySkipQaPreparation?: boolean;
+    featureDeliverySkipProductReview?: boolean;
   };
   runManager?: {
     requeueExistingRun(runId: string): void;
@@ -145,7 +147,11 @@ export class WorkItemOrchestrator {
         flagsToAdd: ["self_review_done"],
       });
 
-      const nextState = nextFeatureDeliveryStateAfterEngineeringReview("approved");
+      const nextState = nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+        skipQaPreparation: this.deps.config?.featureDeliverySkipQaPreparation ?? false,
+        productReviewRequired: engineeringReview.flags.includes("product_review_required"),
+        skipProductReview: this.deps.config?.featureDeliverySkipProductReview ?? false,
+      });
       return this.workItems.updateState(engineeringReview.id, {
         state: nextState,
         substate: nextFeatureDeliverySubstateForState(nextState, {

@@ -116,9 +116,42 @@ test("feature delivery advances to qa_preparation when engineering review is app
   assert.equal(nextFeatureDeliveryStateAfterEngineeringReview("approved"), "qa_preparation");
 });
 
+test("feature delivery can skip qa preparation after engineering review approval", () => {
+  assert.equal(
+    nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+      skipQaPreparation: true,
+      productReviewRequired: false,
+      skipProductReview: false,
+    }),
+    "qa_review"
+  );
+});
+
+test("feature delivery routes directly to product review when qa preparation is skipped but product review remains enabled", () => {
+  assert.equal(
+    nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+      skipQaPreparation: true,
+      productReviewRequired: true,
+      skipProductReview: false,
+    }),
+    "product_review"
+  );
+});
+
 test("feature delivery routes qa preparation based on product review requirement", () => {
   assert.equal(nextFeatureDeliveryStateAfterQaPreparation({ productReviewRequired: true, qaPrepFoundIssue: false }), "product_review");
   assert.equal(nextFeatureDeliveryStateAfterQaPreparation({ productReviewRequired: false, qaPrepFoundIssue: false }), "qa_review");
+});
+
+test("feature delivery can skip product review after qa preparation", () => {
+  assert.equal(
+    nextFeatureDeliveryStateAfterQaPreparation({
+      productReviewRequired: true,
+      qaPrepFoundIssue: false,
+      skipProductReview: true,
+    }),
+    "qa_review"
+  );
 });
 
 test("feature delivery returns to auto_review when qa preparation finds an issue", () => {

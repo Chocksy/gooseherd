@@ -67,6 +67,8 @@ export interface GitHubWorkItemSyncOptions {
   githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
+  skipQaPreparation?: boolean;
+  skipProductReview?: boolean;
   reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
   resolveDeliveryContext: (input: {
     jiraIssueKey?: string;
@@ -172,6 +174,8 @@ export class GitHubWorkItemSync {
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
   private readonly resetQaReviewOnNewCommits?: boolean;
+  private readonly skipQaPreparation: boolean;
+  private readonly skipProductReview: boolean;
   private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
 
   constructor(db: Database, options: GitHubWorkItemSyncOptions) {
@@ -184,6 +188,8 @@ export class GitHubWorkItemSync {
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
+    this.skipQaPreparation = options.skipQaPreparation ?? false;
+    this.skipProductReview = options.skipProductReview ?? false;
     this.reconcileWorkItem = options.reconcileWorkItem;
   }
 
@@ -476,6 +482,7 @@ export class GitHubWorkItemSync {
           ? nextFeatureDeliveryStateAfterQaPreparation({
               productReviewRequired: workItem.flags.includes("product_review_required"),
               qaPrepFoundIssue: false,
+              skipProductReview: this.skipProductReview,
             })
           : workItem.state;
 
@@ -611,8 +618,14 @@ export class GitHubWorkItemSync {
     let flagsToAdd: string[] = [];
 
     if (currentState === "engineering_review") {
-      nextState = nextFeatureDeliveryStateAfterEngineeringReview(reviewState);
-      substate = nextState === "qa_preparation" ? "preparing_review_app" : "applying_review_feedback";
+      nextState = nextFeatureDeliveryStateAfterEngineeringReview(reviewState, {
+        skipQaPreparation: this.skipQaPreparation,
+        productReviewRequired: workItem.flags.includes("product_review_required"),
+        skipProductReview: this.skipProductReview,
+      });
+      substate = reviewState === "approved"
+        ? nextFeatureDeliverySubstateForState(nextState, { fallback: workItem.substate, defaultValue: "waiting_ci" })
+        : "applying_review_feedback";
       if (reviewState === "approved") flagsToAdd = ["engineering_review_done"];
     } else if (currentState === "product_review") {
       nextState = nextFeatureDeliveryStateAfterProductReview(reviewState);
@@ -791,7 +804,11 @@ export class GitHubWorkItemSync {
     }
 
     const nextState = workItem.state === "engineering_review" && normalizedFlagsToAdd.has("engineering_review_done")
-      ? nextFeatureDeliveryStateAfterEngineeringReview("approved")
+      ? nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+          skipQaPreparation: this.skipQaPreparation,
+          productReviewRequired: workItem.flags.includes("product_review_required"),
+          skipProductReview: this.skipProductReview,
+        })
       : workItem.state === "qa_review" && normalizedFlagsToAdd.has("qa_review_done")
         ? nextFeatureDeliveryStateAfterQaReview("approved")
         : workItem.state;

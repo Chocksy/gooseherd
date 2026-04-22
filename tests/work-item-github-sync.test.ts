@@ -38,6 +38,8 @@ async function createGitHubSyncFixture(options: {
       headSha?: string;
     }>;
   };
+  skipQaPreparation?: boolean;
+  skipProductReview?: boolean;
 } = {}) {
   const testDb = await createTestDb();
   const pmUserId = randomUUID();
@@ -75,6 +77,8 @@ async function createGitHubSyncFixture(options: {
       reconcileWorkItem: async (workItemId, reason) => {
         reconcileCalls.push({ workItemId, reason });
       },
+      skipQaPreparation: options.skipQaPreparation,
+      skipProductReview: options.skipProductReview,
       ...(options.githubService ? ({ githubService: options.githubService } as never) : {}),
     } as never),
   };
@@ -1340,6 +1344,45 @@ test("github sync advances engineering review when code review passed label is p
   assert.ok(updated?.flags.includes("qa_review_done"));
 });
 
+test("github sync respects skip flags when code review passed label is present", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    skipQaPreparation: true,
+    skipProductReview: true,
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Review labels sync with skips",
+    summary: "PR labels should respect direct-to-QA routing",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.70155",
+    jiraIssueKey: "HBL-407AA",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 10011,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/10011",
+    initialState: "engineering_review",
+    initialSubstate: "waiting_engineering_review",
+    flags: ["pr_opened", "ci_green", "self_review_done", "product_review_required"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 10011,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/10011",
+    labels: ["code review passed", "QA passed"],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "qa_review");
+  assert.equal(updated?.substate, "waiting_qa_review");
+  assert.ok(updated?.flags.includes("engineering_review_done"));
+  assert.ok(updated?.flags.includes("qa_review_done"));
+});
+
 test("github sync removes review result flags when the corresponding label is removed", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
   t.after(cleanup);
@@ -1640,6 +1683,81 @@ test("github sync advances qa preparation to product review when required", asyn
   assert.equal(updated?.id, delivery.id);
   assert.equal(updated?.state, "product_review");
   assert.equal(updated?.substate, "waiting_product_review");
+});
+
+test("github sync skips qa preparation after engineering approval when configured", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    skipQaPreparation: true,
+    skipProductReview: true,
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Skip QA preparation",
+    summary: "Go straight to QA review",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.704",
+    jiraIssueKey: "HBL-410",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 103,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/103",
+    initialState: "engineering_review",
+    initialSubstate: "waiting_engineering_review",
+    flags: ["pr_opened", "ci_green", "self_review_done", "product_review_required"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request_review",
+    action: "submitted",
+    repo: "hubstaff/gooseherd",
+    prNumber: 103,
+    state: "approved",
+    reviewer: "reviewer-a",
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "qa_review");
+  assert.equal(updated?.substate, "waiting_qa_review");
+  assert.ok(updated?.flags.includes("engineering_review_done"));
+});
+
+test("github sync skips product review after qa preparation when configured", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    skipProductReview: true,
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Skip product review",
+    summary: "Green QA prep should go to QA review",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.705",
+    jiraIssueKey: "HBL-411",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 104,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/104",
+    initialState: "qa_preparation",
+    initialSubstate: "running_e2e",
+    flags: ["pr_opened", "engineering_review_done", "product_review_required"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "success",
+    status: "completed",
+    pullRequestNumbers: [104],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "qa_review");
+  assert.equal(updated?.substate, "waiting_qa_review");
+  assert.ok(updated?.flags.includes("ci_green"));
 });
 
 test("github sync marks delivery done when linked pull request is merged", async (t) => {

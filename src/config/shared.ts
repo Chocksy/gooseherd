@@ -134,6 +134,8 @@ export const envSchema = z.object({
   SESSIONS_ENABLED: z.string().optional(),
   FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: z.string().optional(),
   FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: z.string().optional(),
+  FEATURE_DELIVERY_SKIP_QA_PREPARATION: z.string().optional(),
+  FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW: z.string().optional(),
   WORK_ITEM_GITHUB_ADOPTION_LABELS: z.string().optional(),
   AUTO_REVIEW_BRANCH_SYNC_ENABLED: z.string().optional(),
   AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: z.string().optional(),

@@ -16,6 +16,21 @@ function hasCompletedRequiredReviews(deps: NodeDeps): boolean {
   return canAutoRebaseFeatureDeliveryBranch(flags);
 }
 
+function resolveSyncBaseBranch(ctx: ContextBag, deps: NodeDeps): string | undefined {
+  const prBaseBranch = deps.run.prefetchContext?.github?.pr.baseRef?.trim();
+  if (prBaseBranch) {
+    return prBaseBranch;
+  }
+
+  const resolvedBaseBranch = ctx.get<string>("resolvedBaseBranch")?.trim();
+  if (resolvedBaseBranch) {
+    return resolvedBaseBranch;
+  }
+
+  const runBaseBranch = deps.run.baseBranch?.trim();
+  return runBaseBranch || undefined;
+}
+
 async function getCurrentHead(repoDir: string, logFile: string): Promise<string> {
   const result = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
   if (result.code !== 0) {
@@ -136,7 +151,7 @@ export async function syncBaseBranchNode(
   deps: NodeDeps,
 ): Promise<NodeResult> {
   const repoDir = ctx.getRequired<string>("repoDir");
-  const resolvedBaseBranch = ctx.get<string>("resolvedBaseBranch") ?? deps.run.baseBranch;
+  const resolvedBaseBranch = resolveSyncBaseBranch(ctx, deps);
   const logFile = deps.logFile;
   const maxBehindCommits = getMaxBehindCommits(nodeConfig, deps);
 
@@ -149,6 +164,8 @@ export async function syncBaseBranchNode(
       },
     };
   }
+
+  ctx.set("resolvedBaseBranch", resolvedBaseBranch);
 
   if (!hasCompletedRequiredReviews(deps)) {
     await appendLog(logFile, "\n[sync_base_branch] skipped: engineering_review_done and qa_review_done are both required\n");

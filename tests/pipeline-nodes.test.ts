@@ -412,6 +412,56 @@ nodes:
     assert.equal(status.stdout.trim(), "");
   });
 
+  test("prefers the current PR base branch over a stale run base branch", async (t) => {
+    const { originDir, repoDir, logFile, cleanup } = await makeGitRepoWithOrigin("sync-base-pr-base-");
+    t.after(cleanup);
+
+    await runShellCapture("git checkout -b release/2026.04", { cwd: originDir, logFile });
+    await writeFile(path.join(originDir, "release-only.txt"), "release change\n", "utf8");
+    await runShellCapture("git add release-only.txt", { cwd: originDir, logFile });
+    await runShellCapture("git commit -m 'advance release branch'", { cwd: originDir, logFile });
+    await runShellCapture("git checkout main", { cwd: originDir, logFile });
+
+    const { syncBaseBranchNode } = await import("../src/pipeline/nodes/sync-base-branch.js");
+    const ctx = new ContextBag({ repoDir, resolvedBaseBranch: "main" });
+    const deps = makeDeps({
+      logFile,
+      run: makeRun({
+        baseBranch: "main",
+        branchName: "feature/rebase-test",
+        prefetchContext: {
+          ...makeEligiblePrefetchContext(),
+          github: {
+            pr: {
+              number: 17,
+              url: "https://github.com/owner/repo/pull/17",
+              title: "Keep PR branch fresh",
+              body: "Rebase onto the current PR base branch.",
+              state: "open",
+              baseRef: "release/2026.04",
+              headRef: "feature/rebase-test",
+            },
+            discussionComments: [],
+            reviews: [],
+            reviewComments: [],
+            ci: {
+              conclusion: "no_ci",
+            },
+          },
+        },
+      }),
+      configOverrides: { autoReviewBranchSyncMaxBehindCommits: 0 } as Partial<AppConfig>,
+    });
+
+    const result = await syncBaseBranchNode(makeNodeConfig("sync_base_branch"), ctx, deps);
+    const releaseOnlyFile = await readFile(path.join(repoDir, "release-only.txt"), "utf8");
+
+    assert.equal(result.outcome, "success");
+    assert.equal(result.outputs?.rebasePerformed, true);
+    assert.equal(result.outputs?.requiresForcePush, true);
+    assert.equal(releaseOnlyFile.trim(), "release change");
+  });
+
   test("does not rebase when engineering and QA reviews are not both complete", async (t) => {
     const { originDir, repoDir, logFile, cleanup } = await makeGitRepoWithOrigin("sync-base-guard-");
     t.after(cleanup);

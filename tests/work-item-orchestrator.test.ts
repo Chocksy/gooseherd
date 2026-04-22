@@ -193,6 +193,8 @@ test("orchestrator promotes auto_review pr_adopted work items into collecting_co
   assert.equal(runRows[0]?.runtime, "kubernetes");
   assert.equal(runRows[0]?.pipelineHint, "pipeline");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "pr_adopted");
+  assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/77");
+  assert.equal(runRows[0]?.prNumber, 77);
 
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem.id));
   assert.ok(events.some((event) => event.eventType === "run.auto_launched"));
@@ -300,6 +302,8 @@ test("orchestrator queues a standalone branch-sync run for stale ready_for_merge
   assert.equal(runRows.length, 1);
   assert.equal(runRows[0]?.requestedBy, "work-item:branch-sync");
   assert.equal(runRows[0]?.pipelineHint, "branch-sync");
+  assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/90");
+  assert.equal(runRows[0]?.prNumber, 90);
   assert.equal(runRows[0]?.branchName, "feature/hbl-405");
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-405");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "waiting_merge");

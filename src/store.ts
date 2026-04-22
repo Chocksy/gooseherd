@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { eq, desc, and, sql, inArray, ne } from "drizzle-orm";
+import { eq, desc, and, sql, inArray, ne, getTableColumns } from "drizzle-orm";
 import type { NewRunInput, RunFeedback, RunRecord, RunStatus } from "./types.js";
 import type { Database } from "./db/index.js";
-import { runs } from "./db/schema.js";
+import { runs, workItems } from "./db/schema.js";
 
 type RunRow = typeof runs.$inferSelect;
+type RunQueryRow = RunRow & {
+  linkedPrUrl: string | null;
+  linkedPrNumber: number | null;
+};
+const runColumns = getTableColumns(runs);
 
-function rowToRecord(row: RunRow): RunRecord {
+function rowToRecord(row: RunQueryRow): RunRecord {
   return {
     id: row.id,
     runtime: row.runtime as RunRecord["runtime"],
@@ -27,7 +32,7 @@ function rowToRecord(row: RunRow): RunRecord {
     commitSha: row.commitSha ?? undefined,
     changedFiles: row.changedFiles ?? undefined,
     internalArtifacts: row.internalArtifacts ?? undefined,
-    prUrl: row.prUrl ?? undefined,
+    prUrl: row.prUrl ?? row.linkedPrUrl ?? undefined,
     feedback: row.feedback as RunFeedback | undefined,
     error: row.error ?? undefined,
     parentRunId: row.parentRunId ?? undefined,
@@ -40,7 +45,7 @@ function rowToRecord(row: RunRow): RunRecord {
     enableNodes: row.enableNodes ?? undefined,
     ciFixAttempts: row.ciFixAttempts ?? undefined,
     ciConclusion: row.ciConclusion ?? undefined,
-    prNumber: row.prNumber ?? undefined,
+    prNumber: row.prNumber ?? row.linkedPrNumber ?? undefined,
     title: row.title ?? undefined,
     tokenUsage: row.tokenUsage as RunRecord["tokenUsage"],
     teamId: row.teamId ?? undefined,
@@ -59,6 +64,17 @@ export class RunStore {
 
   async init(): Promise<void> {
     // No-op — migrations handle schema
+  }
+
+  private selectRunRows() {
+    return this.db
+      .select({
+        ...runColumns,
+        linkedPrUrl: workItems.githubPrUrl,
+        linkedPrNumber: workItems.githubPrNumber,
+      })
+      .from(runs)
+      .leftJoin(workItems, eq(runs.workItemId, workItems.id));
   }
 
   async createRun(
@@ -97,6 +113,8 @@ export class RunStore {
       channelId: input.channelId,
       threadTs: input.threadTs,
       createdAt: new Date(),
+      prUrl: input.prUrl,
+      prNumber: input.prNumber,
       workItemId: input.workItemId,
       parentRunId: input.parentRunId,
       rootRunId,
@@ -115,7 +133,7 @@ export class RunStore {
   }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
-    const rows = await this.db.select().from(runs).where(eq(runs.id, id));
+    const rows = await this.selectRunRows().where(eq(runs.id, id));
     return rows[0] ? rowToRecord(rows[0]) : undefined;
   }
 
@@ -128,9 +146,7 @@ export class RunStore {
       conditions.push(eq(runs.teamId, opts.teamId));
     }
 
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(runs.createdAt))
       .limit(limit);
@@ -139,9 +155,7 @@ export class RunStore {
   }
 
   async getLatestRunForThread(channelId: string, threadTs: string): Promise<RunRecord | undefined> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(and(eq(runs.channelId, channelId), eq(runs.threadTs, threadTs)))
       .orderBy(desc(runs.createdAt))
       .limit(1);
@@ -149,18 +163,14 @@ export class RunStore {
   }
 
   async getRunChain(channelId: string, threadTs: string): Promise<RunRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(and(eq(runs.channelId, channelId), eq(runs.threadTs, threadTs)))
       .orderBy(runs.createdAt);
     return rows.map(rowToRecord);
   }
 
   async listRunsForWorkItem(workItemId: string): Promise<RunRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(eq(runs.workItemId, workItemId))
       .orderBy(desc(runs.createdAt));
     return rows.map(rowToRecord);
@@ -168,9 +178,7 @@ export class RunStore {
 
   async getRecentRuns(repoSlug?: string, limit = 10): Promise<RunRecord[]> {
     const conditions = repoSlug ? eq(runs.repoSlug, repoSlug) : undefined;
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(conditions)
       .orderBy(desc(runs.createdAt))
       .limit(limit);
@@ -178,9 +186,7 @@ export class RunStore {
   }
 
   async getLatestRunForChannel(channelId: string): Promise<RunRecord | undefined> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(eq(runs.channelId, channelId))
       .orderBy(desc(runs.createdAt))
       .limit(1);
@@ -194,15 +200,13 @@ export class RunStore {
     // Full UUID → exact match
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     if (UUID_RE.test(normalized)) {
-      const exact = await this.db.select().from(runs).where(eq(runs.id, normalized));
+      const exact = await this.selectRunRows().where(eq(runs.id, normalized));
       if (exact[0]) return rowToRecord(exact[0]);
       return undefined;
     }
 
     // Short ID → prefix match (cast uuid to text for LIKE)
-    const prefixRows = await this.db
-      .select()
-      .from(runs)
+    const prefixRows = await this.selectRunRows()
       .where(sql`${runs.id}::text LIKE ${normalized + "%"}`)
       .limit(2);
     if (prefixRows.length === 1) return rowToRecord(prefixRows[0]!);
@@ -229,6 +233,7 @@ export class RunStore {
         | "changedFiles"
         | "internalArtifacts"
         | "prUrl"
+        | "prNumber"
         | "feedback"
         | "error"
         | "parentRunId"
@@ -258,6 +263,7 @@ export class RunStore {
     if (update.changedFiles !== undefined) dbUpdate.changedFiles = update.changedFiles;
     if (update.internalArtifacts !== undefined) dbUpdate.internalArtifacts = update.internalArtifacts;
     if (update.prUrl !== undefined) dbUpdate.prUrl = update.prUrl;
+    if (update.prNumber !== undefined) dbUpdate.prNumber = update.prNumber;
     if (update.feedback !== undefined) dbUpdate.feedback = update.feedback;
     if (update.error !== undefined) dbUpdate.error = update.error;
     if (update.parentRunId !== undefined) dbUpdate.parentRunId = update.parentRunId;
@@ -299,9 +305,7 @@ export class RunStore {
 
   async getInProgressRuns(): Promise<RunRecord[]> {
     const inProgressStatuses = ["queued", "running", "validating", "pushing", "cancel_requested"];
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(inArray(runs.status, inProgressStatuses));
     return rows.map(rowToRecord);
   }
@@ -334,7 +338,7 @@ export class RunStore {
 
     // Re-fetch after update
     const ids = affected.map((r) => r.id);
-    const rows = await this.db.select().from(runs).where(inArray(runs.id, ids));
+    const rows = await this.selectRunRows().where(inArray(runs.id, ids));
     return rows.map(rowToRecord);
   }
 

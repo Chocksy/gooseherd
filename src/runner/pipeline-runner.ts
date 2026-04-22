@@ -249,6 +249,7 @@ export async function runPipelineRunner(
       changedFiles: result.changedFiles,
       internalArtifacts: mergeArtifactKeys(result.internalArtifacts, uploadedInternalArtifacts),
       prUrl: result.prUrl,
+      prNumber: result.prNumber,
       tokenUsage: result.tokenUsage,
       title: result.title,
     });

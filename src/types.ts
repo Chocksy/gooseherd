@@ -122,6 +122,9 @@ export interface NewRunInput {
   enableNodes?: string[];
   /** Team identifier derived from channel mapping */
   teamId?: string;
+  /** Existing PR metadata for runs that operate on an already-linked PR */
+  prUrl?: string;
+  prNumber?: number;
   prefetchContext?: RunPrefetchContext;
   autoReviewSourceSubstate?: string;
 }
@@ -133,6 +136,7 @@ export interface ExecutionResult {
   changedFiles: string[];
   internalArtifacts?: string[];
   prUrl?: string;
+  prNumber?: number;
   tokenUsage?: TokenUsage;
   title?: string;
 }

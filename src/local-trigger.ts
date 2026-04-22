@@ -157,7 +157,8 @@ async function main(): Promise<void> {
       logsPath: result.logsPath,
       commitSha: result.commitSha,
       changedFiles: result.changedFiles,
-      prUrl: result.prUrl
+      prUrl: result.prUrl,
+      prNumber: result.prNumber,
     });
 
     logInfo("Local trigger completed", {

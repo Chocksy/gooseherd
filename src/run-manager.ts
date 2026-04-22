@@ -685,6 +685,7 @@ export class RunManager {
         changedFiles: result.changedFiles,
         internalArtifacts: result.internalArtifacts,
         prUrl: result.prUrl,
+        prNumber: result.prNumber,
         tokenUsage: result.tokenUsage,
         title: result.title,
         error: undefined

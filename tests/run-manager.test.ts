@@ -97,6 +97,7 @@ function makeMockPipelineEngine(result?: Partial<ExecutionResult>): RuntimeRegis
       commitSha: "abc1234def5678",
       changedFiles: ["src/index.ts", "src/config.ts"],
       prUrl: "https://github.com/org/repo/pull/42",
+      prNumber: 42,
       ...result
     } as ExecutionResult;
   };
@@ -1038,6 +1039,7 @@ test("processRun with local channel skips Slack posts and still completes", asyn
   const stored = await store.getRun(run.id);
   assert.equal(stored?.status, "completed");
   assert.equal(stored?.phase, "completed");
+  assert.equal(stored?.prNumber, 42);
   assert.equal(mockClient._calls.length, 0, "No Slack API calls should be made for local runs");
 
   await testDb.cleanup();

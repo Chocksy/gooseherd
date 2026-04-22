@@ -77,6 +77,7 @@ test("pipeline runner ignores transient cancellation polling failures during a s
         logsPath: "/tmp/run.log",
         commitSha: "abc123",
         changedFiles: ["src/index.ts"],
+        prNumber: 42,
       }),
     );
   } finally {
@@ -93,6 +94,7 @@ test("pipeline runner ignores transient cancellation polling failures during a s
   assert.equal(completions.length, 1);
   assert.equal(completions[0]?.status, "success");
   assert.equal(completions[0]?.artifactState, "complete");
+  assert.equal((completions[0] as { prNumber?: number } | undefined)?.prNumber, 42);
 });
 
 test("deriveRunRecordFromPayload preserves prefetched context and auto-review substate", () => {

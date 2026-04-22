@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { teams, users } from "../src/db/schema.js";
 import { mapPhaseToRunStatus, RunStore } from "../src/store.js";
+import { WorkItemStore } from "../src/work-items/store.js";
 import { createTestDb } from "./helpers/test-db.js";
 
 async function createStore(): Promise<{ store: RunStore; cleanup: () => Promise<void> }> {
@@ -160,6 +162,70 @@ test("RunStore can clear persisted work-item launch context fields", async (t) =
   assert.equal(loaded?.workItemId, undefined);
   assert.equal(loaded?.prefetchContext, undefined);
   assert.equal(loaded?.autoReviewSourceSubstate, undefined);
+});
+
+test("RunStore falls back to linked work item PR metadata when run fields are empty", async (t) => {
+  const testDb = await createTestDb();
+  t.after(testDb.cleanup);
+
+  const store = new RunStore(testDb.db);
+  await store.init();
+  const workItems = new WorkItemStore(testDb.db);
+
+  const ownerTeamId = "99999999-9999-4999-8999-999999999999";
+  const ownerUserId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+  await testDb.db.insert(users).values({
+    id: ownerUserId,
+    slackUserId: "U_STORE_TEST",
+    displayName: "Store Test User",
+  });
+  await testDb.db.insert(teams).values({
+    id: ownerTeamId,
+    name: "store-test-team",
+    slackChannelId: "C_STORE_TEST",
+  });
+
+  const workItem = await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "auto_review",
+    title: "Store fallback test",
+    summary: "Ensure runs inherit linked PR metadata on reads.",
+    ownerTeamId,
+    homeChannelId: "C_STORE_TEST",
+    homeThreadTs: "1740000000.800",
+    repo: "owner/repo",
+    githubPrNumber: 77,
+    githubPrUrl: "https://github.com/owner/repo/pull/77",
+    createdByUserId: ownerUserId,
+  });
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "run missing PR metadata",
+      baseBranch: "main",
+      requestedBy: "work-item:auto-review",
+      channelId: "C_STORE_TEST",
+      threadTs: "1740000000.800",
+      runtime: "kubernetes",
+      workItemId: workItem.id,
+    },
+    "gooseherd"
+  );
+
+  const loaded = await store.getRun(run.id);
+  assert.equal(loaded?.prUrl, "https://github.com/owner/repo/pull/77");
+  assert.equal(loaded?.prNumber, 77);
+
+  const linkedRuns = await store.listRunsForWorkItem(workItem.id);
+  assert.equal(linkedRuns[0]?.prUrl, "https://github.com/owner/repo/pull/77");
+  assert.equal(linkedRuns[0]?.prNumber, 77);
+
+  const listedRuns = await store.listRuns(10);
+  const listed = listedRuns.find((candidate) => candidate.id === run.id);
+  assert.equal(listed?.prUrl, "https://github.com/owner/repo/pull/77");
+  assert.equal(listed?.prNumber, 77);
 });
 
 test("listRuns returns newest first and feedback is saved", async (t) => {

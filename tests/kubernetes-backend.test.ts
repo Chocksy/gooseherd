@@ -116,7 +116,7 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
         return undefined;
       },
       issueRunToken: async () => ({ token: "issued-token" }),
-      getLatestCompletion: async () => makeCompletion(),
+      getLatestCompletion: async () => makeCompletion({ prNumber: 42 } as never),
       revokeRunToken: async (runId: string) => {
         revokedRunId = runId;
       },
@@ -172,6 +172,7 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
 
     assert.equal(result.commitSha, "abc12345");
     assert.deepEqual(result.changedFiles, ["src/index.ts"]);
+    assert.equal((result as { prNumber?: number }).prNumber, 42);
     assert.equal(result.logsPath, path.resolve(tmpRoot, "run-k8s-backend-1", "run.log"));
     assert.equal(await readFile(result.logsPath, "utf8"), "runner completed\n");
 

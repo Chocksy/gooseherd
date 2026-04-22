@@ -199,6 +199,7 @@ export class PipelineEngine {
     const changedFiles = filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []);
     const internalArtifacts = ctx.get<string[]>("internalArtifacts");
     const prUrl = ctx.get<string>("prUrl");
+    const prNumber = ctx.get<number>("prNumber");
 
     if (result.outcome === "failure") {
       const failedStep = result.steps.find(s => s.outcome === "failure");
@@ -212,6 +213,7 @@ export class PipelineEngine {
       changedFiles,
       internalArtifacts,
       prUrl,
+      prNumber,
       tokenUsage: tokenUsage ?? undefined,
       title: ctx.get<string>("generatedTitle")
     };

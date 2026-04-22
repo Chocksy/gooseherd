@@ -261,6 +261,7 @@ test("reconciler finalizes completed when completion exists and runtime reports 
     commitSha: "abc123",
     changedFiles: ["a.ts"],
     internalArtifacts: ["AGENTS.md"],
+    prNumber: 42 as never,
     title: "Complete run",
   });
 
@@ -278,6 +279,7 @@ test("reconciler finalizes completed when completion exists and runtime reports 
   assert.equal(updated?.commitSha, "abc123");
   assert.deepEqual(updated?.changedFiles, ["a.ts"]);
   assert.deepEqual(updated?.internalArtifacts, ["AGENTS.md"]);
+  assert.equal(updated?.prNumber, 42);
   assert.equal(updated?.title, "Complete run");
   await cleanup();
 });

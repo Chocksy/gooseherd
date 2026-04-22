@@ -201,6 +201,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
         changedFiles: completion.payload.changedFiles ?? [],
         internalArtifacts: completion.payload.internalArtifacts,
         prUrl: completion.payload.prUrl,
+        prNumber: completion.payload.prNumber,
         tokenUsage: completion.payload.tokenUsage,
         title: completion.payload.title,
       };

@@ -56,6 +56,7 @@ export interface RunnerCompletionPayload {
   changedFiles?: string[];
   internalArtifacts?: string[];
   prUrl?: string;
+  prNumber?: number;
   tokenUsage?: TokenUsage;
   title?: string;
 }

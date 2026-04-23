@@ -17,6 +17,7 @@ export async function createPrNode(
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
   const reusesExistingBranch = ctx.get<boolean>("reusesExistingBranch") ?? hasReusableBranch(run);
   const isAdoptedPr = deps.run.prefetchContext?.workItem.isAdoptedPr ?? false;
+  const preservesExistingPrTitle = typeof run.workItemId === "string" && run.workItemId.length > 0;
   const resolvedBaseBranch = ctx.get<string>("resolvedBaseBranch") ?? run.baseBranch;
   const dryRun = config.dryRun;
 
@@ -47,6 +48,7 @@ export async function createPrNode(
         repoSlug: run.repoSlug,
         title: prTitle,
         body: prBody,
+        updateExistingTitle: !preservesExistingPrTitle,
         updateExistingBody: !isAdoptedPr,
         head: run.branchName,
         base: resolvedBaseBranch

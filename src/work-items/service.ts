@@ -19,19 +19,25 @@ import {
   assertStateTransitionAllowed,
 } from "./workflow-policy.js";
 
+export interface WorkItemServiceOptions {
+  readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
+}
+
 export class WorkItemService {
   private readonly workItems: WorkItemStore;
   private readonly reviewRequests: ReviewRequestStore;
   private readonly events: WorkItemEventsStore;
   private readonly runs: RunStore;
   private readonly authorization: WorkItemAuthorization;
+  private readonly readyForMergeHandler?: WorkItemServiceOptions["readyForMergeHandler"];
 
-  constructor(private readonly db: Database) {
+  constructor(private readonly db: Database, options: WorkItemServiceOptions = {}) {
     this.workItems = new WorkItemStore(db);
     this.reviewRequests = new ReviewRequestStore(db);
     this.events = new WorkItemEventsStore(db);
     this.runs = new RunStore(db);
     this.authorization = new WorkItemAuthorization(db);
+    this.readyForMergeHandler = options.readyForMergeHandler;
   }
 
   async getWorkItem(id: string): Promise<WorkItemRecord | undefined> {
@@ -547,6 +553,9 @@ export class WorkItemService {
         ...actorAuditFields(actor),
       },
     });
+
+    await this.handleReadyForMerge(updated);
+
     return updated;
   }
 
@@ -618,6 +627,14 @@ export class WorkItemService {
   private assertOverrideTransitionAllowed(workItem: WorkItemRecord, nextState: WorkItemRecord["state"]): WorkItemRecord["state"] {
     assertStateTransitionAllowed(workItem, nextState);
     return nextState;
+  }
+
+  private async handleReadyForMerge(workItem: WorkItemRecord): Promise<void> {
+    if (!this.readyForMergeHandler || workItem.workflow !== "feature_delivery" || workItem.state !== "ready_for_merge") {
+      return;
+    }
+
+    await this.readyForMergeHandler(workItem);
   }
 
   private rewriteDeliveryCreationConflict(error: unknown, workItemId: string, jiraIssueKey: string): Error {

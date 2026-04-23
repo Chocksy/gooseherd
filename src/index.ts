@@ -118,6 +118,7 @@ interface WorkItemServicesBundle {
   reviewRequestStore?: ReviewRequestStore;
   workItemEventsStore?: WorkItemEventsStore;
   workItemService?: WorkItemService;
+  readyForMergeHandler?: (workItem: import("./work-items/types.js").WorkItemRecord) => Promise<void> | void;
   workItemIdentityStore?: WorkItemIdentityStore;
   workItemContextResolver?: WorkItemContextResolver;
   workItemGitHubSync?: GitHubWorkItemSync;
@@ -288,6 +289,7 @@ async function createWorkItemServices(
   let reviewRequestStore: ReviewRequestStore | undefined;
   let workItemEventsStore: WorkItemEventsStore | undefined;
   let workItemService: WorkItemService | undefined;
+  let readyForMergeHandler: ((workItem: import("./work-items/types.js").WorkItemRecord) => Promise<void> | void) | undefined;
   let workItemIdentityStore: WorkItemIdentityStore | undefined;
   let workItemContextResolver: WorkItemContextResolver | undefined;
   let workItemGitHubSync: GitHubWorkItemSync | undefined;
@@ -308,6 +310,7 @@ async function createWorkItemServices(
       workItemContextResolverMod,
       workItemGitHubSyncMod,
       workItemJiraSyncMod,
+      readyForMergeActionsMod,
       userDirectoryServiceMod,
     ] = await Promise.all([
       import("./work-items/store.js"),
@@ -319,13 +322,25 @@ async function createWorkItemServices(
       import("./work-items/context-resolver.js"),
       import("./work-items/github-sync.js"),
       import("./work-items/jira-sync.js"),
+      import("./work-items/ready-for-merge-actions.js"),
       import("./user-directory/service.js"),
     ]);
     const userDirectoryService = new userDirectoryServiceMod.UserDirectoryService(db);
     workItemStore = new workItemStoreMod.WorkItemStore(db);
     reviewRequestStore = new reviewRequestStoreMod.ReviewRequestStore(db);
     workItemEventsStore = new workItemEventsStoreMod.WorkItemEventsStore(db);
-    workItemService = new workItemServiceMod.WorkItemService(db);
+    const readyForMergeActions = githubService
+      ? new readyForMergeActionsMod.ReadyForMergeActions({
+          githubService,
+          queueReadyForMergeRun: async (workItemId: string, reason?: string) => {
+            await workItemOrchestratorRef.current?.queueReadyForMergeRun(workItemId, reason);
+          },
+        })
+      : undefined;
+    readyForMergeHandler = readyForMergeActions?.handleEntry.bind(readyForMergeActions);
+    workItemService = new workItemServiceMod.WorkItemService(db, {
+      readyForMergeHandler,
+    });
     workItemIdentityStore = new workItemIdentityStoreMod.WorkItemIdentityStore(db);
     workItemContextResolver = new workItemContextResolverMod.WorkItemContextResolver(db);
     postWorkItemReviewNotifications = workItemSlackActionsMod.postWorkItemReviewNotifications;
@@ -337,6 +352,7 @@ async function createWorkItemServices(
     workItemGitHubSync = new workItemGitHubSyncMod.GitHubWorkItemSync(db, {
       adoptionLabels: config.workItemGithubAdoptionLabels,
       githubService,
+      readyForMergeHandler,
       resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
       skipQaPreparation: config.featureDeliverySkipQaPreparation,
@@ -438,6 +454,7 @@ async function createWorkItemServices(
     reviewRequestStore,
     workItemEventsStore,
     workItemService,
+    readyForMergeHandler,
     workItemIdentityStore,
     workItemContextResolver,
     workItemGitHubSync,
@@ -462,6 +479,7 @@ async function createDashboardWorkItemsBundle(
     reviewRequestStore,
     workItemEventsStore,
     workItemService,
+    readyForMergeHandler,
     workItemIdentityStore,
     workItemContextResolver,
     postWorkItemReviewNotifications,
@@ -616,6 +634,7 @@ async function createDashboardWorkItemsBundle(
       featureDeliverySkipQaPreparation: config.featureDeliverySkipQaPreparation,
       featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
     },
+    readyForMergeHandler,
     runManager,
   });
   workItemOrchestratorRef.current = workItemOrchestrator;

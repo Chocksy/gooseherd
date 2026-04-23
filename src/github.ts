@@ -9,6 +9,7 @@ interface PullRequestParams {
   body: string;
   head: string;
   base: string;
+  updateExistingTitle?: boolean;
   updateExistingBody?: boolean;
 }
 
@@ -26,7 +27,15 @@ export interface PullRequestDetails {
   baseRef?: string;
   headRef?: string;
   headSha?: string;
+  commitsCount?: number;
+  labels?: string[];
   authorLogin?: string;
+}
+
+interface AddPullRequestLabelsParams {
+  repoSlug: string;
+  prNumber: number;
+  labels: string[];
 }
 
 export interface PullRequestDiscussionComment {
@@ -258,8 +267,26 @@ export class GitHubService {
       baseRef: response.data.base?.ref ?? undefined,
       headRef: response.data.head?.ref ?? undefined,
       headSha: response.data.head?.sha ?? undefined,
+      commitsCount: response.data.commits ?? undefined,
+      labels: response.data.labels
+        .map((label) => ("name" in label && typeof label.name === "string" ? label.name : undefined))
+        .filter((label): label is string => Boolean(label)),
       authorLogin: response.data.user?.login ?? undefined
     };
+  }
+
+  async addPullRequestLabels(params: AddPullRequestLabelsParams): Promise<void> {
+    if (params.labels.length === 0) {
+      return;
+    }
+
+    const { owner, repo } = parseRepoSlug(params.repoSlug);
+    await this.octokit.issues.addLabels({
+      owner,
+      repo,
+      issue_number: params.prNumber,
+      labels: params.labels,
+    });
   }
 
   async listPullRequestDiscussionComments(
@@ -523,20 +550,21 @@ export class GitHubService {
 
     if (existing.data.length > 0) {
       const pr = existing.data[0];
-      // Update the existing PR title, and preserve the body when the caller
-      // explicitly marks this as an adopted PR that Gooseherd should not rewrite.
+      // Update the existing PR metadata only when the caller explicitly allows it.
       const updateParams: {
         owner: string;
         repo: string;
         pull_number: number;
-        title: string;
+        title?: string;
         body?: string;
       } = {
         owner,
         repo,
         pull_number: pr.number,
-        title: params.title,
       };
+      if (params.updateExistingTitle !== false) {
+        updateParams.title = params.title;
+      }
       if (params.updateExistingBody !== false) {
         updateParams.body = params.body;
       }

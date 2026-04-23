@@ -92,3 +92,29 @@ export function buildBranchSyncTask(input: AutoReviewTaskInput): string {
 
   return lines.join("\n");
 }
+
+export function buildReadyForMergeTask(input: AutoReviewTaskInput): string {
+  const lines = [
+    `Prepare pull request #${String(input.prNumber)} in ${input.repo} for merge by reducing its PR branch to one commit.`,
+    `PR URL: ${input.prUrl}`,
+    `Work item title: ${input.title}`,
+  ];
+
+  if (input.jiraIssueKey) {
+    lines.push(`Jira issue: ${input.jiraIssueKey}`);
+  }
+
+  if (input.summary?.trim()) {
+    lines.push(`Context: ${input.summary.trim()}`);
+  }
+
+  lines.push("");
+  lines.push("Required workflow:");
+  lines.push("1. Reuse the current PR branch. Do not create a new branch or a new PR.");
+  lines.push("2. If the PR branch is already a single commit ahead of its base branch, make no changes and exit cleanly.");
+  lines.push("3. Otherwise squash the PR branch changes into one deterministic commit.");
+  lines.push("4. Push the squashed branch back with --force-with-lease.");
+  lines.push("5. Do not merge the PR or add labels.");
+
+  return lines.join("\n");
+}

@@ -499,6 +499,117 @@ nodes:
   });
 });
 
+describe("squashReadyForMergeNode", () => {
+  test("squash_ready_for_merge is a valid registered action", async () => {
+    const { loadPipelineFromString } = await import("../src/pipeline/pipeline-loader.js");
+
+    const pipeline = loadPipelineFromString(`
+version: 1
+name: "ready-for-merge-test"
+nodes:
+  - id: squash
+    type: deterministic
+    action: squash_ready_for_merge
+`);
+
+    assert.equal(pipeline.nodes.length, 1);
+    assert.equal(pipeline.nodes[0].action, "squash_ready_for_merge");
+  });
+
+  test("returns a no-op when the PR branch already has a single commit", async (t) => {
+    const { repoDir, logFile, cleanup } = await makeGitRepoWithOrigin("squash-ready-noop-");
+    t.after(cleanup);
+
+    await writeFile(path.join(repoDir, "feature-only.txt"), "feature change\n", "utf8");
+    await runShellCapture("git add feature-only.txt", { cwd: repoDir, logFile });
+    await runShellCapture("git commit -m 'feature change'", { cwd: repoDir, logFile });
+
+    const oldHead = (await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile })).stdout.trim();
+    const { squashReadyForMergeNode } = await import("../src/pipeline/nodes/squash-ready-for-merge.js");
+    const ctx = new ContextBag({ repoDir, resolvedBaseBranch: "main" });
+    const deps = makeDeps({
+      logFile,
+      run: makeRun({
+        baseBranch: "main",
+        branchName: "feature/rebase-test",
+      }),
+    });
+
+    const result = await squashReadyForMergeNode(makeNodeConfig("squash_ready_for_merge"), ctx, deps);
+    const newHead = (await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile })).stdout.trim();
+
+    assert.equal(result.outcome, "success");
+    assert.equal(result.outputs?.squashPerformed, false);
+    assert.equal(result.outputs?.requiresForcePush, false);
+    assert.equal(oldHead, newHead);
+  });
+
+  test("squashes multi-commit PR branches into one commit using the first subject and the remaining subjects in body", async (t) => {
+    const { repoDir, logFile, cleanup } = await makeGitRepoWithOrigin("squash-ready-run-");
+    t.after(cleanup);
+
+    await writeFile(path.join(repoDir, "feature-only.txt"), "first change\n", "utf8");
+    await runShellCapture("git add feature-only.txt", { cwd: repoDir, logFile });
+    await runShellCapture("git commit -m 'feature change 1'", { cwd: repoDir, logFile });
+
+    await writeFile(path.join(repoDir, "feature-only.txt"), "second change\n", "utf8");
+    await runShellCapture("git add feature-only.txt", { cwd: repoDir, logFile });
+    await runShellCapture("git commit -m 'feature change 2'", { cwd: repoDir, logFile });
+
+    await writeFile(path.join(repoDir, "feature-only.txt"), "third change\n", "utf8");
+    await runShellCapture("git add feature-only.txt", { cwd: repoDir, logFile });
+    await runShellCapture("git commit -m 'feature change 3'", { cwd: repoDir, logFile });
+
+    const oldHead = (await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile })).stdout.trim();
+    const { squashReadyForMergeNode } = await import("../src/pipeline/nodes/squash-ready-for-merge.js");
+    const ctx = new ContextBag({ repoDir, resolvedBaseBranch: "main" });
+    const deps = makeDeps({
+      logFile,
+      run: makeRun({
+        baseBranch: "main",
+        branchName: "feature/rebase-test",
+        prefetchContext: {
+          ...makeEligiblePrefetchContext(),
+          github: {
+            pr: {
+              number: 17,
+              url: "https://github.com/owner/repo/pull/17",
+              title: "Squash me",
+              body: "Combine feature commits before merge.",
+              state: "open",
+              baseRef: "main",
+              headRef: "feature/rebase-test",
+            },
+            discussionComments: [],
+            reviews: [],
+            reviewComments: [],
+            ci: {
+              conclusion: "no_ci",
+            },
+          },
+        },
+      }),
+    });
+
+    const result = await squashReadyForMergeNode(makeNodeConfig("squash_ready_for_merge"), ctx, deps);
+    const newHead = (await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile })).stdout.trim();
+    const commitCount = (await runShellCapture("git rev-list --count origin/main..HEAD", { cwd: repoDir, logFile })).stdout.trim();
+    const commitSubject = (await runShellCapture("git log -1 --format=%s", { cwd: repoDir, logFile })).stdout.trim();
+    const commitBody = (await runShellCapture("git log -1 --format=%b", { cwd: repoDir, logFile })).stdout.trim();
+    const status = await runShellCapture("git status --porcelain", { cwd: repoDir, logFile });
+
+    assert.equal(result.outcome, "success");
+    assert.equal(result.outputs?.squashPerformed, true);
+    assert.equal(result.outputs?.requiresForcePush, true);
+    assert.equal(result.outputs?.forcePushWithLease, true);
+    assert.notEqual(oldHead, newHead);
+    assert.equal(commitCount, "1");
+    assert.equal(commitSubject, "feature change 1");
+    assert.equal(commitBody, "feature change 2\nfeature change 3");
+    assert.equal(status.stdout.trim(), "");
+  });
+});
+
 // ═══════════════════════════════════════════════════════
 // Plan Task Node (import separately — depends on LLM module)
 // ═══════════════════════════════════════════════════════

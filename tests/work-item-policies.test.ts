@@ -5,6 +5,7 @@ import {
   nextDiscoveryStateAfterPmConfirmation,
 } from "../src/work-items/product-discovery-policy.js";
 import {
+  advanceFeatureDeliveryStateAfterAutoReview,
   nextFeatureDeliveryStateAfterAutoReview,
   nextFeatureDeliveryStateAfterEngineeringReview,
   nextFeatureDeliveryStateAfterQaPreparation,
@@ -98,6 +99,40 @@ test("feature delivery moves from auto_review to engineering_review when gates a
   assert.equal(
     nextFeatureDeliveryStateAfterAutoReview({ ciGreen: true, selfReviewDone: true, hasActiveAutoFixes: false }),
     "engineering_review"
+  );
+});
+
+test("feature delivery revalidation returns to ready_for_merge when sticky QA approval already exists", () => {
+  assert.equal(
+    advanceFeatureDeliveryStateAfterAutoReview({
+      ciGreen: true,
+      selfReviewDone: true,
+      hasActiveAutoFixes: false,
+      engineeringReviewDone: true,
+      productReviewDone: false,
+      qaReviewDone: true,
+      productReviewRequired: false,
+      skipQaPreparation: false,
+      skipProductReview: false,
+    }),
+    "ready_for_merge"
+  );
+});
+
+test("feature delivery revalidation returns to qa_preparation when only engineering approval is sticky", () => {
+  assert.equal(
+    advanceFeatureDeliveryStateAfterAutoReview({
+      ciGreen: true,
+      selfReviewDone: true,
+      hasActiveAutoFixes: false,
+      engineeringReviewDone: true,
+      productReviewDone: false,
+      qaReviewDone: false,
+      productReviewRequired: false,
+      skipQaPreparation: false,
+      skipProductReview: false,
+    }),
+    "qa_preparation"
   );
 });
 

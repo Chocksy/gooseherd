@@ -2,12 +2,13 @@ import type { Database } from "../db/index.js";
 import { sql } from "drizzle-orm";
 import type { SandboxRuntime } from "../runtime/runtime-mode.js";
 import {
+  advanceFeatureDeliveryStateAfterQaEntry,
   canAutoRebaseFeatureDeliveryBranch,
   nextFeatureDeliveryStateAfterAutoReview,
   nextFeatureDeliveryStateAfterEngineeringReview,
 } from "./feature-delivery-policy.js";
 import { RunStore } from "../store.js";
-import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask } from "./auto-review-task.js";
+import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask, buildReadyForMergeTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { WorkItemStore } from "./store.js";
 import {
@@ -21,6 +22,7 @@ import {
 const AUTO_REVIEW_REQUESTED_BY = "work-item:auto-review";
 const CI_FIX_REQUESTED_BY = "work-item:ci-fix";
 const BRANCH_SYNC_REQUESTED_BY = "work-item:branch-sync";
+const READY_FOR_MERGE_REQUESTED_BY = "work-item:ready-for-merge";
 const WORK_ITEM_SYSTEM_RUN_REQUESTERS = new Set([AUTO_REVIEW_REQUESTED_BY, CI_FIX_REQUESTED_BY]);
 const ACTIVE_AUTO_REVIEW_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
 const PREFETCH_FAILURE_PATTERN = /prefetch/i;
@@ -33,6 +35,7 @@ export interface WorkItemOrchestratorDeps {
     featureDeliverySkipQaPreparation?: boolean;
     featureDeliverySkipProductReview?: boolean;
   };
+  readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   runManager?: {
     requeueExistingRun(runId: string): void;
   };
@@ -154,16 +157,32 @@ export class WorkItemOrchestrator {
         productReviewRequired: engineeringReview.flags.includes("product_review_required"),
         skipProductReview: this.deps.config?.featureDeliverySkipProductReview ?? false,
       });
-      return this.workItems.updateState(engineeringReview.id, {
+      const finalState = advanceFeatureDeliveryStateAfterQaEntry(nextState, {
+        qaReviewDone: engineeringReview.flags.includes("qa_review_done"),
+      });
+      const intermediate = await this.workItems.updateState(engineeringReview.id, {
         state: nextState,
         substate: nextFeatureDeliverySubstateForState(nextState, {
           fallback: engineeringReview.substate,
           defaultValue: "waiting_ci",
         }),
       });
+
+      if (finalState === nextState) {
+        return this.handleReadyForMergeEntry(workItem.state, intermediate);
+      }
+
+      const updated = await this.workItems.updateState(intermediate.id, {
+        state: finalState,
+        substate: nextFeatureDeliverySubstateForState(finalState, {
+          fallback: intermediate.substate,
+          defaultValue: "waiting_ci",
+        }),
+      });
+      return this.handleReadyForMergeEntry(workItem.state, updated);
     }
 
-    return this.workItems.updateState(workItem.id, {
+    const updated = await this.workItems.updateState(workItem.id, {
       state: nextStateAfterAutoReview,
       substate: nextFeatureDeliverySubstateForState(nextStateAfterAutoReview, {
         fallback: workItem.substate,
@@ -171,6 +190,7 @@ export class WorkItemOrchestrator {
       }),
       flagsToAdd: ["self_review_done"],
     });
+    return this.handleReadyForMergeEntry(workItem.state, updated);
   }
 
   async handlePrefetchFailure(runId: string): Promise<WorkItemRecord | undefined> {
@@ -273,6 +293,82 @@ export class WorkItemOrchestrator {
 
     return currentWorkItem;
   }
+
+  async queueReadyForMergeRun(
+    workItemId: string,
+    reason = "ready_for_merge.entered",
+  ): Promise<WorkItemRecord | undefined> {
+    let launchedRunId: string | undefined;
+    let currentWorkItem: WorkItemRecord | undefined;
+    const baseBranch = this.deps.config?.defaultBaseBranch ?? "main";
+    const runtime = this.deps.config?.sandboxRuntime ?? "local";
+
+    await this.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Database;
+      const txWorkItems = new WorkItemStore(txDb);
+      const txRuns = new RunStore(txDb);
+      const txEvents = new WorkItemEventsStore(txDb);
+
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${workItemId}))`);
+
+      const current = await txWorkItems.getWorkItem(workItemId);
+      if (!current || current.workflow !== "feature_delivery" || current.state !== "ready_for_merge") {
+        currentWorkItem = current;
+        return;
+      }
+
+      const existingRuns = await txRuns.listRunsForWorkItem(workItemId);
+      if (existingRuns.some((run) => ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status) || run.status === "cancel_requested")) {
+        currentWorkItem = current;
+        return;
+      }
+
+      const queuedRun = await txRuns.createRun({
+        repoSlug: requireWorkItemRepo(current),
+        task: buildReadyForMergeTask(buildTaskInput(current)),
+        baseBranch: current.githubPrBaseBranch ?? baseBranch,
+        requestedBy: READY_FOR_MERGE_REQUESTED_BY,
+        channelId: current.homeChannelId,
+        threadTs: current.homeThreadTs,
+        runtime,
+        prUrl: current.githubPrUrl,
+        prNumber: current.githubPrNumber,
+        workItemId: current.id,
+        autoReviewSourceSubstate: current.substate,
+        pipelineHint: "ready-for-merge",
+      }, "gooseherd", requireWorkItemPrHeadBranch(current));
+      launchedRunId = queuedRun.id;
+      currentWorkItem = current;
+
+      await txEvents.append({
+        workItemId: current.id,
+        eventType: "run.ready_for_merge_launched",
+        payload: {
+          runId: queuedRun.id,
+          reason,
+          requestedBy: READY_FOR_MERGE_REQUESTED_BY,
+        },
+      });
+    });
+
+    if (launchedRunId) {
+      this.deps.runManager?.requeueExistingRun(launchedRunId);
+    }
+
+    return currentWorkItem;
+  }
+
+  private async handleReadyForMergeEntry(
+    previousState: WorkItemRecord["state"],
+    workItem: WorkItemRecord,
+  ): Promise<WorkItemRecord> {
+    if (previousState === "ready_for_merge" || workItem.workflow !== "feature_delivery" || workItem.state !== "ready_for_merge") {
+      return workItem;
+    }
+
+    await this.deps.readyForMergeHandler?.(workItem);
+    return workItem;
+  }
 }
 
 export async function reconcileWorkItem(
@@ -309,6 +405,15 @@ export async function queueBranchSyncRun(
   deps?: WorkItemOrchestratorDeps,
 ): Promise<WorkItemRecord | undefined> {
   return new WorkItemOrchestrator(db, deps).queueBranchSyncRun(workItemId, reason);
+}
+
+export async function queueReadyForMergeRun(
+  db: Database,
+  workItemId: string,
+  reason = "ready_for_merge.entered",
+  deps?: WorkItemOrchestratorDeps,
+): Promise<WorkItemRecord | undefined> {
+  return new WorkItemOrchestrator(db, deps).queueReadyForMergeRun(workItemId, reason);
 }
 
 function shouldAutoLaunchSystemRun(workItem: WorkItemRecord): boolean {

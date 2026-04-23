@@ -296,6 +296,7 @@ test("createPrNode preserves the existing PR body for adopted PRs", async () => 
       id: "run-abc12345",
       task: "Self-review adopted PR",
       requestedBy: "work-item:auto-review",
+      workItemId: "wi-1",
       repoSlug: "hubstaff/gooseherd",
       baseBranch: "main",
       branchName: "feature/hbl-404",
@@ -334,6 +335,59 @@ test("createPrNode preserves the existing PR body for adopted PRs", async () => 
   assert.equal(ctxStore.get("prNumber"), 77);
 });
 
+test("createPrNode preserves the existing PR title for linked work-item runs", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const ctxStore = new Map<string, unknown>([["resolvedBaseBranch", "main"]]);
+  const deps = {
+    config: {
+      appSlug: "gooseherd",
+      appName: "Gooseherd",
+      dryRun: false,
+    },
+    run: {
+      id: "run-abc12345",
+      task: "Self-review active delivery PR",
+      requestedBy: "work-item:auto-review",
+      workItemId: "wi-2",
+      repoSlug: "hubstaff/gooseherd",
+      baseBranch: "main",
+      branchName: "feature/hbl-405",
+      parentBranchName: "feature/hbl-405",
+      prefetchContext: {
+        meta: { fetchedAt: "2026-04-21T00:00:00.000Z", sources: [] },
+        workItem: {
+          id: "wi-2",
+          title: "Managed delivery work item",
+          workflow: "feature_delivery",
+          githubPrNumber: 78,
+          isAdoptedPr: false,
+        },
+      },
+    },
+    githubService: {
+      findOrCreatePullRequest: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return { url: "https://github.com/hubstaff/gooseherd/pull/78", number: 78 };
+      },
+      createPullRequest: async () => {
+        throw new Error("createPullRequest should not be called for reused work-item branches");
+      },
+    },
+  } as any;
+  const ctx = {
+    get: <T>(key: string): T | undefined => ctxStore.get(key) as T | undefined,
+    set: (key: string, value: unknown) => { ctxStore.set(key, value); },
+  } as any;
+
+  const result = await createPrNode({}, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.updateExistingTitle, false);
+  assert.equal(calls[0]?.updateExistingBody, true);
+  assert.equal(ctxStore.get("prNumber"), 78);
+});
+
 test("GitHubService.findOrCreatePullRequest preserves body when updateExistingBody is false", async () => {
   const updates: Array<Record<string, unknown>> = [];
   const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
@@ -367,6 +421,41 @@ test("GitHubService.findOrCreatePullRequest preserves body when updateExistingBo
   assert.equal(updates.length, 1);
   assert.equal(updates[0]?.title, "gooseherd: Preserve body");
   assert.ok(!Object.hasOwn(updates[0]!, "body"));
+});
+
+test("GitHubService.findOrCreatePullRequest preserves title when updateExistingTitle is false", async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    pulls: {
+      list: async () => ({
+        data: [
+          {
+            number: 78,
+            html_url: "https://github.com/hubstaff/gooseherd/pull/78",
+          },
+        ],
+      }),
+      update: async (params: Record<string, unknown>) => {
+        updates.push(params);
+        return { data: { html_url: "https://github.com/hubstaff/gooseherd/pull/78", number: 78 } };
+      },
+    },
+  };
+
+  const result = await service.findOrCreatePullRequest({
+    repoSlug: "hubstaff/gooseherd",
+    title: "gooseherd: Preserve title",
+    body: "body may still be refreshed",
+    head: "feature/hbl-405",
+    base: "main",
+    updateExistingTitle: false,
+  });
+
+  assert.equal(result.number, 78);
+  assert.equal(updates.length, 1);
+  assert.ok(!Object.hasOwn(updates[0]!, "title"));
+  assert.equal(updates[0]?.body, "body may still be refreshed");
 });
 
 test("GitHubService: unresolved review comments keep only unresolved threads", async () => {

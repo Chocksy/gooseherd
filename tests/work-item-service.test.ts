@@ -32,7 +32,9 @@ function adminSessionActor(sessionId = "admin-session-1") {
   };
 }
 
-async function createServiceFixture() {
+async function createServiceFixture(options: {
+  readyForMergeHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
+} = {}) {
   const testDb = await createTestDb();
   const pmUserId = randomUUID();
   const reviewerUserId = randomUUID();
@@ -65,7 +67,9 @@ async function createServiceFixture() {
   return {
     db: testDb.db,
     cleanup: testDb.cleanup,
-    service: new WorkItemService(testDb.db),
+    service: new WorkItemService(testDb.db, {
+      readyForMergeHandler: options.readyForMergeHandler,
+    }),
     pmUserId,
     reviewerUserId,
     outsiderUserId,
@@ -622,6 +626,46 @@ test("service guarded override only allows whitelisted transitions within the cu
     reason: "Explicit cancellation is still allowed",
   });
   assert.equal(cancelled.state, "cancelled");
+});
+
+test("service guarded override triggers ready_for_merge actions when entering ready_for_merge", async (t) => {
+  const calls: Array<{ id: string; state: string }> = [];
+  const { db, cleanup, service, pmUserId, adminUserId, ownerTeamId } = await createServiceFixture({
+    readyForMergeHandler: async (workItem) => {
+      calls.push({ id: workItem.id, state: workItem.state });
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Manual merge-ready override",
+    summary: "Admin explicitly marks this ready for merge",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.406",
+    jiraIssueKey: "HBL-406",
+    createdByUserId: pmUserId,
+  });
+
+  await db
+    .update(workItems)
+    .set({
+      state: "qa_review",
+      substate: "waiting_qa_review",
+      flags: ["pr_opened", "self_review_done", "engineering_review_done"],
+      updatedAt: new Date(),
+    })
+    .where(eq(workItems.id, delivery.id));
+
+  const overridden = await service.guardedOverrideState({
+    workItemId: delivery.id,
+    state: "ready_for_merge",
+    actor: systemUserActor(adminUserId),
+    reason: "Admin marks the current QA-approved PR as merge-ready",
+  });
+
+  assert.equal(overridden.state, "ready_for_merge");
+  assert.deepEqual(calls, [{ id: delivery.id, state: "ready_for_merge" }]);
 });
 
 test("service records actor principal metadata in work item events", async (t) => {

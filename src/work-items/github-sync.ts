@@ -1,6 +1,8 @@
 import type { Database } from "../db/index.js";
 import type { GitHubService } from "../github.js";
 import {
+  advanceFeatureDeliveryStateAfterAutoReview,
+  advanceFeatureDeliveryStateAfterQaEntry,
   nextFeatureDeliveryStateAfterAutoReview,
   nextFeatureDeliveryStateAfterEngineeringReview,
   nextFeatureDeliveryStateAfterProductReview,
@@ -65,6 +67,7 @@ export interface DeliveryContextResolverResult {
 export interface GitHubWorkItemSyncOptions {
   adoptionLabels?: string[];
   githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
+  readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
   skipQaPreparation?: boolean;
@@ -80,6 +83,11 @@ export interface GitHubWorkItemSyncOptions {
     authorLogin?: string;
   }) => Promise<DeliveryContextResolverResult | undefined>;
 }
+
+type ManagedFeatureDeliveryState = Extract<
+  WorkItemRecord["state"],
+  "auto_review" | "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge"
+>;
 
 export function parseJiraIssueKey(text: string | undefined): string | undefined {
   if (!text) return undefined;
@@ -172,24 +180,28 @@ export class GitHubWorkItemSync {
   private readonly adoptionLabels: string[];
   private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
-  private readonly resetEngineeringReviewOnNewCommits?: boolean;
-  private readonly resetQaReviewOnNewCommits?: boolean;
   private readonly skipQaPreparation: boolean;
   private readonly skipProductReview: boolean;
+  private readonly resetEngineeringReviewOnNewCommits?: boolean;
+  private readonly resetQaReviewOnNewCommits?: boolean;
   private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
+  private readonly readyForMergeHandler?: GitHubWorkItemSyncOptions["readyForMergeHandler"];
 
   constructor(db: Database, options: GitHubWorkItemSyncOptions) {
     this.workItems = new WorkItemStore(db);
-    this.workItemService = new WorkItemService(db);
+    this.workItemService = new WorkItemService(db, {
+      readyForMergeHandler: options.readyForMergeHandler,
+    });
     this.events = new WorkItemEventsStore(db);
     this.runs = new RunStore(db);
     this.adoptionLabels = (options.adoptionLabels ?? ["ai:assist"]).map((label) => label.trim().toLowerCase()).filter(Boolean);
     this.githubService = options.githubService;
+    this.readyForMergeHandler = options.readyForMergeHandler;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
-    this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
-    this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
     this.skipQaPreparation = options.skipQaPreparation ?? false;
     this.skipProductReview = options.skipProductReview ?? false;
+    this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
+    this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
     this.reconcileWorkItem = options.reconcileWorkItem;
   }
 
@@ -249,7 +261,7 @@ export class GitHubWorkItemSync {
         await this.reconcileIfConfigured(current.id, "github.automation_enabled");
       }
 
-      return current;
+      return this.handleReadyForMergeIfNeeded(current);
     }
 
     if (!this.hasAdoptionLabel(payload.labels)) {
@@ -472,28 +484,42 @@ export class GitHubWorkItemSync {
         return updated;
       }
 
-      const nextState = workItem.state === "auto_review"
-        ? nextFeatureDeliveryStateAfterAutoReview({
-            ciGreen: true,
-            selfReviewDone: workItem.flags.includes("self_review_done"),
-            hasActiveAutoFixes: false,
-          })
-        : workItem.state === "qa_preparation"
+      let updated: WorkItemRecord;
+      if (workItem.state === "auto_review") {
+        updated = await this.advanceAutoReviewAfterSuccessfulCi(workItem);
+      } else {
+        const nextState = workItem.state === "qa_preparation"
           ? nextFeatureDeliveryStateAfterQaPreparation({
               productReviewRequired: workItem.flags.includes("product_review_required"),
               qaPrepFoundIssue: false,
               skipProductReview: this.skipProductReview,
             })
           : workItem.state;
+        const finalState = isManagedFeatureDeliveryState(nextState)
+          ? advanceFeatureDeliveryStateAfterQaEntry(nextState, {
+              qaReviewDone: workItem.flags.includes("qa_review_done"),
+            })
+          : nextState;
 
-      const updated = await this.workItems.updateState(workItem.id, {
-        state: nextState,
-        substate: nextFeatureDeliverySubstateForState(nextState, {
-          fallback: workItem.substate,
-          defaultValue: "waiting_ci",
-        }),
-        flagsToAdd: ["ci_green"],
-      });
+        updated = await this.workItems.updateState(workItem.id, {
+          state: nextState,
+          substate: nextFeatureDeliverySubstateForState(nextState, {
+            fallback: workItem.substate,
+            defaultValue: "waiting_ci",
+          }),
+          flagsToAdd: ["ci_green"],
+        });
+
+        if (finalState !== nextState) {
+          updated = await this.workItems.updateState(updated.id, {
+            state: finalState,
+            substate: nextFeatureDeliverySubstateForState(finalState, {
+              fallback: updated.substate,
+              defaultValue: "waiting_ci",
+            }),
+          });
+        }
+      }
 
       await this.events.append({
         workItemId: updated.id,
@@ -501,7 +527,7 @@ export class GitHubWorkItemSync {
         payload: { conclusion, state: updated.state, prNumbers: payload.pullRequestNumbers ?? [] },
       });
 
-      return updated;
+      return this.handleReadyForMergeIfNeeded(updated);
     }
 
     if (conclusion === "failure") {
@@ -623,25 +649,38 @@ export class GitHubWorkItemSync {
         productReviewRequired: workItem.flags.includes("product_review_required"),
         skipProductReview: this.skipProductReview,
       });
-      substate = reviewState === "approved"
-        ? nextFeatureDeliverySubstateForState(nextState, { fallback: workItem.substate, defaultValue: "waiting_ci" })
-        : "applying_review_feedback";
       if (reviewState === "approved") flagsToAdd = ["engineering_review_done"];
     } else if (currentState === "product_review") {
       nextState = nextFeatureDeliveryStateAfterProductReview(reviewState);
-      substate = nextState === "qa_review" ? "waiting_qa_review" : "applying_review_feedback";
       if (reviewState === "approved") flagsToAdd = ["product_review_done"];
     } else {
       nextState = nextFeatureDeliveryStateAfterQaReview(reviewState);
-      substate = nextState === "ready_for_merge" ? "waiting_merge" : "applying_review_feedback";
       if (reviewState === "approved") flagsToAdd = ["qa_review_done"];
     }
 
-    const updated = await this.workItems.updateState(workItem.id, {
+    const finalState = advanceFeatureDeliveryStateAfterQaEntry(nextState, {
+      qaReviewDone: reviewState === "approved"
+        && (workItem.flags.includes("qa_review_done") || flagsToAdd.includes("qa_review_done")),
+    });
+    substate = reviewState === "approved"
+      ? nextFeatureDeliverySubstateForState(nextState, { fallback: workItem.substate, defaultValue: "waiting_ci" })
+      : "applying_review_feedback";
+
+    let updated = await this.workItems.updateState(workItem.id, {
       state: nextState,
       substate,
       flagsToAdd,
     });
+
+    if (finalState !== nextState) {
+      updated = await this.workItems.updateState(updated.id, {
+        state: finalState,
+        substate: nextFeatureDeliverySubstateForState(finalState, {
+          fallback: updated.substate,
+          defaultValue: "waiting_ci",
+        }),
+      });
+    }
 
     await this.events.append({
       workItemId: updated.id,
@@ -661,7 +700,7 @@ export class GitHubWorkItemSync {
     ) {
       await this.reconcileIfConfigured(updated.id, "github.review_changes_requested");
     }
-    return updated;
+    return this.handleReadyForMergeIfNeeded(updated);
   }
 
   private async markPullRequestMerged(
@@ -695,44 +734,36 @@ export class GitHubWorkItemSync {
       return workItem;
     }
 
-    const flagsToRemove = ["ci_green", "self_review_done"];
-    let nextState = workItem.state;
-    let substate = workItem.substate;
-
-    if (workItem.state === "ready_for_merge") {
-      nextState = "auto_review";
-      substate = "waiting_ci";
-      flagsToRemove.push("engineering_review_done", "product_review_done", "qa_review_done");
-    } else if (workItem.state === "engineering_review") {
-      if (this.shouldResetEngineeringReviewOnNewCommits()) {
-        nextState = "auto_review";
-        substate = "waiting_ci";
-        flagsToRemove.push("engineering_review_done");
-      } else {
-        substate = "waiting_engineering_review";
-      }
-    } else if (workItem.state === "product_review") {
-      nextState = "auto_review";
-      substate = "waiting_ci";
-      flagsToRemove.push("product_review_done");
-    } else if (workItem.state === "qa_review") {
-      if (this.shouldResetQaReviewOnNewCommits()) {
-        nextState = "auto_review";
-        substate = "waiting_ci";
-        flagsToRemove.push("qa_review_done");
-      } else {
-        substate = "waiting_qa_review";
-      }
-    } else if (workItem.state === "qa_preparation" || workItem.state === "auto_review") {
-      substate = "waiting_ci";
-    } else {
+    if (![
+      "auto_review",
+      "engineering_review",
+      "qa_preparation",
+      "product_review",
+      "qa_review",
+      "ready_for_merge",
+    ].includes(workItem.state)) {
       return workItem;
     }
 
+    const flagsToRemove = new Set<string>(["ci_green"]);
+    if (workItem.state === "ready_for_merge" && this.shouldResetEngineeringReviewOnNewCommits()) {
+      // Later review approvals depend on engineering sign-off, so they cannot stay sticky once it resets.
+      flagsToRemove.add("engineering_review_done");
+      flagsToRemove.add("product_review_done");
+      flagsToRemove.add("qa_review_done");
+    } else {
+      if (workItem.state === "engineering_review" && this.shouldResetEngineeringReviewOnNewCommits()) {
+        flagsToRemove.add("engineering_review_done");
+      }
+      if ((workItem.state === "qa_review" || workItem.state === "ready_for_merge") && this.shouldResetQaReviewOnNewCommits()) {
+        flagsToRemove.add("qa_review_done");
+      }
+    }
+
     const updated = await this.workItems.updateState(workItem.id, {
-      state: nextState,
-      substate,
-      flagsToRemove,
+      state: "auto_review",
+      substate: "waiting_ci",
+      flagsToRemove: Array.from(flagsToRemove),
     });
 
     await this.events.append({
@@ -812,15 +843,30 @@ export class GitHubWorkItemSync {
       : workItem.state === "qa_review" && normalizedFlagsToAdd.has("qa_review_done")
         ? nextFeatureDeliveryStateAfterQaReview("approved")
         : workItem.state;
+    const finalState = isManagedFeatureDeliveryState(nextState)
+      ? advanceFeatureDeliveryStateAfterQaEntry(
+          nextState,
+          { qaReviewDone: normalizedFlagsToAdd.has("qa_review_done") },
+        )
+      : nextState;
     const nextSubstate = nextState === workItem.state
       ? workItem.substate
       : nextFeatureDeliverySubstateForState(nextState, { fallback: workItem.substate });
 
-    return this.workItems.updateState(workItem.id, {
+    const updated = await this.workItems.updateState(workItem.id, {
       state: nextState,
       substate: nextSubstate,
       flagsToAdd,
       flagsToRemove,
+    });
+
+    if (finalState === nextState) {
+      return updated;
+    }
+
+    return this.workItems.updateState(updated.id, {
+      state: finalState,
+      substate: nextFeatureDeliverySubstateForState(finalState, { fallback: updated.substate }),
     });
   }
 
@@ -919,6 +965,51 @@ export class GitHubWorkItemSync {
     return shouldResetQaReviewOnNewCommits();
   }
 
+  private async advanceAutoReviewAfterSuccessfulCi(workItem: WorkItemRecord): Promise<WorkItemRecord> {
+    const statePath = featureDeliveryStatePathAfterAutoReview({
+      ciGreen: true,
+      selfReviewDone: workItem.flags.includes("self_review_done"),
+      hasActiveAutoFixes: false,
+      engineeringReviewDone: workItem.flags.includes("engineering_review_done"),
+      productReviewDone: workItem.flags.includes("product_review_done"),
+      qaReviewDone: workItem.flags.includes("qa_review_done"),
+      productReviewRequired: workItem.flags.includes("product_review_required"),
+      skipQaPreparation: this.skipQaPreparation,
+      skipProductReview: this.skipProductReview,
+    });
+
+    if (statePath.length === 0) {
+      return this.workItems.updateState(workItem.id, {
+        state: "auto_review",
+        substate: "waiting_ci",
+        flagsToAdd: ["ci_green"],
+      });
+    }
+
+    let updated = workItem;
+    for (const [index, state] of statePath.entries()) {
+      updated = await this.workItems.updateState(updated.id, {
+        state,
+        substate: nextFeatureDeliverySubstateForState(state, {
+          fallback: updated.substate,
+          defaultValue: "waiting_ci",
+        }),
+        flagsToAdd: index === 0 ? ["ci_green"] : undefined,
+      });
+    }
+
+    return updated;
+  }
+
+  private async handleReadyForMergeIfNeeded(workItem: WorkItemRecord): Promise<WorkItemRecord> {
+    if (!this.readyForMergeHandler || workItem.workflow !== "feature_delivery" || workItem.state !== "ready_for_merge") {
+      return workItem;
+    }
+
+    await this.readyForMergeHandler(workItem);
+    return workItem;
+  }
+
   private async reconcileIfConfigured(workItemId: string, reason: string): Promise<void> {
     if (!this.reconcileWorkItem) {
       return;
@@ -987,6 +1078,106 @@ function nextFeatureDeliverySubstateForState(
     default:
       return input.fallback;
   }
+}
+
+function featureDeliveryStatePathAfterAutoReview(
+  input: Parameters<typeof advanceFeatureDeliveryStateAfterAutoReview>[0],
+): Array<Extract<WorkItemRecord["state"], "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge">> {
+  // TODO: Extract feature_delivery state progression into one shared state-machine reducer/path builder.
+  // github-sync and orchestrator still duplicate parts of the multi-step transition logic.
+  const finalState = advanceFeatureDeliveryStateAfterAutoReview(input);
+  const path: Array<Extract<WorkItemRecord["state"], "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge">> = [];
+
+  const afterAutoReview = nextFeatureDeliveryStateAfterAutoReview({
+    ciGreen: input.ciGreen,
+    selfReviewDone: input.selfReviewDone,
+    hasActiveAutoFixes: input.hasActiveAutoFixes,
+  });
+  if (afterAutoReview !== "engineering_review") {
+    return path;
+  }
+
+  path.push("engineering_review");
+  if (finalState === "engineering_review" || !input.engineeringReviewDone) {
+    return path;
+  }
+
+  const afterEngineeringReview = nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+    skipQaPreparation: input.skipQaPreparation,
+    productReviewRequired: input.productReviewRequired,
+    skipProductReview: input.skipProductReview,
+  });
+  pushPostAutoReviewState(path, afterEngineeringReview);
+  if (finalState === afterEngineeringReview) {
+    return path;
+  }
+
+  let currentState = afterEngineeringReview;
+  if (currentState === "qa_preparation") {
+    currentState = nextFeatureDeliveryStateAfterQaPreparation({
+      productReviewRequired: input.productReviewRequired,
+      qaPrepFoundIssue: false,
+      skipProductReview: input.skipProductReview,
+    });
+    pushPostAutoReviewState(path, currentState);
+    if (finalState === currentState) {
+      return path;
+    }
+  }
+
+  if (currentState === "product_review") {
+    currentState = nextFeatureDeliveryStateAfterProductReview("approved");
+    pushPostAutoReviewState(path, currentState);
+    if (finalState === currentState) {
+      return path;
+    }
+  }
+
+  if (currentState === "qa_review" && finalState === "ready_for_merge") {
+    pushPostAutoReviewState(path, nextFeatureDeliveryStateAfterQaReview("approved"));
+  }
+
+  return path;
+}
+
+function pushPostAutoReviewState(
+  path: Array<Extract<WorkItemRecord["state"], "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge">>,
+  state: WorkItemRecord["state"],
+): void {
+  if (!isPostAutoReviewState(state)) {
+    return;
+  }
+
+  if (path[path.length - 1] === state) {
+    return;
+  }
+
+  path.push(state);
+}
+
+function isManagedFeatureDeliveryState(
+  state: WorkItemRecord["state"],
+): state is ManagedFeatureDeliveryState {
+  return [
+    "auto_review",
+    "engineering_review",
+    "qa_preparation",
+    "product_review",
+    "qa_review",
+    "ready_for_merge",
+  ].includes(state);
+}
+
+function isPostAutoReviewState(
+  state: WorkItemRecord["state"],
+): state is Extract<WorkItemRecord["state"], "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge"> {
+  return [
+    "engineering_review",
+    "qa_preparation",
+    "product_review",
+    "qa_review",
+    "ready_for_merge",
+  ].includes(state);
 }
 
 function normalizeCheckSuiteConclusion(

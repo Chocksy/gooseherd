@@ -27,6 +27,46 @@ export function nextFeatureDeliveryStateAfterAutoReview(input: {
   return "auto_review";
 }
 
+export function advanceFeatureDeliveryStateAfterAutoReview(input: {
+  ciGreen: boolean;
+  selfReviewDone: boolean;
+  hasActiveAutoFixes: boolean;
+  engineeringReviewDone: boolean;
+  productReviewDone: boolean;
+  qaReviewDone: boolean;
+  productReviewRequired: boolean;
+  skipQaPreparation?: boolean;
+  skipProductReview?: boolean;
+}): FeatureDeliveryState {
+  const nextState = nextFeatureDeliveryStateAfterAutoReview({
+    ciGreen: input.ciGreen,
+    selfReviewDone: input.selfReviewDone,
+    hasActiveAutoFixes: input.hasActiveAutoFixes,
+  });
+
+  if (nextState !== "engineering_review") {
+    return nextState;
+  }
+
+  if (input.qaReviewDone) {
+    return "ready_for_merge";
+  }
+
+  if (input.productReviewDone) {
+    return "qa_review";
+  }
+
+  if (!input.engineeringReviewDone) {
+    return "engineering_review";
+  }
+
+  return nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+    skipQaPreparation: input.skipQaPreparation,
+    productReviewRequired: input.productReviewRequired,
+    skipProductReview: input.skipProductReview,
+  });
+}
+
 export function nextFeatureDeliveryStateAfterEngineeringReview(
   outcome: "approved" | "changes_requested",
   input?: {
@@ -73,6 +113,17 @@ export function nextFeatureDeliveryStateAfterQaReview(
   outcome: "approved" | "changes_requested"
 ): FeatureDeliveryState | "ready_for_merge" {
   return outcome === "approved" ? "ready_for_merge" : "auto_review";
+}
+
+export function advanceFeatureDeliveryStateAfterQaEntry(
+  state: FeatureDeliveryState | "ready_for_merge",
+  input: { qaReviewDone: boolean },
+): FeatureDeliveryState | "ready_for_merge" {
+  if (state === "qa_review" && input.qaReviewDone) {
+    return "ready_for_merge";
+  }
+
+  return state;
 }
 
 export function nextFeatureDeliveryStateAfterReadyForMergeRecovery(

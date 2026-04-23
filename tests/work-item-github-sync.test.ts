@@ -38,6 +38,8 @@ async function createGitHubSyncFixture(options: {
       headSha?: string;
     }>;
   };
+  resetEngineeringReviewOnNewCommits?: boolean;
+  resetQaReviewOnNewCommits?: boolean;
   skipQaPreparation?: boolean;
   skipProductReview?: boolean;
 } = {}) {
@@ -77,6 +79,8 @@ async function createGitHubSyncFixture(options: {
       reconcileWorkItem: async (workItemId, reason) => {
         reconcileCalls.push({ workItemId, reason });
       },
+      resetEngineeringReviewOnNewCommits: options.resetEngineeringReviewOnNewCommits,
+      resetQaReviewOnNewCommits: options.resetQaReviewOnNewCommits,
       skipQaPreparation: options.skipQaPreparation,
       skipProductReview: options.skipProductReview,
       ...(options.githubService ? ({ githubService: options.githubService } as never) : {}),
@@ -1229,7 +1233,7 @@ test("github sync preserves ready_for_merge revalidation behavior on failed CI w
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/90",
     initialState: "ready_for_merge",
     initialSubstate: "waiting_merge",
-    flags: ["pr_opened", "ci_green", "engineering_review_done", "qa_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "engineering_review_done", "qa_review_done"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -1344,7 +1348,7 @@ test("github sync advances engineering review when code review passed label is p
   assert.ok(updated?.flags.includes("qa_review_done"));
 });
 
-test("github sync respects skip flags when code review passed label is present", async (t) => {
+test("github sync advances directly to ready_for_merge when QA passed is already present at qa review entry", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
     skipQaPreparation: true,
     skipProductReview: true,
@@ -1377,8 +1381,8 @@ test("github sync respects skip flags when code review passed label is present",
   });
 
   assert.equal(updated?.id, delivery.id);
-  assert.equal(updated?.state, "qa_review");
-  assert.equal(updated?.substate, "waiting_qa_review");
+  assert.equal(updated?.state, "ready_for_merge");
+  assert.equal(updated?.substate, "waiting_merge");
   assert.ok(updated?.flags.includes("engineering_review_done"));
   assert.ok(updated?.flags.includes("qa_review_done"));
 });
@@ -1812,7 +1816,7 @@ test("github sync resets ready_for_merge to auto review on synchronize", async (
     githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/104",
     initialState: "ready_for_merge",
     initialSubstate: "waiting_merge",
-    flags: ["pr_opened", "ci_green", "engineering_review_done", "qa_review_done"],
+    flags: ["pr_opened", "ci_green", "self_review_done", "engineering_review_done", "qa_review_done"],
   });
 
   const updated = await sync.handleWebhookPayload({
@@ -1827,11 +1831,104 @@ test("github sync resets ready_for_merge to auto review on synchronize", async (
   assert.equal(updated?.state, "auto_review");
   assert.equal(updated?.substate, "waiting_ci");
   assert.ok(!updated?.flags.includes("ci_green"));
+  assert.ok(updated?.flags.includes("self_review_done"));
+  assert.ok(updated?.flags.includes("engineering_review_done"));
+  assert.ok(updated?.flags.includes("qa_review_done"));
+});
+
+test("github sync clears downstream sticky approvals on ready_for_merge synchronize when engineering reset is enabled", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    resetEngineeringReviewOnNewCommits: true,
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Branch updated after approval",
+    summary: "Engineering reset should invalidate downstream sticky approvals too",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7051",
+    jiraIssueKey: "HBL-411A",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1041,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1041",
+    initialState: "ready_for_merge",
+    initialSubstate: "waiting_merge",
+    flags: [
+      "pr_opened",
+      "ci_green",
+      "self_review_done",
+      "engineering_review_done",
+      "product_review_done",
+      "qa_review_done",
+    ],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "synchronize",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1041,
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "waiting_ci");
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.ok(updated?.flags.includes("self_review_done"));
   assert.ok(!updated?.flags.includes("engineering_review_done"));
+  assert.ok(!updated?.flags.includes("product_review_done"));
   assert.ok(!updated?.flags.includes("qa_review_done"));
 });
 
-test("github sync clears ci_green and self_review_done on synchronize for auto_review items", async (t) => {
+test("github sync clears only sticky QA approval on ready_for_merge synchronize when QA reset is enabled", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    resetQaReviewOnNewCommits: true,
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Branch updated after QA sign-off",
+    summary: "Only sticky QA approval should be invalidated",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7052",
+    jiraIssueKey: "HBL-411B",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1042,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1042",
+    initialState: "ready_for_merge",
+    initialSubstate: "waiting_merge",
+    flags: [
+      "pr_opened",
+      "ci_green",
+      "self_review_done",
+      "engineering_review_done",
+      "product_review_done",
+      "qa_review_done",
+    ],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "synchronize",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1042,
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "waiting_ci");
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.ok(updated?.flags.includes("self_review_done"));
+  assert.ok(updated?.flags.includes("engineering_review_done"));
+  assert.ok(updated?.flags.includes("product_review_done"));
+  assert.ok(!updated?.flags.includes("qa_review_done"));
+});
+
+test("github sync clears ci_green but preserves self_review_done on synchronize for auto_review items", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
   t.after(cleanup);
 
@@ -1858,6 +1955,43 @@ test("github sync clears ci_green and self_review_done on synchronize for auto_r
     prNumber: 105,
   });
 
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "waiting_ci");
   assert.ok(!updated?.flags.includes("ci_green"));
-  assert.ok(!updated?.flags.includes("self_review_done"));
+  assert.ok(updated?.flags.includes("self_review_done"));
+});
+
+test("github sync returns sticky reviewed auto_review work items to ready_for_merge after green CI", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Squashed branch passed CI",
+    summary: "The PR only needs green CI to become merge-ready again",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.707",
+    jiraIssueKey: "HBL-413",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 106,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/106",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "self_review_done", "engineering_review_done", "qa_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    status: "completed",
+    conclusion: "success",
+    pullRequestNumbers: [106],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "ready_for_merge");
+  assert.equal(updated?.substate, "waiting_merge");
+  assert.ok(updated?.flags.includes("ci_green"));
 });

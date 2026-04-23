@@ -310,6 +310,37 @@ test("orchestrator queues a standalone branch-sync run for stale ready_for_merge
   assert.equal(runRows[0]?.runtime, "kubernetes");
 });
 
+test("orchestrator queues a standalone ready-for-merge run for multi-commit PR work items", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "ready_for_merge",
+    substate: "waiting_merge",
+    flags: ["ci_green", "engineering_review_done", "qa_review_done"],
+  });
+  t.after(cleanup);
+  const { queueReadyForMergeRun } = await import("../src/work-items/orchestrator.js");
+
+  await queueReadyForMergeRun(db, workItem.id, "ready_for_merge.entered", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+  const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem.id));
+
+  assert.equal(workItemRow?.state, "ready_for_merge");
+  assert.equal(workItemRow?.substate, "waiting_merge");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:ready-for-merge");
+  assert.equal(runRows[0]?.pipelineHint, "ready-for-merge");
+  assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/90");
+  assert.equal(runRows[0]?.prNumber, 90);
+  assert.equal(runRows[0]?.branchName, "feature/hbl-405");
+  assert.equal(runRows[0]?.parentBranchName, "feature/hbl-405");
+  assert.equal(runRows[0]?.autoReviewSourceSubstate, "waiting_merge");
+  assert.equal(runRows[0]?.runtime, "kubernetes");
+  assert.ok(events.some((event) => event.eventType === "run.ready_for_merge_launched"));
+});
+
 test("orchestrator does not queue branch-sync runs until engineering and QA reviews are complete", async (t) => {
   const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
     state: "ready_for_merge",
@@ -420,6 +451,56 @@ test("orchestrator writeback respects skip flags when engineering_review is alre
   const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
   assert.equal(workItemRow?.state, "qa_review");
   assert.equal(workItemRow?.substate, "waiting_qa_review");
+});
+
+test("orchestrator writeback advances directly to ready_for_merge when qa review is already marked done", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("applying_review_feedback");
+  t.after(cleanup);
+
+  await (new WorkItemStore(db)).updateState(workItem.id, {
+    state: "auto_review",
+    flagsToAdd: ["ci_green", "engineering_review_done", "qa_review_done"],
+  });
+  const run = await createAwaitingCiLinkedRun(runStore, workItem.id, workItem);
+  const { writebackWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await writebackWorkItem(db, run.id, {
+    config: {
+      defaultBaseBranch: "release/2026.04",
+      featureDeliverySkipQaPreparation: true,
+      featureDeliverySkipProductReview: true,
+    },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.equal(workItemRow?.state, "ready_for_merge");
+  assert.equal(workItemRow?.substate, "waiting_merge");
+});
+
+test("orchestrator writeback triggers ready_for_merge handler when entering ready_for_merge", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("applying_review_feedback");
+  t.after(cleanup);
+
+  await (new WorkItemStore(db)).updateState(workItem.id, {
+    state: "auto_review",
+    flagsToAdd: ["ci_green", "engineering_review_done", "qa_review_done"],
+  });
+  const run = await createAwaitingCiLinkedRun(runStore, workItem.id, workItem);
+  const { writebackWorkItem } = await import("../src/work-items/orchestrator.js");
+  const calls: Array<{ id: string; state: string }> = [];
+
+  await writebackWorkItem(db, run.id, {
+    config: {
+      defaultBaseBranch: "release/2026.04",
+      featureDeliverySkipQaPreparation: true,
+      featureDeliverySkipProductReview: true,
+    },
+    readyForMergeHandler: async (updatedWorkItem) => {
+      calls.push({ id: updatedWorkItem.id, state: updatedWorkItem.state });
+    },
+  });
+
+  assert.deepEqual(calls, [{ id: workItem.id, state: "ready_for_merge" }]);
 });
 
 test("orchestrator writeback marks self_review_done when auto-review run completes without awaiting_ci", async (t) => {

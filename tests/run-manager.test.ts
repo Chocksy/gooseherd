@@ -160,6 +160,10 @@ async function waitForRunStatus(
   throw new Error(`waitForRunStatus: run ${runId} did not reach status ${expectedStatus} within ${timeoutMs}ms`);
 }
 
+async function waitForManagerIdle(manager: RunManager): Promise<void> {
+  await ((manager as unknown) as { queue: { onIdle: () => Promise<void> } }).queue.onIdle();
+}
+
 // ── enqueueRun ─────────────────────────────────────────
 
 test("enqueueRun creates a run record and returns it", async () => {
@@ -359,6 +363,7 @@ test("run manager can cancel a run while prefetch is still pending", async () =>
   assert.equal(backendCalled, false);
 
   resolvePrefetch?.(undefined);
+  await waitForManagerIdle(manager);
   await testDb.cleanup();
 });
 
@@ -413,6 +418,7 @@ test("run manager can cancel a kubernetes run while prefetch is still pending", 
   assert.equal(backendCalled, false);
 
   resolvePrefetch?.(undefined);
+  await waitForManagerIdle(manager);
   await testDb.cleanup();
 });
 
@@ -961,6 +967,7 @@ test("processRun posts status card and summary on success", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   // Should have posted messages: initial card + heartbeat updates + final card + summary
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
@@ -1001,6 +1008,7 @@ test("processRun posts failure summary on error", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary = postMessages.findLast((c) => {
@@ -1399,6 +1407,7 @@ test("summary includes task preview when task is long", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary = postMessages[postMessages.length - 1];
@@ -1428,6 +1437,7 @@ test("summary limits displayed files to 10", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary = postMessages[postMessages.length - 1];
@@ -1541,6 +1551,7 @@ test("failure summary shows classified error with suggestion for known patterns"
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary =

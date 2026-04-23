@@ -24,7 +24,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    restart: unless-stopped
 
   gooseherd:
     image: ghcr.io/chocksy/gooseherd:latest
@@ -43,6 +42,9 @@ services:
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
+      - SLACK_AUTH_REDIRECT_URI=${SLACK_AUTH_REDIRECT_URI:-}
       - SLACK_COMMAND_NAME=${SLACK_COMMAND_NAME:-gooseherd}
       - SLACK_ALLOWED_CHANNELS=${SLACK_ALLOWED_CHANNELS:-}
 
@@ -186,7 +188,6 @@ services:
       - ${SANDBOX_HOST_WORK_PATH:-gooseherd-work}:/app/.work
       - gooseherd-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock   # Docker-out-of-Docker for sandbox containers
-    restart: unless-stopped
     ports:
       - "${DASHBOARD_PORT:-8787}:8787"
       - "${OBSERVER_WEBHOOK_PORT:-9090}:9090"

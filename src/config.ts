@@ -9,6 +9,9 @@ const envSchema = z.object({
   SLACK_SIGNING_SECRET: z.string().optional(),
   SLACK_COMMAND_NAME: z.string().optional(),
   SLACK_ALLOWED_CHANNELS: z.string().optional(),
+  SLACK_CLIENT_ID: z.string().optional(),
+  SLACK_CLIENT_SECRET: z.string().optional(),
+  SLACK_AUTH_REDIRECT_URI: z.string().optional(),
 
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_APP_ID: z.string().optional(),
@@ -16,6 +19,11 @@ const envSchema = z.object({
   GITHUB_APP_INSTALLATION_ID: z.string().optional(),
   GITHUB_DEFAULT_OWNER: z.string().optional(),
   REPO_ALLOWLIST: z.string().optional(),
+
+  JIRA_BASE_URL: z.string().optional(),
+  JIRA_USER: z.string().optional(),
+  JIRA_API_TOKEN: z.string().optional(),
+  JIRA_REQUEST_TIMEOUT_MS: z.string().optional(),
 
   RUNNER_CONCURRENCY: z.string().optional(),
   WORK_ROOT: z.string().optional(),
@@ -117,6 +125,9 @@ const envSchema = z.object({
   CI_MAX_WAIT_SECONDS: z.string().optional(),
   CI_CHECK_FILTER: z.string().optional(),
   CI_MAX_FIX_ROUNDS: z.string().optional(),
+  FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: z.string().optional(),
+  FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: z.string().optional(),
+  WORK_ITEM_GITHUB_ADOPTION_LABELS: z.string().optional(),
 
   DASHBOARD_TOKEN: z.string().optional(),
 
@@ -179,6 +190,9 @@ export interface AppConfig {
   slackSigningSecret?: string;
   slackCommandName: string;
   slackAllowedChannels: string[];
+  slackClientId?: string;
+  slackClientSecret?: string;
+  slackAuthRedirectUri?: string;
 
   githubToken?: string;
   githubAppId?: number;
@@ -186,6 +200,12 @@ export interface AppConfig {
   githubAppInstallationId?: number;
   githubDefaultOwner?: string;
   repoAllowlist: string[];
+
+  /** Canonical Jira read-access config for future discovery/work-items integrations. */
+  jiraBaseUrl?: string;
+  jiraUser?: string;
+  jiraApiToken?: string;
+  jiraRequestTimeoutMs: number;
 
   runnerConcurrency: number;
   workRoot: string;
@@ -296,6 +316,9 @@ export interface AppConfig {
   ciMaxWaitSeconds: number;
   ciCheckFilter: string[];
   ciMaxFixRounds: number;
+  featureDeliveryResetEngineeringReviewOnNewCommits: boolean;
+  featureDeliveryResetQaReviewOnNewCommits: boolean;
+  workItemGithubAdoptionLabels: string[];
 
   dashboardToken?: string;
 
@@ -428,6 +451,9 @@ export function loadConfig(): AppConfig {
     slackSigningSecret: parsed.SLACK_SIGNING_SECRET?.trim() || undefined,
     slackCommandName: parsed.SLACK_COMMAND_NAME?.trim() || appSlug,
     slackAllowedChannels: parseList(parsed.SLACK_ALLOWED_CHANNELS),
+    slackClientId: parsed.SLACK_CLIENT_ID?.trim() || undefined,
+    slackClientSecret: parsed.SLACK_CLIENT_SECRET?.trim() || undefined,
+    slackAuthRedirectUri: parsed.SLACK_AUTH_REDIRECT_URI?.trim() || undefined,
 
     githubToken: parsed.GITHUB_TOKEN,
     githubAppId: parsed.GITHUB_APP_ID ? parseInteger(parsed.GITHUB_APP_ID, 0) || undefined : undefined,
@@ -437,6 +463,10 @@ export function loadConfig(): AppConfig {
       : undefined,
     githubDefaultOwner: parsed.GITHUB_DEFAULT_OWNER,
     repoAllowlist: parseList(parsed.REPO_ALLOWLIST),
+    jiraBaseUrl: parsed.JIRA_BASE_URL?.trim() || undefined,
+    jiraUser: parsed.JIRA_USER?.trim() || undefined,
+    jiraApiToken: parsed.JIRA_API_TOKEN?.trim() || undefined,
+    jiraRequestTimeoutMs: parseInteger(parsed.JIRA_REQUEST_TIMEOUT_MS, 10_000),
 
     runnerConcurrency: parseInteger(parsed.RUNNER_CONCURRENCY, 1),
     workRoot: parsed.WORK_ROOT ?? ".work",
@@ -541,6 +571,17 @@ export function loadConfig(): AppConfig {
     ciMaxWaitSeconds: parseInteger(parsed.CI_MAX_WAIT_SECONDS, 1800),
     ciCheckFilter: parseList(parsed.CI_CHECK_FILTER),
     ciMaxFixRounds: parseInteger(parsed.CI_MAX_FIX_ROUNDS, 2),
+    featureDeliveryResetEngineeringReviewOnNewCommits: parseBoolean(
+      parsed.FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS,
+      false
+    ),
+    featureDeliveryResetQaReviewOnNewCommits: parseBoolean(
+      parsed.FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS,
+      false
+    ),
+    workItemGithubAdoptionLabels: parseList(parsed.WORK_ITEM_GITHUB_ADOPTION_LABELS).length > 0
+      ? parseList(parsed.WORK_ITEM_GITHUB_ADOPTION_LABELS)
+      : ["ai:assist"],
 
     dashboardToken: parsed.DASHBOARD_TOKEN?.trim() || undefined,
 

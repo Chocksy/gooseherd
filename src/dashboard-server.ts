@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, access as fsAccess } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { resolveGitHubAuthMode } from "./config.js";
+import { eq } from "drizzle-orm";
 import { logError, logInfo } from "./logger.js";
 import { RunStore } from "./store.js";
 import type { RunManager } from "./run-manager.js";
@@ -13,10 +14,30 @@ import { parseRunLog, getEventStats } from "./log-parser.js";
 import type { ObserverEventRecord, ObserverStateSnapshot, TriggerRule } from "./observer/types.js";
 import type { ChatMessage } from "./llm/caller.js";
 import { dashboardHtml } from "./dashboard/html.js";
-import { checkAuth, hashToken, loginPageHtml, handleLogin, type AuthOptions } from "./dashboard/auth.js";
+import {
+  buildDashboardSessionCookie,
+  checkAuth,
+  clearDashboardSessionCookie,
+  hashToken,
+  handleAdminLogin,
+  loginPageHtml,
+  parseCookies,
+  type AuthOptions,
+} from "./dashboard/auth.js";
+import { DashboardAuthSessionStore } from "./dashboard/auth-session-store.js";
+import {
+  requireDashboardUserActor,
+  resolveDashboardActorPrincipal,
+  type DashboardActorPrincipal,
+  type DashboardUserActorPrincipal,
+} from "./dashboard/actor-principal.js";
+import { SlackAuthFlow, isSlackAuthConfigured } from "./dashboard/slack-auth.js";
+import { resolveMappedSlackTeams, syncSlackUserGroupMemberships } from "./dashboard/team-membership-sync.js";
 import type { PipelineStore } from "./pipeline/pipeline-store.js";
 import type { LearningStore } from "./observer/learning-store.js";
 import { SetupStore } from "./db/setup-store.js";
+import type { Database } from "./db/index.js";
+import { users } from "./db/schema.js";
 import { wizardHtml } from "./dashboard/wizard-html.js";
 import { agentProfileWizardHtml } from "./dashboard/agent-profile-wizard-html.js";
 import { agentProfileListHtml } from "./dashboard/agent-profile-list-html.js";
@@ -36,17 +57,87 @@ import type { ControlPlaneStore } from "./runtime/control-plane-store.js";
 import { routeControlPlaneRequest } from "./runtime/control-plane-router.js";
 import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { formatSandboxRuntimeLabel } from "./runtime/runtime-mode.js";
+import type { ReviewRequestRecord, WorkItemEventRecord, WorkItemRecord } from "./work-items/types.js";
 
 /** Lean interface — dashboard only reads observer state, never mutates it. */
 export interface DashboardObserver {
   getStateSnapshot(): Promise<ObserverStateSnapshot>;
   getRecentEvents(limit?: number): ObserverEventRecord[];
   getRules(): TriggerRule[];
+  handleWebhookHttpRequest?(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<boolean>;
 }
 
 /** Optional source for in-memory orchestrator thread messages. */
 export interface DashboardConversationSource {
   get(threadKey: string): Promise<ChatMessage[] | undefined>;
+}
+
+export interface DashboardWorkItemsSource {
+  listWorkItems(workflow?: string): Promise<WorkItemRecord[]>;
+  getWorkItem(id: string): Promise<WorkItemRecord | undefined>;
+  listReviewRequestsForWorkItem(workItemId: string): Promise<ReviewRequestRecord[]>;
+  listReviewRequestComments(reviewRequestId: string): Promise<Array<{
+    id: number;
+    reviewRequestId: string;
+    authorUserId?: string;
+    source: string;
+    body: string;
+    createdAt: string;
+  }>>;
+  listEventsForWorkItem(workItemId: string): Promise<WorkItemEventRecord[]>;
+  createDiscoveryWorkItem(input: {
+    title: string;
+    summary?: string;
+    ownerTeamId?: string;
+    homeChannelId?: string;
+    homeThreadTs?: string;
+    originChannelId?: string;
+    originThreadTs?: string;
+    jiraIssueKey?: string;
+    actor: DashboardUserActorPrincipal;
+  }): Promise<WorkItemRecord>;
+  createReviewRequests(input: {
+    workItemId: string;
+    actor: DashboardUserActorPrincipal;
+    requests: Array<{
+      type: ReviewRequestRecord["type"];
+      targetType: ReviewRequestRecord["targetType"];
+      targetRef: Record<string, unknown>;
+      title: string;
+      requestMessage?: string;
+      focusPoints?: string[];
+    }>;
+  }): Promise<ReviewRequestRecord[]>;
+  respondToReviewRequest(input: {
+    reviewRequestId: string;
+    outcome: NonNullable<ReviewRequestRecord["outcome"]>;
+    actor: DashboardUserActorPrincipal;
+    comment?: string;
+  }): Promise<WorkItemRecord>;
+  confirmDiscovery(input: {
+    workItemId: string;
+    approved: boolean;
+    actor: DashboardUserActorPrincipal;
+    jiraIssueKey?: string;
+  }): Promise<WorkItemRecord>;
+  stopProcessing(input: {
+    workItemId: string;
+    actor: DashboardUserActorPrincipal;
+  }): Promise<{ workItem: WorkItemRecord; stoppedRunIds: string[]; alreadyIdleRunIds: string[]; failedRunIds: string[] }>;
+  guardedOverrideState(input: {
+    workItemId: string;
+    state: WorkItemRecord["state"];
+    substate?: string;
+    actor: DashboardActorPrincipal;
+    reason: string;
+  }): Promise<WorkItemRecord>;
+}
+
+function requireDashboardActor(principal: DashboardActorPrincipal | undefined): DashboardActorPrincipal {
+  if (!principal) {
+    throw new Error("Dashboard session actor is required");
+  }
+  return principal;
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -406,9 +497,13 @@ export function startDashboardServer(
   agentProfileStore?: AgentProfileStore,
   controlPlaneStore?: ControlPlaneStore,
   runnerArtifactStore?: ArtifactStore,
-): void {
+  workItemsSource?: DashboardWorkItemsSource,
+  db?: Database,
+): Server {
   const githubService = GitHubService.create(config);
   let githubRepositoriesCache: CachedGitHubRepositories | undefined;
+  const authSessionStore = db ? new DashboardAuthSessionStore(db) : undefined;
+  const slackAuthFlow = new SlackAuthFlow(config);
 
   const server = createServer(async (req, res) => {
     try {
@@ -426,6 +521,11 @@ export function startDashboardServer(
         if (handled) return;
       }
 
+      if (pathname.startsWith("/webhooks/")) {
+        const handled = await observer?.handleWebhookHttpRequest?.(req, res) ?? false;
+        if (handled) return;
+      }
+
       // Build auth options (async — reads wizard password hash from DB)
       const setupComplete = setupStore ? await setupStore.isComplete() : true;
       const passwordHash = setupStore ? await setupStore.getPasswordHash() : undefined;
@@ -433,10 +533,15 @@ export function startDashboardServer(
         dashboardToken: config.dashboardToken,
         passwordHash,
         setupComplete,
+        slackAuthEnabled: isSlackAuthConfigured(config),
+        sessionStore: authSessionStore,
       };
 
       // Auth check — must come before route dispatch
-      if (!checkAuth(req, res, authOpts, pathname)) return;
+      if (!await checkAuth(req, res, authOpts, pathname)) return;
+
+      const actorPrincipal = await resolveDashboardActorPrincipal(req, authSessionStore);
+      void actorPrincipal;
 
       if (req.method === "GET" && pathname === "/healthz") {
         sendJson(res, 200, { ok: true });
@@ -463,7 +568,7 @@ export function startDashboardServer(
 
       if (req.method === "GET" && pathname === "/api/setup/status") {
         if (!setupStore) { sendJson(res, 501, { error: "Setup not available" }); return; }
-        const status = await setupStore.getStatus();
+        const status = await setupStore.getWizardState();
         sendJson(res, 200, status);
         return;
       }
@@ -625,13 +730,13 @@ export function startDashboardServer(
 
       // Login page (GET)
       if (req.method === "GET" && pathname === "/login") {
-        if (!config.dashboardToken && !passwordHash) {
+        if (!config.dashboardToken && !passwordHash && !isSlackAuthConfigured(config)) {
           res.statusCode = 302;
           res.setHeader("location", "/");
           res.end();
           return;
         }
-        sendText(res, 200, loginPageHtml(config), "text/html");
+        sendText(res, 200, loginPageHtml(config, requestUrl.searchParams.get("error") ?? undefined), "text/html");
         return;
       }
 
@@ -647,16 +752,160 @@ export function startDashboardServer(
         if (body === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
         const params = new URLSearchParams(body);
         const token = params.get("token") ?? "";
-        const sessionValue = await handleLogin(token, authOpts);
-        if (sessionValue) {
+        const authenticated = await handleAdminLogin(token, authOpts);
+        if (authenticated && authSessionStore) {
+          const session = await authSessionStore.createSession({
+            principalType: "admin",
+            authMethod: "admin_password",
+            ttlMs: 30 * 24 * 60 * 60_000,
+          });
           res.statusCode = 302;
-          const secureSuffix = config.dashboardPublicUrl?.startsWith("https") ? "; Secure" : "";
-          res.setHeader("set-cookie", `gooseherd-session=${sessionValue}; HttpOnly; SameSite=Strict; Path=/${secureSuffix}`);
+          res.setHeader("set-cookie", buildDashboardSessionCookie(session.token, config));
+          res.setHeader("location", "/");
+          res.end();
+          return;
+        }
+        if (authenticated) {
+          const fallbackSessionValue = config.dashboardToken ? hashToken(config.dashboardToken) : hashToken(passwordHash!);
+          res.statusCode = 302;
+          res.setHeader("set-cookie", buildDashboardSessionCookie(fallbackSessionValue, config));
           res.setHeader("location", "/");
           res.end();
           return;
         }
         sendText(res, 200, loginPageHtml(config, "Invalid password"), "text/html");
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/logout") {
+        const cookies = parseCookies(req);
+        const sessionToken = cookies["gooseherd-session"];
+        if (sessionToken && authSessionStore) {
+          await authSessionStore.revokeSession(sessionToken);
+        }
+        res.statusCode = 302;
+        res.setHeader("set-cookie", clearDashboardSessionCookie(config));
+        res.setHeader("location", "/login");
+        res.end();
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/auth/slack/signin") {
+        if (!isSlackAuthConfigured(config)) {
+          res.statusCode = 302;
+          res.setHeader("location", "/login?error=Slack%20login%20is%20not%20configured");
+          res.end();
+          return;
+        }
+        const { url } = slackAuthFlow.start("signin");
+        res.statusCode = 302;
+        res.setHeader("location", url);
+        res.end();
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/auth/slack/signup") {
+        if (!isSlackAuthConfigured(config)) {
+          res.statusCode = 302;
+          res.setHeader("location", "/login?error=Slack%20login%20is%20not%20configured");
+          res.end();
+          return;
+        }
+        const { url } = slackAuthFlow.start("signup");
+        res.statusCode = 302;
+        res.setHeader("location", url);
+        res.end();
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/auth/slack/callback") {
+        if (!db || !authSessionStore) {
+          sendJson(res, 501, { error: "Database-backed auth is not available" });
+          return;
+        }
+        if (!config.slackBotToken) {
+          res.statusCode = 302;
+          res.setHeader("location", "/login?error=Slack%20bot%20token%20is%20required%20for%20team%20sync");
+          res.end();
+          return;
+        }
+
+        const callbackError = requestUrl.searchParams.get("error");
+        if (callbackError) {
+          res.statusCode = 302;
+          res.setHeader("location", `/login?error=${encodeURIComponent(`Slack login failed: ${callbackError}`)}`);
+          res.end();
+          return;
+        }
+
+        const code = requestUrl.searchParams.get("code");
+        const state = requestUrl.searchParams.get("state");
+        if (!code || !state) {
+          res.statusCode = 302;
+          res.setHeader("location", "/login?error=Slack%20callback%20is%20missing%20code%20or%20state");
+          res.end();
+          return;
+        }
+
+        try {
+          const { intent, identity } = await slackAuthFlow.exchangeCode(code, state);
+          const existingRows = await db.select().from(users).where(eq(users.slackUserId, identity.slackUserId)).limit(1);
+          let user = existingRows[0];
+
+          if (!user) {
+            if (intent !== "signup") {
+              res.statusCode = 302;
+              res.setHeader("location", "/login?error=Your%20Slack%20account%20is%20not%20registered%20in%20Gooseherd");
+              res.end();
+              return;
+            }
+            const matchedTeamIds = await resolveMappedSlackTeams(db, config.slackBotToken, identity.slackUserId);
+            if (matchedTeamIds.length === 0) {
+              res.statusCode = 302;
+              res.setHeader("location", "/login?error=Your%20Slack%20account%20is%20not%20assigned%20to%20any%20Gooseherd%20teams%20yet.");
+              res.end();
+              return;
+            }
+
+            const inserted = await db.transaction(async (tx) => {
+              const createdUser = {
+                id: randomUUID(),
+                slackUserId: identity.slackUserId,
+                displayName: identity.displayName?.trim() || identity.email?.trim() || identity.slackUserId,
+                isActive: true,
+              };
+              const rows = await tx.insert(users).values(createdUser).returning();
+              const created = rows[0]!;
+              await syncSlackUserGroupMemberships(tx as unknown as Database, config.slackBotToken!, created.id, identity.slackUserId);
+              return created;
+            });
+            user = inserted;
+          } else {
+            if (!user.isActive) {
+              res.statusCode = 302;
+              res.setHeader("location", "/login?error=Your%20Gooseherd%20account%20is%20inactive");
+              res.end();
+              return;
+            }
+            await syncSlackUserGroupMemberships(db, config.slackBotToken, user.id, identity.slackUserId);
+          }
+
+          const session = await authSessionStore.createSession({
+            principalType: "user",
+            authMethod: "slack",
+            userId: user.id,
+            ttlMs: 30 * 24 * 60 * 60_000,
+          });
+          res.statusCode = 302;
+          res.setHeader("set-cookie", buildDashboardSessionCookie(session.token, config));
+          res.setHeader("location", "/");
+          res.end();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Slack authentication failed";
+          res.statusCode = 302;
+          res.setHeader("location", `/login?error=${encodeURIComponent(msg)}`);
+          res.end();
+        }
         return;
       }
 
@@ -901,6 +1150,75 @@ export function startDashboardServer(
         }
         runs = runs.slice(0, limit);
         sendJson(res, 200, { runs });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/work-items") {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const workflow = requestUrl.searchParams.get("workflow") ?? undefined;
+        const workItems = await workItemsSource.listWorkItems(workflow || undefined);
+        sendJson(res, 200, { workItems });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/api/work-items/discovery") {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const raw = await readBody(req);
+        if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+        let parsed: {
+          title?: string;
+          summary?: string;
+          ownerTeamId?: string;
+          homeChannelId?: string;
+          homeThreadTs?: string;
+          originChannelId?: string;
+          originThreadTs?: string;
+          jiraIssueKey?: string;
+        } = {};
+        try {
+          parsed = JSON.parse(raw) as typeof parsed;
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+
+        if (!parsed.title) {
+          sendJson(res, 400, { error: "title is required" });
+          return;
+        }
+
+        let actor: DashboardUserActorPrincipal;
+        try {
+          actor = requireDashboardUserActor(actorPrincipal);
+        } catch (error) {
+          sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+          return;
+        }
+
+        try {
+          const workItem = await workItemsSource.createDiscoveryWorkItem({
+            title: parsed.title,
+            summary: parsed.summary,
+            ownerTeamId: parsed.ownerTeamId,
+            homeChannelId: parsed.homeChannelId,
+            homeThreadTs: parsed.homeThreadTs,
+            originChannelId: parsed.originChannelId,
+            originThreadTs: parsed.originThreadTs,
+            jiraIssueKey: parsed.jiraIssueKey,
+            actor,
+          });
+          sendJson(res, 201, { workItem });
+        } catch (error) {
+          sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to create discovery work item" });
+        }
         return;
       }
 
@@ -1305,6 +1623,240 @@ export function startDashboardServer(
         }
       }
 
+      if (parts[0] === "api" && parts[1] === "work-items" && parts[2]) {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const workItemId = decodeURIComponent(parts[2]);
+
+        if (parts.length === 3 && req.method === "GET") {
+          const workItem = await workItemsSource.getWorkItem(workItemId);
+          if (!workItem) {
+            sendJson(res, 404, { error: `Work item not found: ${workItemId}` });
+            return;
+          }
+          sendJson(res, 200, { workItem });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "review-requests" && req.method === "GET") {
+          const reviewRequests = await workItemsSource.listReviewRequestsForWorkItem(workItemId);
+          sendJson(res, 200, { reviewRequests });
+          return;
+        }
+
+        if (parts.length === 6 && parts[3] === "review-requests" && parts[5] === "comments" && req.method === "GET") {
+          const reviewRequestId = decodeURIComponent(parts[4]!);
+          const comments = await workItemsSource.listReviewRequestComments(reviewRequestId);
+          sendJson(res, 200, { comments });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "events" && req.method === "GET") {
+          const events = await workItemsSource.listEventsForWorkItem(workItemId);
+          sendJson(res, 200, { events });
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "review-requests" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: {
+            requests?: Array<{
+              type: ReviewRequestRecord["type"];
+              targetType: ReviewRequestRecord["targetType"];
+              targetRef: Record<string, unknown>;
+              title: string;
+              requestMessage?: string;
+              focusPoints?: string[];
+            }>;
+          } = {};
+          try {
+            parsed = JSON.parse(raw) as typeof parsed;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (!parsed.requests || parsed.requests.length === 0) {
+            sendJson(res, 400, { error: "at least one request is required" });
+            return;
+          }
+
+          let actor: DashboardUserActorPrincipal;
+          try {
+            actor = requireDashboardUserActor(actorPrincipal);
+          } catch (error) {
+            sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+            return;
+          }
+
+          try {
+            const reviewRequests = await workItemsSource.createReviewRequests({
+              workItemId,
+              actor,
+              requests: parsed.requests,
+            });
+            sendJson(res, 201, { reviewRequests });
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to create review requests" });
+          }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "confirm-discovery" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: { approved?: boolean; jiraIssueKey?: string } = {};
+          try {
+            parsed = JSON.parse(raw) as typeof parsed;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (typeof parsed.approved !== "boolean") {
+            sendJson(res, 400, { error: "approved must be a boolean" });
+            return;
+          }
+
+          let actor: DashboardUserActorPrincipal;
+          try {
+            actor = requireDashboardUserActor(actorPrincipal);
+          } catch (error) {
+            sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+            return;
+          }
+
+          try {
+            const workItem = await workItemsSource.confirmDiscovery({
+              workItemId,
+              approved: parsed.approved,
+              actor,
+              jiraIssueKey: parsed.jiraIssueKey,
+            });
+            sendJson(res, 200, { workItem });
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to confirm discovery" });
+          }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "stop-processing" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: Record<string, never> = {};
+          try {
+            parsed = raw ? (JSON.parse(raw) as typeof parsed) : {};
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+
+          let actor: DashboardUserActorPrincipal;
+          try {
+            actor = requireDashboardUserActor(actorPrincipal);
+          } catch (error) {
+            sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+            return;
+          }
+
+          try {
+            const result = await workItemsSource.stopProcessing({
+              workItemId,
+              actor,
+            });
+            sendJson(res, 200, result);
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to stop processing" });
+          }
+          return;
+        }
+
+        if (parts.length === 4 && parts[3] === "override-state" && req.method === "POST") {
+          const raw = await readBody(req);
+          if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+          let parsed: { state?: WorkItemRecord["state"]; substate?: string; reason?: string } = {};
+          try {
+            parsed = JSON.parse(raw) as typeof parsed;
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (!parsed.state || !parsed.reason) {
+            sendJson(res, 400, { error: "state and reason are required" });
+            return;
+          }
+
+          let actor: DashboardActorPrincipal;
+          try {
+            actor = requireDashboardActor(actorPrincipal);
+          } catch (error) {
+            sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+            return;
+          }
+
+          try {
+            const workItem = await workItemsSource.guardedOverrideState({
+              workItemId,
+              state: parsed.state,
+              substate: parsed.substate,
+              actor,
+              reason: parsed.reason,
+            });
+            sendJson(res, 200, { workItem });
+          } catch (error) {
+            sendJson(res, 409, { error: error instanceof Error ? error.message : "Guarded override rejected" });
+          }
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "review-requests" && parts[2] && parts[3] === "respond" && req.method === "POST") {
+        if (!workItemsSource) {
+          sendJson(res, 501, { error: "Work item APIs are unavailable" });
+          return;
+        }
+
+        const raw = await readBody(req);
+        if (raw === null) { sendJson(res, 413, { error: "Request body too large" }); return; }
+        let parsed: {
+          outcome?: NonNullable<ReviewRequestRecord["outcome"]>;
+          comment?: string;
+        } = {};
+        try {
+          parsed = JSON.parse(raw) as typeof parsed;
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        if (!parsed.outcome) {
+          sendJson(res, 400, { error: "outcome is required" });
+          return;
+        }
+
+        let actor: DashboardUserActorPrincipal;
+        try {
+          actor = requireDashboardUserActor(actorPrincipal);
+        } catch (error) {
+          sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+          return;
+        }
+
+        try {
+          const workItem = await workItemsSource.respondToReviewRequest({
+            reviewRequestId: decodeURIComponent(parts[2]),
+            outcome: parsed.outcome,
+            actor,
+            comment: parsed.comment,
+          });
+          sendJson(res, 200, { workItem });
+        } catch (error) {
+          sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to record review response" });
+        }
+        return;
+      }
+
       // ── Observer API routes ──
 
       if (req.method === "GET" && pathname === "/api/observer/state") {
@@ -1503,6 +2055,8 @@ export function startDashboardServer(
       url: `http://${config.dashboardHost}:${String(config.dashboardPort)}`
     });
   });
+
+  return server;
 }
 
 function parseOverrideFlag(value: string | undefined): boolean {

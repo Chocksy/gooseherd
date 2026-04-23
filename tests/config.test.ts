@@ -148,3 +148,83 @@ test("SANDBOX_RUNTIME: loadConfig throws for blank explicit value", () => {
     process.env = originalEnv;
   }
 });
+
+test("work item review reset flags default to false", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: undefined,
+      FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: undefined,
+    };
+    const config = loadConfig();
+    assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, false);
+    assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, false);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("work item review reset flags respect env overrides", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: "true",
+      FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: "yes",
+    };
+    const config = loadConfig();
+    assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, true);
+    assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("work item GitHub adoption labels default to ai:assist", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      WORK_ITEM_GITHUB_ADOPTION_LABELS: undefined,
+    };
+    const config = loadConfig();
+    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai:assist"]);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("work item GitHub adoption labels respect comma-separated env", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      WORK_ITEM_GITHUB_ADOPTION_LABELS: "ai:assist, ai-delivery",
+    };
+    const config = loadConfig();
+    assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai:assist", "ai-delivery"]);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("Jira read access envs are exposed through config", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      JIRA_BASE_URL: " https://example.atlassian.net ",
+      JIRA_USER: " jira-service-account@example.com ",
+      JIRA_API_TOKEN: " jira-token ",
+      JIRA_REQUEST_TIMEOUT_MS: "25000",
+    };
+    const config = loadConfig();
+    assert.equal(config.jiraBaseUrl, "https://example.atlassian.net");
+    assert.equal(config.jiraUser, "jira-service-account@example.com");
+    assert.equal(config.jiraApiToken, "jira-token");
+    assert.equal(config.jiraRequestTimeoutMs, 25000);
+  } finally {
+    process.env = originalEnv;
+  }
+});

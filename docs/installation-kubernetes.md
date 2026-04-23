@@ -376,6 +376,8 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `AUTONOMOUS_SCHEDULER_MAX_DEFERRED` | No | `100` | Max deferred runs. |
 | `AUTONOMOUS_SCHEDULER_INTERVAL_MS` | No | `300000` | Scheduler interval. |
 | `TEAM_CHANNEL_MAP` | No | empty | JSON map of team-to-channel IDs. |
+| `JIRA_BASE_URL` | No | unset | Canonical Jira base URL for future read-only discovery/work-items integrations. |
+| `JIRA_REQUEST_TIMEOUT_MS` | No | `10000` | Timeout for future Jira reads. |
 
 ### Browser verify values
 
@@ -432,6 +434,15 @@ Use either PAT mode or GitHub App mode.
 | --- | --- | --- |
 | `GITHUB_TOKEN` | Yes in PAT mode | GitHub PAT for repo access, pushes, and PRs. |
 | `GITHUB_APP_PRIVATE_KEY` | Yes in GitHub App mode | PEM private key for GitHub App auth. |
+
+### Jira read access
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `JIRA_USER` | Optional | Jira service account identity. For Jira Cloud, use the account email. |
+| `JIRA_API_TOKEN` | Optional | Jira API token / password equivalent for the service account. |
+
+`JIRA_BASE_URL` + `JIRA_USER` + `JIRA_API_TOKEN` together define the canonical Jira read-access contract. The intended consumer is future product discovery / work-items logic that already has Slack-thread context and needs to fetch Jira issue content without using Jira as a routing source. The eventual transport may be direct REST API or MCP-backed, but it should reuse this same config/secrets layer.
 
 The following GitHub App values are usually not treated as secrets, but many teams still keep them with secrets for convenience:
 

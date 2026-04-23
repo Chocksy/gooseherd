@@ -19,7 +19,7 @@ Recommended commands:
 
 ```bash
 npm run k8s:local-up
-kubectl -n gooseherd port-forward svc/gooseherd 8787:8787 9090:9090
+kubectl -n gooseherd port-forward svc/gooseherd 8787:8787
 ```
 
 The local helper prints the bootstrap dashboard password after deployment.

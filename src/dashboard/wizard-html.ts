@@ -102,11 +102,26 @@ export function wizardHtml(appName: string, reconfig = false): string {
     .btn-secondary:hover { background: #334155; }
     .btn-skip { background: transparent; color: #64748b; border: 1px solid #22314f; }
     .btn-skip:hover { background: #1e293b; }
+    .btn-skip.ready { background: rgba(37, 99, 235, 0.2); color: #dbeafe; border-color: #3b82f6; box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.25); }
+    .btn-skip.ready:hover { background: rgba(37, 99, 235, 0.32); }
     .btn-validate { background: #0f766e; color: #fff; flex: none; width: auto; padding: 10px 18px; }
     .btn-validate:hover { background: #115e59; }
     .error { color: #ef4444; font-size: 13px; margin-bottom: 12px; min-height: 18px; }
     .success { color: #22c55e; font-size: 13px; margin-bottom: 12px; min-height: 18px; }
     .warn { color: #f59e0b; font-size: 13px; margin-bottom: 12px; }
+    .prefill-summary {
+      display: none;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border: 1px solid #22314f;
+      border-radius: 10px;
+      background: #0a1325;
+      color: #cbd5e1;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .prefill-summary.active { display: block; }
+    .prefill-summary strong { color: #e2e8f0; }
     .hidden { display: none; }
     .review-list { list-style: none; padding: 0; }
     .review-list li {
@@ -168,6 +183,7 @@ export function wizardHtml(appName: string, reconfig = false): string {
     <p>Configure how Gooseherd accesses your repositories.</p>
     <div class="error" id="gh-error"></div>
     <div class="success" id="gh-success"></div>
+    <div class="prefill-summary" id="gh-prefill-summary"></div>
 
     <div class="radio-group">
       <label><input type="radio" name="gh-mode" value="pat" checked onchange="toggleGhMode()"> Personal Access Token</label>
@@ -191,7 +207,7 @@ export function wizardHtml(appName: string, reconfig = false): string {
     </div>
 
     <div class="btn-row">
-      <button class="btn btn-skip" onclick="goStep(2)">Skip</button>
+      <button class="btn btn-skip" id="gh-skip-btn" onclick="goStep(2)">Skip</button>
       <button class="btn btn-validate" id="gh-validate-btn" onclick="validateGithub()">Validate</button>
       <button class="btn btn-primary" onclick="saveGithub()">Save & Continue</button>
     </div>
@@ -203,6 +219,7 @@ export function wizardHtml(appName: string, reconfig = false): string {
     <p>Choose your AI provider for orchestration and analysis.</p>
     <div class="error" id="llm-error"></div>
     <div class="success" id="llm-success"></div>
+    <div class="prefill-summary" id="llm-prefill-summary"></div>
 
     <label for="llm-provider">Provider</label>
     <select id="llm-provider">
@@ -219,7 +236,7 @@ export function wizardHtml(appName: string, reconfig = false): string {
 
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="goStep(1)">Back</button>
-      <button class="btn btn-skip" onclick="goStep(3)">Skip</button>
+      <button class="btn btn-skip" id="llm-skip-btn" onclick="goStep(3)">Skip</button>
       <button class="btn btn-validate" id="llm-validate-btn" onclick="validateLlm()">Validate</button>
       <button class="btn btn-primary" onclick="saveLlm()">Save & Continue</button>
     </div>
@@ -231,6 +248,7 @@ export function wizardHtml(appName: string, reconfig = false): string {
     <p>Set up a Slack bot so Gooseherd can receive commands and post updates.</p>
     <div class="error" id="slack-error"></div>
     <div class="success" id="slack-success"></div>
+    <div class="prefill-summary" id="slack-prefill-summary"></div>
 
     <details style="margin-bottom:18px; color:#94a3b8; font-size:13px;">
       <summary style="cursor:pointer; color:#60a5fa; font-weight:600; margin-bottom:8px;">How to create a Slack App</summary>
@@ -244,6 +262,7 @@ export function wizardHtml(appName: string, reconfig = false): string {
         <li><strong>Event Subscriptions</strong> — go to <em>Event Subscriptions</em>, enable events, then under <em>Subscribe to bot events</em> add: <code>app_mention</code>, <code>message.channels</code>, <code>message.groups</code>, <code>message.im</code>.</li>
         <li><strong>Slash Command</strong> — go to <em>Slash Commands</em> and create one (e.g. <code>/gooseherd</code>). Set the request URL to anything — Socket Mode handles routing.</li>
         <li><strong>Install App</strong> — go to <em>Install App</em> and install to your workspace. Copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>).</li>
+        <li><strong>Browser login</strong> — in <em>Basic Information</em>, copy the <strong>Client ID</strong> and <strong>Client Secret</strong>. In <em>OAuth & Permissions</em>, add a redirect URL like <code>/auth/slack/callback</code> under your dashboard base URL.</li>
         <li>Back in <em>Basic Information</em>, copy the <strong>Signing Secret</strong>.</li>
       </ol>
     </details>
@@ -260,9 +279,18 @@ export function wizardHtml(appName: string, reconfig = false): string {
     <label for="slack-command">Slash Command Name (optional)</label>
     <input type="text" id="slack-command" placeholder="/gooseherd" />
 
+    <label for="slack-client-id">Client ID (optional)</label>
+    <input type="text" id="slack-client-id" placeholder="111.222" />
+
+    <label for="slack-client-secret">Client Secret (optional)</label>
+    <input type="password" id="slack-client-secret" />
+
+    <label for="slack-auth-redirect-uri">Auth Redirect URI (optional)</label>
+    <input type="text" id="slack-auth-redirect-uri" placeholder="/auth/slack/callback" />
+
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="goStep(2)">Back</button>
-      <button class="btn btn-skip" onclick="goStep(4)">Skip</button>
+      <button class="btn btn-skip" id="slack-skip-btn" onclick="goStep(4)">Skip</button>
       <button class="btn btn-validate" id="slack-validate-btn" onclick="validateSlack()">Validate</button>
       <button class="btn btn-primary" onclick="saveSlack()">Save & Continue</button>
     </div>
@@ -284,6 +312,11 @@ export function wizardHtml(appName: string, reconfig = false): string {
 <script>
 let currentStep = 0;
 const state = { password: false, github: false, llm: false, slack: false };
+const prefillState = {
+  github: { token: false, appId: false, installationId: false, privateKey: false },
+  llm: { apiKey: false },
+  slack: { botToken: false, appToken: false }
+};
 
 function goStep(n) {
   document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
@@ -294,6 +327,7 @@ function goStep(n) {
     if (i === n) d.classList.add('active');
   });
   currentStep = n;
+  syncSkipButtons();
   if (n === 4) renderReview();
 }
 
@@ -301,6 +335,138 @@ function toggleGhMode() {
   const mode = document.querySelector('input[name="gh-mode"]:checked').value;
   document.getElementById('gh-pat-fields').classList.toggle('hidden', mode !== 'pat');
   document.getElementById('gh-app-fields').classList.toggle('hidden', mode !== 'app');
+  syncSkipButtons();
+}
+
+function hasValue(id) {
+  const el = document.getElementById(id);
+  return !!el && typeof el.value === 'string' && el.value.trim().length > 0;
+}
+
+function hasPrefillValue(field) {
+  return !!field && !!field.source && field.source !== 'none';
+}
+
+function hasGithubRequiredFields() {
+  const mode = document.querySelector('input[name="gh-mode"]:checked')?.value;
+  if (mode === 'app') {
+    return hasValue('gh-app-id') && hasValue('gh-install-id') && hasValue('gh-key');
+  }
+  return hasValue('gh-token');
+}
+
+function hasLlmRequiredFields() {
+  return hasValue('llm-key');
+}
+
+function hasSlackRequiredFields() {
+  return hasValue('slack-bot-token') && hasValue('slack-app-token');
+}
+
+function hasGithubReadyForSkip() {
+  const mode = document.querySelector('input[name="gh-mode"]:checked')?.value;
+  if (mode === 'app') {
+    return hasGithubRequiredFields() || (prefillState.github.appId && prefillState.github.installationId && prefillState.github.privateKey);
+  }
+  return hasGithubRequiredFields() || prefillState.github.token;
+}
+
+function hasLlmReadyForSkip() {
+  return hasLlmRequiredFields() || prefillState.llm.apiKey;
+}
+
+function hasSlackReadyForSkip() {
+  return hasSlackRequiredFields() || (prefillState.slack.botToken && prefillState.slack.appToken);
+}
+
+function syncSkipButtons() {
+  document.getElementById('gh-skip-btn')?.classList.toggle('ready', hasGithubReadyForSkip() || state.github);
+  document.getElementById('llm-skip-btn')?.classList.toggle('ready', hasLlmReadyForSkip() || state.llm);
+  document.getElementById('slack-skip-btn')?.classList.toggle('ready', hasSlackReadyForSkip() || state.slack);
+}
+
+function sourceLabel(source) {
+  return source === 'env' ? 'From ENV' : source === 'wizard' ? 'Saved in wizard' : '';
+}
+
+function setInputValue(id, field) {
+  if (!field || !field.value) return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.value = field.value;
+}
+
+function setGitHubAuthMode(field) {
+  if (!field || !field.value) return;
+  const radio = document.querySelector('input[name="gh-mode"][value="' + field.value + '"]');
+  if (!radio) return;
+  radio.checked = true;
+  toggleGhMode();
+}
+
+function renderPrefillSummary(containerId, rows) {
+  const el = document.getElementById(containerId);
+  const filtered = rows.filter(row => row.source && row.source !== 'none');
+  if (!el) return;
+  if (filtered.length === 0) {
+    el.classList.remove('active');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.add('active');
+  el.innerHTML = filtered.map(row =>
+    '<div><strong>' + row.label + ':</strong> ' + sourceLabel(row.source) + (row.value ? ' (' + row.value + ')' : '') + '</div>'
+  ).join('');
+}
+
+function applySetupPrefill(prefill) {
+  if (!prefill) return;
+
+  prefillState.github.token = hasPrefillValue(prefill.github?.token);
+  prefillState.github.appId = hasPrefillValue(prefill.github?.appId);
+  prefillState.github.installationId = hasPrefillValue(prefill.github?.installationId);
+  prefillState.github.privateKey = hasPrefillValue(prefill.github?.privateKey);
+  prefillState.llm.apiKey = hasPrefillValue(prefill.llm?.apiKey);
+  prefillState.slack.botToken = hasPrefillValue(prefill.slack?.botToken);
+  prefillState.slack.appToken = hasPrefillValue(prefill.slack?.appToken);
+
+  setGitHubAuthMode(prefill.github?.authMode);
+  setInputValue('gh-owner', prefill.github?.defaultOwner);
+  setInputValue('gh-app-id', prefill.github?.appId);
+  setInputValue('gh-install-id', prefill.github?.installationId);
+  renderPrefillSummary('gh-prefill-summary', [
+    { label: 'Auth mode', source: prefill.github?.authMode?.source, value: prefill.github?.authMode?.value },
+    { label: 'Default owner', source: prefill.github?.defaultOwner?.source, value: prefill.github?.defaultOwner?.value },
+    { label: 'Token', source: prefill.github?.token?.source },
+    { label: 'App ID', source: prefill.github?.appId?.source, value: prefill.github?.appId?.value },
+    { label: 'Installation ID', source: prefill.github?.installationId?.source, value: prefill.github?.installationId?.value },
+    { label: 'Private key', source: prefill.github?.privateKey?.source },
+  ]);
+
+  if (prefill.llm?.provider?.value) {
+    document.getElementById('llm-provider').value = prefill.llm.provider.value;
+  }
+  setInputValue('llm-model', prefill.llm?.defaultModel);
+  renderPrefillSummary('llm-prefill-summary', [
+    { label: 'Provider', source: prefill.llm?.provider?.source, value: prefill.llm?.provider?.value },
+    { label: 'API key', source: prefill.llm?.apiKey?.source },
+    { label: 'Default model', source: prefill.llm?.defaultModel?.source, value: prefill.llm?.defaultModel?.value },
+  ]);
+
+  setInputValue('slack-command', prefill.slack?.commandName);
+  setInputValue('slack-client-id', prefill.slack?.clientId);
+  setInputValue('slack-auth-redirect-uri', prefill.slack?.authRedirectUri);
+  renderPrefillSummary('slack-prefill-summary', [
+    { label: 'Bot token', source: prefill.slack?.botToken?.source },
+    { label: 'App token', source: prefill.slack?.appToken?.source },
+    { label: 'Signing secret', source: prefill.slack?.signingSecret?.source },
+    { label: 'Slash command', source: prefill.slack?.commandName?.source, value: prefill.slack?.commandName?.value },
+    { label: 'Client ID', source: prefill.slack?.clientId?.source, value: prefill.slack?.clientId?.value },
+    { label: 'Client secret', source: prefill.slack?.clientSecret?.source },
+    { label: 'Auth redirect URI', source: prefill.slack?.authRedirectUri?.source, value: prefill.slack?.authRedirectUri?.value },
+  ]);
+
+  syncSkipButtons();
 }
 
 async function post(url, body) {
@@ -383,6 +549,7 @@ async function saveGithub() {
     return;
   }
   state.github = true;
+  syncSkipButtons();
   goStep(2);
 }
 
@@ -430,6 +597,7 @@ async function saveLlm() {
     return;
   }
   state.llm = true;
+  syncSkipButtons();
   goStep(3); // → Slack step
 }
 
@@ -438,7 +606,10 @@ function buildSlackBody() {
     botToken: document.getElementById('slack-bot-token').value,
     appToken: document.getElementById('slack-app-token').value,
     signingSecret: document.getElementById('slack-signing-secret').value || undefined,
-    commandName: document.getElementById('slack-command').value || undefined
+    commandName: document.getElementById('slack-command').value || undefined,
+    clientId: document.getElementById('slack-client-id').value || undefined,
+    clientSecret: document.getElementById('slack-client-secret').value || undefined,
+    authRedirectUri: document.getElementById('slack-auth-redirect-uri').value || undefined
   };
 }
 
@@ -479,6 +650,7 @@ async function saveSlack() {
     return;
   }
   state.slack = true;
+  syncSkipButtons();
   goStep(4);
 }
 
@@ -514,6 +686,11 @@ async function finishSetup() {
 }
 
 // Check initial status
+['gh-token', 'gh-owner', 'gh-app-id', 'gh-install-id', 'gh-key', 'llm-key', 'llm-model', 'slack-bot-token', 'slack-app-token', 'slack-signing-secret', 'slack-command', 'slack-client-id', 'slack-client-secret', 'slack-auth-redirect-uri']
+  .forEach(id => document.getElementById(id)?.addEventListener('input', syncSkipButtons));
+document.querySelectorAll('input[name="gh-mode"]').forEach(el => el.addEventListener('change', syncSkipButtons));
+syncSkipButtons();
+
 fetch('/api/setup/status', { credentials: 'same-origin' })
   .then(r => r.json())
   .then(data => {
@@ -521,6 +698,8 @@ fetch('/api/setup/status', { credentials: 'same-origin' })
     if (data.hasGithub) state.github = true;
     if (data.hasLlm) state.llm = true;
     if (data.hasSlack) state.slack = true;
+    applySetupPrefill(data.prefill);
+    syncSkipButtons();
     ${reconfig ? "// In reconfig mode, start from step 1 (skip password if already set)\n    if (state.password) goStep(1);" : ""}
   })
   .catch(() => {});

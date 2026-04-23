@@ -23,6 +23,40 @@ export interface SetupStatus {
   hasSlack: boolean;
 }
 
+export type SetupValueSource = "env" | "wizard" | "none";
+
+export interface SetupPrefillValue {
+  value?: string;
+  source: SetupValueSource;
+}
+
+export interface SetupWizardState extends SetupStatus {
+  prefill: {
+    github: {
+      authMode: SetupPrefillValue;
+      defaultOwner: SetupPrefillValue;
+      token: SetupPrefillValue;
+      appId: SetupPrefillValue;
+      installationId: SetupPrefillValue;
+      privateKey: SetupPrefillValue;
+    };
+    llm: {
+      provider: SetupPrefillValue;
+      apiKey: SetupPrefillValue;
+      defaultModel: SetupPrefillValue;
+    };
+    slack: {
+      botToken: SetupPrefillValue;
+      appToken: SetupPrefillValue;
+      signingSecret: SetupPrefillValue;
+      commandName: SetupPrefillValue;
+      clientId: SetupPrefillValue;
+      clientSecret: SetupPrefillValue;
+      authRedirectUri: SetupPrefillValue;
+    };
+  };
+}
+
 export interface GitHubSetupConfig {
   authMode: "pat" | "app";
   defaultOwner?: string;
@@ -46,6 +80,9 @@ export interface SlackSetupConfig {
   appToken: string;
   signingSecret?: string;
   commandName?: string;
+  clientId?: string;
+  clientSecret?: string;
+  authRedirectUri?: string;
 }
 
 const SCRYPT_KEYLEN = 64;
@@ -64,9 +101,6 @@ export class SetupStore {
   // In-memory cache to avoid 2 DB queries per HTTP request
   private cachedComplete: boolean | undefined;
   private cachedPasswordHash: string | undefined | null; // null = queried, not set
-  private legacyConfigMigrationDone = false;
-  private legacyConfigMigrationPromise: Promise<void> | undefined;
-
   constructor(db: Database, encryptionKey?: string) {
     this.db = db;
     this.encryptionKey = encryptionKey;
@@ -82,7 +116,6 @@ export class SetupStore {
 
   /** Get current setup status for the wizard UI. */
   async getStatus(): Promise<SetupStatus> {
-    await this.ensureLegacyConfigsMigrated();
     const rows = await this.db.select().from(setup).where(eq(setup.id, 1));
     const row = rows[0];
     const sections = await this.db
@@ -104,6 +137,41 @@ export class SetupStore {
       hasGithub: sectionNames.has("github"),
       hasLlm: sectionNames.has("llm"),
       hasSlack: sectionNames.has("slack"),
+    };
+  }
+
+  async getWizardState(): Promise<SetupWizardState> {
+    const status = await this.getStatus();
+    const github = await this.readConfigSection("github");
+    const llm = await this.readConfigSection("llm");
+    const slack = await this.readConfigSection("slack");
+
+    return {
+      ...status,
+      prefill: {
+        github: {
+          authMode: this.pickPrefillValue(resolveGitHubEnvAuthMode(), stringOrUndefined(github?.config.authMode)),
+          defaultOwner: this.pickPrefillValue(process.env.GITHUB_DEFAULT_OWNER, stringOrUndefined(github?.config.defaultOwner)),
+          token: this.pickPrefillValue(process.env.GITHUB_TOKEN, stringOrUndefined(github?.secrets.token)),
+          appId: this.pickPrefillValue(process.env.GITHUB_APP_ID, stringOrUndefined(github?.config.appId)),
+          installationId: this.pickPrefillValue(process.env.GITHUB_APP_INSTALLATION_ID, stringOrUndefined(github?.config.installationId)),
+          privateKey: this.pickPrefillValue(process.env.GITHUB_APP_PRIVATE_KEY, stringOrUndefined(github?.secrets.privateKey)),
+        },
+        llm: {
+          provider: this.pickPrefillValue(resolveLlmEnvProvider(), stringOrUndefined(llm?.config.provider)),
+          apiKey: this.pickPrefillValue(resolveLlmEnvApiKey(), stringOrUndefined(llm?.secrets.apiKey)),
+          defaultModel: this.pickPrefillValue(process.env.DEFAULT_LLM_MODEL, stringOrUndefined(llm?.config.defaultModel)),
+        },
+        slack: {
+          botToken: this.pickPrefillValue(process.env.SLACK_BOT_TOKEN, stringOrUndefined(slack?.secrets.botToken)),
+          appToken: this.pickPrefillValue(process.env.SLACK_APP_TOKEN, stringOrUndefined(slack?.secrets.appToken)),
+          signingSecret: this.pickPrefillValue(process.env.SLACK_SIGNING_SECRET, stringOrUndefined(slack?.secrets.signingSecret)),
+          commandName: this.pickPrefillValue(process.env.SLACK_COMMAND_NAME, stringOrUndefined(slack?.config.commandName)),
+          clientId: this.pickPrefillValue(process.env.SLACK_CLIENT_ID, stringOrUndefined(slack?.config.clientId)),
+          clientSecret: this.pickPrefillValue(process.env.SLACK_CLIENT_SECRET, stringOrUndefined(slack?.secrets.clientSecret)),
+          authRedirectUri: this.pickPrefillValue(process.env.SLACK_AUTH_REDIRECT_URI, stringOrUndefined(slack?.config.authRedirectUri)),
+        },
+      },
     };
   }
 
@@ -177,6 +245,8 @@ export class SetupStore {
   async saveSlack(config: SlackSetupConfig): Promise<void> {
     const slackConfig: Record<string, unknown> = {
       commandName: config.commandName,
+      clientId: config.clientId,
+      authRedirectUri: config.authRedirectUri,
     };
     const slackSecrets: Record<string, unknown> = {
       botToken: config.botToken,
@@ -184,6 +254,9 @@ export class SetupStore {
     };
     if (config.signingSecret) {
       slackSecrets.signingSecret = config.signingSecret;
+    }
+    if (config.clientSecret) {
+      slackSecrets.clientSecret = config.clientSecret;
     }
     await this.upsertConfigSection("slack", slackConfig, slackSecrets);
   }
@@ -216,7 +289,6 @@ export class SetupStore {
   async applyToEnv(): Promise<void> {
     const row = await this.getSetupRow();
     if (!row || !row.completedAt) return;
-    await this.ensureLegacyConfigsMigrated();
 
     const github = await this.readConfigSection("github");
     if (github && !this.shouldUseEnvOverride("github", github.overrideFromEnv)) {
@@ -256,60 +328,9 @@ export class SetupStore {
       setEnvValue("SLACK_APP_TOKEN", stringOrUndefined(slack.secrets.appToken));
       setEnvValue("SLACK_SIGNING_SECRET", stringOrUndefined(slack.secrets.signingSecret));
       setEnvValue("SLACK_COMMAND_NAME", stringOrUndefined(slack.config.commandName));
-    }
-  }
-
-  private async ensureLegacyConfigsMigrated(): Promise<void> {
-    if (this.legacyConfigMigrationDone) return;
-    if (this.legacyConfigMigrationPromise) {
-      await this.legacyConfigMigrationPromise;
-      return;
-    }
-
-    this.legacyConfigMigrationPromise = this.migrateLegacyConfigs();
-    try {
-      await this.legacyConfigMigrationPromise;
-      this.legacyConfigMigrationDone = true;
-    } finally {
-      this.legacyConfigMigrationPromise = undefined;
-    }
-  }
-
-  private async migrateLegacyConfigs(): Promise<void> {
-    const row = await this.getSetupRow();
-    if (!row) return;
-
-    const existingRows = await this.db
-      .select({ section: configSections.section })
-      .from(configSections);
-    const existing = new Set(existingRows.map((entry) => entry.section));
-    const key = await this.getEncryptionKey();
-
-    if (!existing.has("github") && (row.githubConfig || row.githubTokenEnc || row.githubAppKeyEnc)) {
-      const githubConfig = (row.githubConfig as Record<string, unknown> | null) ?? {};
-      const githubSecrets: Record<string, unknown> = {};
-      if (row.githubTokenEnc) githubSecrets.token = decrypt(row.githubTokenEnc, key);
-      if (row.githubAppKeyEnc) githubSecrets.privateKey = decrypt(row.githubAppKeyEnc, key);
-      await this.upsertConfigSection("github", githubConfig, githubSecrets);
-    }
-
-    if (!existing.has("llm") && (row.llmConfig || row.llmApiKeyEnc)) {
-      const llmConfig = (row.llmConfig as Record<string, unknown> | null) ?? {};
-      const llmSecrets: Record<string, unknown> = {};
-      if (row.llmApiKeyEnc) llmSecrets.apiKey = decrypt(row.llmApiKeyEnc, key);
-      await this.upsertConfigSection("llm", llmConfig, llmSecrets);
-    }
-
-    if (!existing.has("slack") && (row.slackConfig || row.slackBotTokenEnc || row.slackAppTokenEnc)) {
-      const legacySlackConfig = (row.slackConfig as Record<string, unknown> | null) ?? {};
-      const slackConfig: Record<string, unknown> = {
-        commandName: legacySlackConfig.commandName,
-      };
-      const slackSecrets: Record<string, unknown> = {};
-      if (row.slackBotTokenEnc) slackSecrets.botToken = decrypt(row.slackBotTokenEnc, key);
-      if (row.slackAppTokenEnc) slackSecrets.appToken = decrypt(row.slackAppTokenEnc, key);
-      if (legacySlackConfig.signingSecret) slackSecrets.signingSecret = String(legacySlackConfig.signingSecret);
-      await this.upsertConfigSection("slack", slackConfig, slackSecrets);
+      setEnvValue("SLACK_CLIENT_ID", stringOrUndefined(slack.config.clientId));
+      setEnvValue("SLACK_CLIENT_SECRET", stringOrUndefined(slack.secrets.clientSecret));
+      setEnvValue("SLACK_AUTH_REDIRECT_URI", stringOrUndefined(slack.config.authRedirectUri));
     }
   }
 
@@ -367,6 +388,18 @@ export class SetupStore {
         ? "SLACK_CONFIG_OVERRIDE_FROM_ENV"
         : "LLM_CONFIG_OVERRIDE_FROM_ENV";
     return parseOverrideFlag(process.env[varName]);
+  }
+
+  private pickPrefillValue(envValue?: string, wizardValue?: string): SetupPrefillValue {
+    const normalizedEnv = stringOrUndefined(envValue);
+    if (normalizedEnv !== undefined) {
+      return { value: normalizedEnv, source: "env" };
+    }
+    const normalizedWizard = stringOrUndefined(wizardValue);
+    if (normalizedWizard !== undefined) {
+      return { value: normalizedWizard, source: "wizard" };
+    }
+    return { source: "none" };
   }
 
   // ── Encryption key management ──
@@ -435,6 +468,32 @@ function setEnvValue(name: string, value: string | undefined): void {
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function resolveGitHubEnvAuthMode(): string | undefined {
+  if (stringOrUndefined(process.env.GITHUB_TOKEN)) return "pat";
+  if (
+    stringOrUndefined(process.env.GITHUB_APP_ID)
+    || stringOrUndefined(process.env.GITHUB_APP_INSTALLATION_ID)
+    || stringOrUndefined(process.env.GITHUB_APP_PRIVATE_KEY)
+  ) {
+    return "app";
+  }
+  return undefined;
+}
+
+function resolveLlmEnvProvider(): string | undefined {
+  if (stringOrUndefined(process.env.OPENROUTER_API_KEY)) return "openrouter";
+  if (stringOrUndefined(process.env.ANTHROPIC_API_KEY)) return "anthropic";
+  if (stringOrUndefined(process.env.OPENAI_API_KEY) || stringOrUndefined(process.env.CODEX_API_KEY)) return "openai";
+  return undefined;
+}
+
+function resolveLlmEnvApiKey(): string | undefined {
+  return stringOrUndefined(process.env.OPENROUTER_API_KEY)
+    ?? stringOrUndefined(process.env.ANTHROPIC_API_KEY)
+    ?? stringOrUndefined(process.env.OPENAI_API_KEY)
+    ?? stringOrUndefined(process.env.CODEX_API_KEY);
 }
 
 function parseOverrideFlag(value: string | undefined): boolean {

@@ -91,6 +91,8 @@ export interface RunRecord {
   tokenUsage?: TokenUsage;
   /** Team identifier derived from channel mapping */
   teamId?: string;
+  /** Managed work item this run belongs to, when attached */
+  workItemId?: string;
 }
 
 export interface NewRunInput {

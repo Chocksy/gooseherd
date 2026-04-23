@@ -42,6 +42,7 @@ async function createGitHubSyncFixture(options: {
   resetQaReviewOnNewCommits?: boolean;
   skipQaPreparation?: boolean;
   skipProductReview?: boolean;
+  readyForMergeHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
 } = {}) {
   const testDb = await createTestDb();
   const pmUserId = randomUUID();
@@ -79,6 +80,7 @@ async function createGitHubSyncFixture(options: {
       reconcileWorkItem: async (workItemId, reason) => {
         reconcileCalls.push({ workItemId, reason });
       },
+      readyForMergeHandler: options.readyForMergeHandler as never,
       resetEngineeringReviewOnNewCommits: options.resetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: options.resetQaReviewOnNewCommits,
       skipQaPreparation: options.skipQaPreparation,
@@ -1994,4 +1996,43 @@ test("github sync returns sticky reviewed auto_review work items to ready_for_me
   assert.equal(updated?.state, "ready_for_merge");
   assert.equal(updated?.substate, "waiting_merge");
   assert.ok(updated?.flags.includes("ci_green"));
+});
+
+test("github sync triggers ready_for_merge handler when green ci moves auto_review work into ready_for_merge", async (t) => {
+  const calls: Array<{ id: string; state: string }> = [];
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    readyForMergeHandler: async (workItem) => {
+      calls.push({ id: workItem.id, state: workItem.state });
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Squashed branch passed CI with handler",
+    summary: "The PR only needs green CI to become merge-ready again",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7071",
+    jiraIssueKey: "HBL-413A",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1061,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1061",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "self_review_done", "engineering_review_done", "qa_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    status: "completed",
+    conclusion: "success",
+    pullRequestNumbers: [1061],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "ready_for_merge");
+  assert.deepEqual(calls, [{ id: delivery.id, state: "ready_for_merge" }]);
 });

@@ -2,11 +2,9 @@ import type { Database } from "../db/index.js";
 import { sql } from "drizzle-orm";
 import type { SandboxRuntime } from "../runtime/runtime-mode.js";
 import {
-  advanceFeatureDeliveryStateAfterQaEntry,
   canAutoRebaseFeatureDeliveryBranch,
-  nextFeatureDeliveryStateAfterAutoReview,
-  nextFeatureDeliveryStateAfterEngineeringReview,
 } from "./feature-delivery-policy.js";
+import { reduceFeatureDelivery, type FeatureDeliveryDecision } from "./feature-delivery-reducer.js";
 import { RunStore } from "../store.js";
 import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask, buildReadyForMergeTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
@@ -133,64 +131,23 @@ export class WorkItemOrchestrator {
       return workItem;
     }
 
-    const nextStateAfterAutoReview = nextFeatureDeliveryStateAfterAutoReview({
-      ciGreen: workItem.flags.includes("ci_green"),
-      selfReviewDone: true,
-      hasActiveAutoFixes: false,
-    });
-    const shouldSkipEngineeringReview =
-      nextStateAfterAutoReview === "engineering_review" &&
-      workItem.flags.includes("engineering_review_done");
-
-    if (shouldSkipEngineeringReview) {
-      const engineeringReview = await this.workItems.updateState(workItem.id, {
-        state: "engineering_review",
-        substate: nextFeatureDeliverySubstateForState("engineering_review", {
-          fallback: workItem.substate,
-          defaultValue: "waiting_ci",
-        }),
-        flagsToAdd: ["self_review_done"],
-      });
-
-      const nextState = nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+    const decision = reduceFeatureDelivery(
+      workItem,
+      { type: "run.self_review_checkpoint_succeeded" },
+      {
         skipQaPreparation: this.deps.config?.featureDeliverySkipQaPreparation ?? false,
-        productReviewRequired: engineeringReview.flags.includes("product_review_required"),
         skipProductReview: this.deps.config?.featureDeliverySkipProductReview ?? false,
-      });
-      const finalState = advanceFeatureDeliveryStateAfterQaEntry(nextState, {
-        qaReviewDone: engineeringReview.flags.includes("qa_review_done"),
-      });
-      const intermediate = await this.workItems.updateState(engineeringReview.id, {
-        state: nextState,
-        substate: nextFeatureDeliverySubstateForState(nextState, {
-          fallback: engineeringReview.substate,
-          defaultValue: "waiting_ci",
-        }),
-      });
+      },
+    );
+    const updated = await applyWorkItemDecision(this.workItems, workItem, decision);
 
-      if (finalState === nextState) {
-        return this.handleReadyForMergeEntry(workItem.state, intermediate);
+    for (const command of decision.commands) {
+      if (command.type === "ready_for_merge_entered") {
+        return this.handleReadyForMergeEntry(workItem.state, updated);
       }
-
-      const updated = await this.workItems.updateState(intermediate.id, {
-        state: finalState,
-        substate: nextFeatureDeliverySubstateForState(finalState, {
-          fallback: intermediate.substate,
-          defaultValue: "waiting_ci",
-        }),
-      });
-      return this.handleReadyForMergeEntry(workItem.state, updated);
     }
 
-    const updated = await this.workItems.updateState(workItem.id, {
-      state: nextStateAfterAutoReview,
-      substate: nextFeatureDeliverySubstateForState(nextStateAfterAutoReview, {
-        fallback: workItem.substate,
-        defaultValue: "waiting_ci",
-      }),
-      flagsToAdd: ["self_review_done"],
-    });
-    return this.handleReadyForMergeEntry(workItem.state, updated);
+    return updated;
   }
 
   async handlePrefetchFailure(runId: string): Promise<WorkItemRecord | undefined> {
@@ -534,28 +491,6 @@ function resolveLaunchPlan(workItem: WorkItemRecord): {
   }
 }
 
-function nextFeatureDeliverySubstateForState(
-  state: WorkItemRecord["state"],
-  input: { fallback?: string; defaultValue?: string } = {},
-): string | undefined {
-  switch (state) {
-    case "engineering_review":
-      return "waiting_engineering_review";
-    case "qa_preparation":
-      return "preparing_review_app";
-    case "product_review":
-      return "waiting_product_review";
-    case "qa_review":
-      return "waiting_qa_review";
-    case "ready_for_merge":
-      return "waiting_merge";
-    case "auto_review":
-      return input.defaultValue ?? "waiting_ci";
-    default:
-      return input.fallback;
-  }
-}
-
 function isActiveWorkItemSystemRun(run: { status: string; requestedBy: string }): boolean {
   return WORK_ITEM_SYSTEM_RUN_REQUESTERS.has(run.requestedBy) && ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status);
 }
@@ -600,4 +535,18 @@ function isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): b
   }
 
   return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
+}
+
+async function applyWorkItemDecision(
+  workItems: WorkItemStore,
+  workItem: WorkItemRecord,
+  decision: FeatureDeliveryDecision,
+): Promise<WorkItemRecord> {
+  let current = workItem;
+
+  for (const patch of decision.patches) {
+    current = await workItems.updateState(current.id, patch);
+  }
+
+  return current;
 }

@@ -20,7 +20,7 @@
     "k8s:local-down": "bash scripts/kubernetes/local-down.sh",
     "k8s:local-status": "bash scripts/kubernetes/local-status.sh",
     "check": "tsc --noEmit",
-    "test": "node --test --test-force-exit --import tsx tests/*.test.ts",
+    "test": "node --test --test-force-exit --test-reporter=dot --import tsx tests/*.test.ts",
     "local:trigger": "tsx src/local-trigger.ts",
     "inspect": "tsx scripts/inspect-run.ts",
     "validate": "tsx scripts/validate-env.ts",

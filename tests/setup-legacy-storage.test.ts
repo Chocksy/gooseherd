@@ -7,6 +7,7 @@ import postgres from "postgres";
 import { encrypt, decrypt } from "../src/db/encryption.js";
 
 const TEST_URL = process.env.DATABASE_URL_TEST ?? "postgres://gooseherd:gooseherd@127.0.0.1:5432/gooseherd_test";
+const SILENT_TEST_NOTICE = () => undefined;
 
 const drizzleDir = path.resolve(
   import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname),
@@ -25,7 +26,7 @@ const migrationStatements = readdirSync(drizzleDir)
 
 async function withLegacySchema(fn: (sql: ReturnType<typeof postgres>) => Promise<void>): Promise<void> {
   const schemaName = `test_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-  const adminSql = postgres(TEST_URL, { max: 1 });
+  const adminSql = postgres(TEST_URL, { max: 1, onnotice: SILENT_TEST_NOTICE });
   await adminSql.unsafe(`CREATE SCHEMA "${schemaName}"`);
   await adminSql.unsafe(`
     CREATE TABLE "${schemaName}"."setup" (
@@ -65,7 +66,7 @@ async function withLegacySchema(fn: (sql: ReturnType<typeof postgres>) => Promis
     await fn(sql);
   } finally {
     await sql.end();
-    const dropSql = postgres(TEST_URL, { max: 1 });
+    const dropSql = postgres(TEST_URL, { max: 1, onnotice: SILENT_TEST_NOTICE });
     await dropSql.unsafe(`DROP SCHEMA "${schemaName}" CASCADE`);
     await dropSql.end();
   }
@@ -160,7 +161,7 @@ test("backfillLegacySetupConfigSections does not overwrite existing config_secti
 
 test("current migrations leave setup table with wizard-state columns only", async () => {
   const schemaName = `test_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-  const adminSql = postgres(TEST_URL, { max: 1 });
+  const adminSql = postgres(TEST_URL, { max: 1, onnotice: SILENT_TEST_NOTICE });
   await adminSql.unsafe(`CREATE SCHEMA "${schemaName}"`);
   await adminSql.unsafe(`SET search_path TO "${schemaName}"`);
   for (const stmt of migrationStatements) {
@@ -185,7 +186,7 @@ test("current migrations leave setup table with wizard-state columns only", asyn
 
 test("current migrations remove config_sections.override_from_env", async () => {
   const schemaName = `test_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-  const adminSql = postgres(TEST_URL, { max: 1 });
+  const adminSql = postgres(TEST_URL, { max: 1, onnotice: SILENT_TEST_NOTICE });
   await adminSql.unsafe(`CREATE SCHEMA "${schemaName}"`);
   await adminSql.unsafe(`SET search_path TO "${schemaName}"`);
   for (const stmt of migrationStatements) {

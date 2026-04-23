@@ -1,0 +1,5 @@
+# DevSecOps team should review all changes related to k8s and GHA
+.github               @NetsoftHoldings/devsecops
+.helm                 @NetsoftHoldings/devsecops
+.docker               @NetsoftHoldings/devsecops
+commitlint.config.mjs @NetsoftHoldings/devsecops

@@ -243,7 +243,7 @@ What `k8s:local-up` does:
 - configures runner callbacks to use cluster DNS instead of `host.minikube.internal`
 - bootstraps the setup wizard through a temporary local port-forward so the dashboard is ready immediately
 
-The local app image is built from `kubernetes/app.Dockerfile`, not the heavier top-level `Dockerfile`.
+The local app image is built from `.docker/Dockerfile`, not the heavier top-level `Dockerfile`.
 The top-level image remains the right one for `docker compose` and `local|docker` runtime flows.
 
 This is the right local path when you want a normal dashboard-triggered run to execute fully inside Kubernetes.

@@ -1,0 +1,21 @@
+name: Helpers
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, reopened, labeled, closed]
+
+jobs:
+  assign-author:
+    if: github.event.action == 'opened' || github.event.action == 'reopened'
+    uses: NetsoftHoldings/github-actions/.github/workflows/checks-assign-author.yml@main
+
+  jira-sync:
+    # Only run this job when PR is merged (for closed events) or when a label is added
+    if: github.event.action == 'labeled' || (github.event.action == 'closed' && github.event.pull_request.merged == true)
+    uses: NetsoftHoldings/github-actions/.github/workflows/jira-issue-status-sync.yml@main
+    secrets:
+      API_TOKEN: ${{ secrets.JIRA_INTEGRATION_API_TOKEN }}

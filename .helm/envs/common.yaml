@@ -1,0 +1,47 @@
+configs:
+  gooseherd-config:
+    data:
+      APP_NAME: "Gooseherd"
+      DASHBOARD_ENABLED: "true"
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8787"
+      DASHBOARD_PUBLIC_URL: "https://gooseherd.hbstf.co"
+      OBSERVER_WEBHOOK_PORT: "9090"
+      RUNNER_CONCURRENCY: "1"
+      WORK_ROOT: "/app/work"
+      DATA_DIR: "/app/data"
+      DRY_RUN: "false"
+      PIPELINE_FILE: "pipelines/pipeline.yml"
+      DEFAULT_BASE_BRANCH: "master"
+      GITHUB_DEFAULT_OWNER: "NetsoftHoldings"
+      JIRA_CLOUD_ID: "f08f7806-067d-4c7e-a389-ab81e39039dc"
+      REPO_ALLOWLIST: ""
+      DEFAULT_TEAM_NAME: "default"
+      DEFAULT_TEAM_SLACK_CHANNEL_ID: "C0AUN8758AF"
+      SLACK_COMMAND_NAME: "gooseherd"
+      GITHUB_APP_ID: "3478231"
+      GITHUB_APP_INSTALLATION_ID: "126441572"
+      AUTO_REVIEW_DEBUG_LOG_MODE: "failures"
+      SANDBOX_RUNTIME: "kubernetes"
+      KUBERNETES_NAMESPACE: '{{ .Release.Namespace }}'
+      KUBERNETES_RUNNER_IMAGE: '{{ .Values.werf.image.runner | default "gooseherd/k8s-runner:dev" }}'
+      KUBERNETES_INTERNAL_BASE_URL: 'http://gooseherd.{{ .Release.Namespace }}.svc.cluster.local:8787'
+      KUBERNETES_RUNNER_ENV_SECRET: "gooseherd-env"
+      KUBERNETES_RUNNER_ENV_CONFIGMAP: "gooseherd-config"
+      AGENT_COMMAND_TEMPLATE: 'bash scripts/dummy-agent.sh {{ "{{repo_dir}}" }} {{ "{{prompt_file}}" }} {{ "{{run_id}}" }}'
+
+secrets:
+  gooseherd-env:
+    secretKey: "int/gooseherd/full"
+    properties:
+      DATABASE_URL: "DATABASE_URL"
+      ENCRYPTION_KEY: "ENCRYPTION_KEY"
+      GITHUB_APP_PRIVATE_KEY: "GITHUB_APP_PRIVATE_KEY"
+      OPENROUTER_API_KEY: "OPENROUTER_API_KEY"
+      SLACK_BOT_TOKEN: "SLACK_BOT_TOKEN"
+      SLACK_APP_TOKEN: "SLACK_APP_TOKEN"
+      SLACK_SIGNING_SECRET: "SLACK_SIGNING_SECRET"
+      SLACK_CLIENT_SECRET: "SLACK_CLIENT_SECRET"
+      OBSERVER_GITHUB_WEBHOOK_SECRET: "OBSERVER_GITHUB_WEBHOOK_SECRET"
+      DASHBOARD_TOKEN: "DASHBOARD_TOKEN"
+      JIRA_API_TOKEN: "JIRA_API_TOKEN"

@@ -27,13 +27,12 @@ This guide is based on the current repository state, especially:
 
 - `docker-compose.yml`
 - `.env.example`
-- `kubernetes/app.Dockerfile`
+- `.docker/Dockerfile`
 - `kubernetes/local/*`
 - `src/config.ts`
 - `src/index.ts`
 - `src/runtime/kubernetes-backend.ts`
 - `src/runtime/kubernetes/job-spec.ts`
-- `kubernetes/runner.Dockerfile`
 
 ## High-Level Flow
 
@@ -71,7 +70,7 @@ From a Kubernetes perspective, Gooseherd consists of these pieces:
    Used for `.work` and `data` directories if you want state/artifacts to survive pod restarts.
 
 4. `Runner image`
-   A separate container image used for per-run Kubernetes jobs. Built from `kubernetes/runner.Dockerfile`.
+   A separate container image used for per-run Kubernetes jobs. Built from `.docker/Dockerfile (target runner)`.
 
 5. `Cluster networking`
    Required for:
@@ -195,13 +194,13 @@ That means your production deployment for the main Gooseherd app must provide:
 - network reachability from the app pod to the Kubernetes API server
 - RBAC that allows the app service account to manage Gooseherd runner resources
 
-For the local `minikube` bundle in this repository, the helper script builds a lighter local app image from `kubernetes/app.Dockerfile`.
+For the local `minikube` bundle in this repository, the helper script builds a lighter local app image from `.docker/Dockerfile`.
 That local image is optimized for Kubernetes control-plane duties only and avoids the heavier browser/sandbox dependencies from the top-level Docker image.
 The same helper also bootstraps the setup wizard locally so the dashboard is usable immediately after `npm run k8s:local-up`.
 
 ### 2. Runner image
 
-Built from `kubernetes/runner.Dockerfile`.
+Built from `.docker/Dockerfile (target runner)`.
 
 Default runtime value in code:
 
@@ -818,4 +817,4 @@ Useful source files when handing this off to DevOps:
 - [`src/runtime/kubernetes-env.ts`](../src/runtime/kubernetes-env.ts)
 - [`src/runtime/kubernetes-backend.ts`](../src/runtime/kubernetes-backend.ts)
 - [`src/runtime/kubernetes/job-spec.ts`](../src/runtime/kubernetes/job-spec.ts)
-- [`kubernetes/runner.Dockerfile`](../kubernetes/runner.Dockerfile)
+- [`.docker/Dockerfile`](../.docker/Dockerfile)

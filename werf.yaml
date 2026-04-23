@@ -1,0 +1,18 @@
+{{- $sandboxBaseImage := env "SANDBOX_BASE_IMAGE" "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/sandbox:latest" -}}
+project: gooseherd
+configVersion: 1
+
+build:
+  platform: ['linux/amd64']
+
+---
+image: app
+dockerfile: .docker/Dockerfile
+target: app
+
+---
+image: runner
+dockerfile: .docker/Dockerfile
+target: runner
+args:
+  SANDBOX_BASE_IMAGE: {{ $sandboxBaseImage | quote }}

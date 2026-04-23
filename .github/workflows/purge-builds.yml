@@ -1,0 +1,17 @@
+name: Purge builds in docker registry
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 0'
+
+jobs:
+  purge:
+    uses: NetsoftHoldings/github-actions/.github/workflows/general-ecr-cleanup.yml@main
+    with:
+      CONTAINER_REGISTRY_URL: ${{ vars.CONTAINER_REGISTRY_URL }}
+      CONTAINER_REGISTRY_NAME: ${{ vars.CONTAINER_REGISTRY_NAME }}
+    secrets:
+      INTERNAL_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      INTERNAL_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      SLACK_STATUS_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_JOB_STATUS_NOTIFICATIONS }}

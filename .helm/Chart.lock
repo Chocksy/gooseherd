@@ -1,0 +1,6 @@
+dependencies:
+- name: common
+  repository: s3://hubstaff-internal-helm-charts
+  version: 1.2.0
+digest: sha256:78ab0db2323eceb31d05c4cf51b74d8ab22a8341a76ec6321b4e36fbf7389c65
+generated: "2026-04-23T01:15:07.159124+03:00"

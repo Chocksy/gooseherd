@@ -1,0 +1,11 @@
+name: Checks
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+on: [pull_request]
+
+jobs:
+  commitlint:
+    uses: NetsoftHoldings/github-actions/.github/workflows/checks-commitlint.yml@main

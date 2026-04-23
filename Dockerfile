@@ -1,10 +1,18 @@
 # ── build stage ──────────────────────────────────────────────
 FROM node:22-bookworm-slim AS builder
 
+ARG INSTALL_BROWSER_VERIFY=false
+
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN if [ "$INSTALL_BROWSER_VERIFY" = "true" ]; then \
+      npm ci; \
+    else \
+      npm pkg delete optionalDependencies.@browserbasehq/stagehand optionalDependencies.playwright; \
+      npm install --package-lock-only --ignore-scripts; \
+      npm ci --omit=optional; \
+    fi
 
 COPY tsconfig.json ./
 COPY src/ src/
@@ -45,6 +53,8 @@ COPY package.json package-lock.json* ./
 RUN if [ "$INSTALL_BROWSER_VERIFY" = "true" ]; then \
       npm ci --omit=dev; \
     else \
+      npm pkg delete optionalDependencies.@browserbasehq/stagehand optionalDependencies.playwright; \
+      npm install --package-lock-only --ignore-scripts; \
       npm ci --omit=dev --omit=optional; \
     fi
 

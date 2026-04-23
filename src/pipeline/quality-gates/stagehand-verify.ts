@@ -9,7 +9,6 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { extractJSON, type LLMCallerConfig } from "../../llm/caller.js";
 import { verifyFeatureVisually, type VisualVerifyResult } from "./browser-verify.js";
@@ -18,6 +17,26 @@ import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 import { CdpScreencast } from "./cdp-screencast.js";
 import { CdpConsoleCapture } from "./cdp-console-capture.js";
 import { CdpNetworkCapture } from "./cdp-network-capture.js";
+
+const STAGEHAND_PACKAGE = "@browserbasehq/stagehand";
+
+type AISdkClientInstance = { model: unknown; getLanguageModel?: () => unknown };
+type AISdkClientConstructor = new (options: { model: unknown }) => AISdkClientInstance;
+type StagehandModule = {
+  AISdkClient: AISdkClientConstructor;
+  Stagehand: new (options: Record<string, unknown>) => any;
+};
+
+async function loadStagehandModule(): Promise<StagehandModule> {
+  try {
+    return await import(STAGEHAND_PACKAGE) as StagehandModule;
+  } catch (error) {
+    throw new Error(
+      "Browser verify requires optional dependency @browserbasehq/stagehand. Rebuild with INSTALL_BROWSER_VERIFY=true.",
+      { cause: error }
+    );
+  }
+}
 
 // ── Verdict Schema ──
 
@@ -91,7 +110,12 @@ If Navigation Hints are provided in the instruction, you MUST navigate to those 
  * The returned client also has the getLanguageModel() method patched in, since Stagehand's
  * public AISdkClient (external_clients/aisdk.js) lacks it but the agent handler requires it.
  */
-function createOpenRouterClient(modelName: string, apiKey: string, baseURL: string): AISdkClient {
+function createOpenRouterClient(
+  AISdkClient: AISdkClientConstructor,
+  modelName: string,
+  apiKey: string,
+  baseURL: string
+): AISdkClientInstance {
   const provider = createOpenAICompatible({
     name: "openrouter",
     baseURL,
@@ -261,6 +285,7 @@ export async function runStagehandVerification(
 ): Promise<StagehandVerifyResult> {
   const screenshotsDir = path.join(runDir, "screenshots");
   await mkdir(screenshotsDir, { recursive: true });
+  const { AISdkClient, Stagehand } = await loadStagehandModule();
 
   // Resolve chromium path from env (sandbox or local)
   const chromiumPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
@@ -272,7 +297,7 @@ export async function runStagehandVerification(
   await appendLog(logFile, `[gate:browser_verify] stagehand: initializing (model=${model}, executionModel=${execModelLabel}, chromium=${chromiumPath ?? "bundled"}, baseURL=${providerLabel})\n`);
 
   // When using OpenRouter (baseURL set), create a custom LLM client via @ai-sdk/openai-compatible.
-  const llmClient = baseURL ? createOpenRouterClient(model, apiKey, baseURL) : undefined;
+  const llmClient = baseURL ? createOpenRouterClient(AISdkClient, model, apiKey, baseURL) : undefined;
 
   const modelConfig: { modelName: string; apiKey: string; baseURL?: string } = {
     modelName: model,
@@ -290,7 +315,7 @@ export async function runStagehandVerification(
       ...(chromiumPath ? { executablePath: chromiumPath } : {}),
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"]
     },
-    logger: (logLine) => {
+    logger: (logLine: { category?: string; message: string }) => {
       appendLog(logFile, `[stagehand:${logLine.category ?? "info"}] ${logLine.message}\n`).catch(() => {});
     },
     verbose: 1
@@ -317,7 +342,7 @@ export async function runStagehandVerification(
         // If same model as primary, return the existing client
         if (overrideModelName === model) return (stagehand as any).llmClient;
         // Create a new OpenRouter-compatible client for the override model
-        return createOpenRouterClient(overrideModelName, apiKey, baseURL);
+        return createOpenRouterClient(AISdkClient, overrideModelName, apiKey, baseURL);
       };
     }
 
@@ -446,7 +471,7 @@ export async function runStagehandVerification(
 
     // Collect DOM findings from actions
     const domFindings: string[] = [];
-    for (const action of result.actions) {
+    for (const action of result.actions as Array<{ reasoning?: string }>) {
       if (action.reasoning) {
         domFindings.push(action.reasoning);
       }
@@ -582,7 +607,15 @@ export async function runStagehandVerification(
     let actionsPath: string | undefined;
     if (result.actions.length > 0) {
       try {
-        const actionEntries = result.actions.map((a) => ({
+        const actionEntries = (result.actions as Array<{
+          type?: string;
+          reasoning?: string;
+          pageUrl?: string;
+          timestamp?: number;
+          action?: string;
+          url?: string;
+          taskCompleted?: boolean;
+        }>).map((a) => ({
           type: a.type as string,
           reasoning: a.reasoning as string | undefined,
           pageUrl: a.pageUrl as string | undefined,

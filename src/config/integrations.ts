@@ -24,7 +24,6 @@ type IntegrationConfigSlice = Pick<
   | "repoAllowlist"
   | "defaultTeamName"
   | "defaultTeamSlackChannelId"
-  | "defaultTeamSlackChannelName"
   | "jiraBaseUrl"
   | "jiraCloudId"
   | "jiraUser"
@@ -58,7 +57,6 @@ export function loadIntegrationConfig(parsed: ParsedEnv, defaults: IntegrationDe
     repoAllowlist: parseList(parsed.REPO_ALLOWLIST),
     defaultTeamName: parsed.DEFAULT_TEAM_NAME?.trim() || "default",
     defaultTeamSlackChannelId: parsed.DEFAULT_TEAM_SLACK_CHANNEL_ID?.trim() || undefined,
-    defaultTeamSlackChannelName: parsed.DEFAULT_TEAM_SLACK_CHANNEL_NAME?.trim() || "#general",
     jiraBaseUrl: parsed.JIRA_BASE_URL?.trim() || undefined,
     jiraCloudId: parsed.JIRA_CLOUD_ID?.trim() || undefined,
     jiraUser: parsed.JIRA_USER?.trim() || undefined,

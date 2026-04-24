@@ -332,14 +332,12 @@ These values are appropriate for a `ConfigMap` or Helm values file.
 | --- | --- | --- | --- |
 | `DEFAULT_TEAM_NAME` | No | `default` | Default team name. |
 | `DEFAULT_TEAM_SLACK_CHANNEL_ID` | Yes | unset | Slack channel ID for the default team. Startup fails fast if this is missing. |
-| `DEFAULT_TEAM_SLACK_CHANNEL_NAME` | No | `#general` | Operator-facing channel label to keep aligned with the channel behind `DEFAULT_TEAM_SLACK_CHANNEL_ID`. |
 
 Minimum recommended values:
 
 ```text
 DEFAULT_TEAM_NAME=default
 DEFAULT_TEAM_SLACK_CHANNEL_ID=<default-team Slack channel ID>
-DEFAULT_TEAM_SLACK_CHANNEL_NAME=#general
 ```
 
 ### Agent and pipeline behavior
@@ -583,7 +581,6 @@ DEFAULT_BASE_BRANCH
 REPO_ALLOWLIST
 DEFAULT_TEAM_NAME=default
 DEFAULT_TEAM_SLACK_CHANNEL_ID=<default-team Slack channel ID>
-DEFAULT_TEAM_SLACK_CHANNEL_NAME=#general
 ```
 
 ### Secret

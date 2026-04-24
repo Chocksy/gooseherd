@@ -13,7 +13,6 @@ test("ensureDefaultTeam creates the default team when missing", async (t) => {
   const team = await ensureDefaultTeam(testDb.db, {
     defaultTeamName: "default",
     defaultTeamSlackChannelId: "C_DEFAULT",
-    defaultTeamSlackChannelName: "#general",
   });
 
   assert.equal(team.name, "default");
@@ -40,7 +39,6 @@ test("ensureDefaultTeam updates the existing default team row", async (t) => {
   const team = await ensureDefaultTeam(testDb.db, {
     defaultTeamName: "growth",
     defaultTeamSlackChannelId: "C_GROWTH",
-    defaultTeamSlackChannelName: "#growth",
   });
 
   assert.equal(team.id, teamId);
@@ -56,6 +54,5 @@ test("ensureDefaultTeam fails when the default team Slack channel id is missing"
   await assert.rejects(() => ensureDefaultTeam(testDb.db, {
     defaultTeamName: "default",
     defaultTeamSlackChannelId: undefined,
-    defaultTeamSlackChannelName: "#general",
   }), /DEFAULT_TEAM_SLACK_CHANNEL_ID/i);
 });

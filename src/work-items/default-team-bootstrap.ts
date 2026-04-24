@@ -6,7 +6,7 @@ import type { AppConfig } from "../config.js";
 
 type DefaultTeamBootstrapConfig = Pick<
   AppConfig,
-  "defaultTeamName" | "defaultTeamSlackChannelId" | "defaultTeamSlackChannelName"
+  "defaultTeamName" | "defaultTeamSlackChannelId"
 >;
 
 type TeamRow = typeof teams.$inferSelect;

@@ -21,7 +21,6 @@ export const envSchema = z.object({
 
   DEFAULT_TEAM_NAME: z.string().optional(),
   DEFAULT_TEAM_SLACK_CHANNEL_ID: z.string().optional(),
-  DEFAULT_TEAM_SLACK_CHANNEL_NAME: z.string().optional(),
 
   JIRA_BASE_URL: z.string().optional(),
   JIRA_CLOUD_ID: z.string().optional(),

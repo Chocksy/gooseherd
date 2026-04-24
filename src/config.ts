@@ -42,7 +42,6 @@ export interface AppConfig {
   repoAllowlist: string[];
   defaultTeamName: string;
   defaultTeamSlackChannelId?: string;
-  defaultTeamSlackChannelName: string;
 
   /** Canonical Jira read-access config for future discovery/work-items integrations. */
   jiraBaseUrl?: string;

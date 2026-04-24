@@ -98,7 +98,6 @@ Default team bootstrap:
 
 - `DEFAULT_TEAM_NAME`: optional, defaults to `default`
 - `DEFAULT_TEAM_SLACK_CHANNEL_ID`: required; startup fails fast if it is missing
-- `DEFAULT_TEAM_SLACK_CHANNEL_NAME`: optional, defaults to `#general`; keep it aligned with the channel behind `DEFAULT_TEAM_SLACK_CHANNEL_ID` in your deployment config
 
 On startup, Gooseherd bootstraps or updates the default team record from `DEFAULT_TEAM_NAME` and `DEFAULT_TEAM_SLACK_CHANNEL_ID`.
 

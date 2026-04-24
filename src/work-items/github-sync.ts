@@ -1,17 +1,14 @@
 import type { Database } from "../db/index.js";
 import type { GitHubService } from "../github.js";
 import {
-  advanceFeatureDeliveryStateAfterQaEntry,
-  nextFeatureDeliveryStateAfterEngineeringReview,
-  nextFeatureDeliveryStateAfterProductReview,
-  nextFeatureDeliveryStateAfterQaReview,
   shouldResetEngineeringReviewOnNewCommits,
   shouldResetQaReviewOnNewCommits,
 } from "./feature-delivery-policy.js";
+import { applyWorkItemDecision } from "./feature-delivery-decision.js";
 import {
-  featureDeliverySubstateForState,
   reduceFeatureDelivery,
   type FeatureDeliveryDecision,
+  type FeatureDeliveryReducerPolicy,
 } from "./feature-delivery-reducer.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { logError } from "../logger.js";
@@ -27,7 +24,6 @@ import {
 
 const ENGINEERING_REVIEW_PASSED_LABEL = "code review passed";
 const QA_PASSED_LABEL = "qa passed";
-const REVIEW_RESULT_FLAGS = ["engineering_review_done", "qa_review_done"] as const;
 const ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
 const WORK_ITEM_SYSTEM_RUN_REQUESTERS = new Set(["work-item:auto-review", "work-item:ci-fix"]);
 
@@ -84,11 +80,6 @@ export interface GitHubWorkItemSyncOptions {
     authorLogin?: string;
   }) => Promise<DeliveryContextResolverResult | undefined>;
 }
-
-type ManagedFeatureDeliveryState = Extract<
-  WorkItemRecord["state"],
-  "auto_review" | "engineering_review" | "qa_preparation" | "product_review" | "qa_review" | "ready_for_merge"
->;
 
 export function parseJiraIssueKey(text: string | undefined): string | undefined {
   if (!text) return undefined;
@@ -474,10 +465,7 @@ export class GitHubWorkItemSync {
           hasActiveSystemRun,
           automationEnabled,
         },
-        {
-          skipQaPreparation: this.skipQaPreparation,
-          skipProductReview: this.skipProductReview,
-        },
+        this.reducerPolicy(),
       );
       const updated = await applyWorkItemDecision(this.workItems, workItem, decision);
 
@@ -556,74 +544,39 @@ export class GitHubWorkItemSync {
     if (reviewState !== "approved" && reviewState !== "changes_requested") {
       return undefined;
     }
-
-    const currentState = workItem.state;
-    if (!["engineering_review", "product_review", "qa_review"].includes(currentState)) {
+    const decision = reduceFeatureDelivery(
+      workItem,
+      {
+        type: "github.review_submitted",
+        reviewState,
+        automationEnabled: this.isAiAssistAutomationEnabled(workItem),
+      },
+      this.reducerPolicy(),
+    );
+    if (decision.patches.length === 0 && decision.commands.length === 0) {
       return undefined;
     }
 
-    let nextState: WorkItemRecord["state"];
-    let substate: string | undefined;
-    let flagsToAdd: string[] = [];
-
-    if (currentState === "engineering_review") {
-      nextState = nextFeatureDeliveryStateAfterEngineeringReview(reviewState, {
-        skipQaPreparation: this.skipQaPreparation,
-        productReviewRequired: workItem.flags.includes("product_review_required"),
-        skipProductReview: this.skipProductReview,
-      });
-      if (reviewState === "approved") flagsToAdd = ["engineering_review_done"];
-    } else if (currentState === "product_review") {
-      nextState = nextFeatureDeliveryStateAfterProductReview(reviewState);
-      if (reviewState === "approved") flagsToAdd = ["product_review_done"];
-    } else {
-      nextState = nextFeatureDeliveryStateAfterQaReview(reviewState);
-      if (reviewState === "approved") flagsToAdd = ["qa_review_done"];
-    }
-
-    const finalState = advanceFeatureDeliveryStateAfterQaEntry(nextState, {
-      qaReviewDone: reviewState === "approved"
-        && (workItem.flags.includes("qa_review_done") || flagsToAdd.includes("qa_review_done")),
-    });
-    substate = reviewState === "approved"
-      ? featureDeliverySubstateForState(nextState, { fallback: workItem.substate, defaultValue: "waiting_ci" })
-      : "applying_review_feedback";
-
-    let updated = await this.workItems.updateState(workItem.id, {
-      state: nextState,
-      substate,
-      flagsToAdd,
-    });
-
-    if (finalState !== nextState) {
-      updated = await this.workItems.updateState(updated.id, {
-        state: finalState,
-        substate: featureDeliverySubstateForState(finalState, {
-          fallback: updated.substate,
-          defaultValue: "waiting_ci",
-        }),
-      });
-    }
+    const updated = await applyWorkItemDecision(this.workItems, workItem, decision);
 
     await this.events.append({
       workItemId: updated.id,
-      eventType: "github.review_submitted",
+      eventType: "github.review_transitioned",
       payload: {
         prNumber: payload.prNumber,
         reviewer: payload.reviewer,
         reviewState,
-        state: updated.state,
+        previousState: workItem.state,
+        nextState: updated.state,
       },
     });
 
-    if (
-      reviewState === "changes_requested" &&
-      updated.state === "auto_review" &&
-      this.isAiAssistAutomationEnabled(updated)
-    ) {
-      await this.reconcileIfConfigured(updated.id, "github.review_changes_requested");
+    const handledReadyForMerge = await this.executeFeatureDeliveryCommands(updated, decision);
+    if (!handledReadyForMerge) {
+      return this.handleReadyForMergeIfNeeded(updated);
     }
-    return this.handleReadyForMergeIfNeeded(updated);
+
+    return updated;
   }
 
   private async markPullRequestMerged(
@@ -653,41 +606,15 @@ export class GitHubWorkItemSync {
     workItem: WorkItemRecord,
     payload: GitHubWorkItemWebhookPayload
   ): Promise<WorkItemRecord> {
-    if (workItem.workflow !== "feature_delivery") {
+    const decision = reduceFeatureDelivery(
+      workItem,
+      { type: "github.pr_synchronized" },
+      this.reducerPolicy(),
+    );
+    if (decision.patches.length === 0 && decision.commands.length === 0) {
       return workItem;
     }
-
-    if (![
-      "auto_review",
-      "engineering_review",
-      "qa_preparation",
-      "product_review",
-      "qa_review",
-      "ready_for_merge",
-    ].includes(workItem.state)) {
-      return workItem;
-    }
-
-    const flagsToRemove = new Set<string>(["ci_green"]);
-    if (workItem.state === "ready_for_merge" && this.shouldResetEngineeringReviewOnNewCommits()) {
-      // Later review approvals depend on engineering sign-off, so they cannot stay sticky once it resets.
-      flagsToRemove.add("engineering_review_done");
-      flagsToRemove.add("product_review_done");
-      flagsToRemove.add("qa_review_done");
-    } else {
-      if (workItem.state === "engineering_review" && this.shouldResetEngineeringReviewOnNewCommits()) {
-        flagsToRemove.add("engineering_review_done");
-      }
-      if ((workItem.state === "qa_review" || workItem.state === "ready_for_merge") && this.shouldResetQaReviewOnNewCommits()) {
-        flagsToRemove.add("qa_review_done");
-      }
-    }
-
-    const updated = await this.workItems.updateState(workItem.id, {
-      state: "auto_review",
-      substate: "waiting_ci",
-      flagsToRemove: Array.from(flagsToRemove),
-    });
+    const updated = await applyWorkItemDecision(this.workItems, workItem, decision);
 
     await this.events.append({
       workItemId: updated.id,
@@ -749,48 +676,20 @@ export class GitHubWorkItemSync {
     workItem: WorkItemRecord,
     labels: string[] | undefined
   ): Promise<WorkItemRecord> {
-    const flagsToAdd = this.reviewFlagsFromLabels(labels);
-    const normalizedFlagsToAdd = new Set(flagsToAdd);
-    const flagsToRemove = REVIEW_RESULT_FLAGS.filter((flag) => !normalizedFlagsToAdd.has(flag));
-
-    if (flagsToAdd.length === 0 && flagsToRemove.every((flag) => !workItem.flags.includes(flag))) {
+    const reviewFlags = this.reviewFlagsFromLabels(labels);
+    const decision = reduceFeatureDelivery(
+      workItem,
+      {
+        type: "github.review_labels_synced",
+        engineeringReviewDone: reviewFlags.includes("engineering_review_done"),
+        qaReviewDone: reviewFlags.includes("qa_review_done"),
+      },
+      this.reducerPolicy(),
+    );
+    if (decision.patches.length === 0 && decision.commands.length === 0) {
       return workItem;
     }
-
-    const nextState = workItem.state === "engineering_review" && normalizedFlagsToAdd.has("engineering_review_done")
-      ? nextFeatureDeliveryStateAfterEngineeringReview("approved", {
-          skipQaPreparation: this.skipQaPreparation,
-          productReviewRequired: workItem.flags.includes("product_review_required"),
-          skipProductReview: this.skipProductReview,
-        })
-      : workItem.state === "qa_review" && normalizedFlagsToAdd.has("qa_review_done")
-        ? nextFeatureDeliveryStateAfterQaReview("approved")
-        : workItem.state;
-    const finalState = isManagedFeatureDeliveryState(nextState)
-      ? advanceFeatureDeliveryStateAfterQaEntry(
-          nextState,
-          { qaReviewDone: normalizedFlagsToAdd.has("qa_review_done") },
-        )
-      : nextState;
-    const nextSubstate = nextState === workItem.state
-      ? workItem.substate
-      : featureDeliverySubstateForState(nextState, { fallback: workItem.substate });
-
-    const updated = await this.workItems.updateState(workItem.id, {
-      state: nextState,
-      substate: nextSubstate,
-      flagsToAdd,
-      flagsToRemove,
-    });
-
-    if (finalState === nextState) {
-      return updated;
-    }
-
-    return this.workItems.updateState(updated.id, {
-      state: finalState,
-      substate: featureDeliverySubstateForState(finalState, { fallback: updated.substate }),
-    });
+    return applyWorkItemDecision(this.workItems, workItem, decision);
   }
 
   private async findWorkItemByPullRequestNumbers(
@@ -888,6 +787,15 @@ export class GitHubWorkItemSync {
     return shouldResetQaReviewOnNewCommits();
   }
 
+  private reducerPolicy(): FeatureDeliveryReducerPolicy {
+    return {
+      skipQaPreparation: this.skipQaPreparation,
+      skipProductReview: this.skipProductReview,
+      resetEngineeringReviewOnNewCommits: this.shouldResetEngineeringReviewOnNewCommits(),
+      resetQaReviewOnNewCommits: this.shouldResetQaReviewOnNewCommits(),
+    };
+  }
+
   private async handleReadyForMergeIfNeeded(workItem: WorkItemRecord): Promise<WorkItemRecord> {
     if (!this.readyForMergeHandler || workItem.workflow !== "feature_delivery" || workItem.state !== "ready_for_merge") {
       return workItem;
@@ -966,19 +874,6 @@ export class GitHubWorkItemSync {
   }
 }
 
-function isManagedFeatureDeliveryState(
-  state: WorkItemRecord["state"],
-): state is ManagedFeatureDeliveryState {
-  return [
-    "auto_review",
-    "engineering_review",
-    "qa_preparation",
-    "product_review",
-    "qa_review",
-    "ready_for_merge",
-  ].includes(state);
-}
-
 function normalizeCheckSuiteConclusion(
   conclusion: string | undefined,
 ): "success" | "failure" | "pending" | "no_ci" | undefined {
@@ -995,18 +890,4 @@ function normalizeCheckSuiteConclusion(
     default:
       return undefined;
   }
-}
-
-async function applyWorkItemDecision(
-  workItems: WorkItemStore,
-  workItem: WorkItemRecord,
-  decision: FeatureDeliveryDecision,
-): Promise<WorkItemRecord> {
-  let current = workItem;
-
-  for (const patch of decision.patches) {
-    current = await workItems.updateState(current.id, patch);
-  }
-
-  return current;
 }

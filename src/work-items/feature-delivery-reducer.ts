@@ -20,10 +20,15 @@ type ManagedFeatureDeliveryState = Extract<
 >;
 
 export type FeatureDeliveryReducerEvent =
-  | {
-      type: "run.self_review_checkpoint_succeeded";
-    }
-  | FeatureDeliveryCiCompletedEvent;
+  | FeatureDeliverySelfReviewCheckpointEvent
+  | FeatureDeliveryCiCompletedEvent
+  | FeatureDeliveryReviewSubmittedEvent
+  | FeatureDeliveryReviewLabelsSyncedEvent
+  | FeatureDeliveryPrSynchronizedEvent;
+
+type FeatureDeliverySelfReviewCheckpointEvent = {
+  type: "run.self_review_checkpoint_succeeded";
+};
 
 type FeatureDeliveryCiCompletedEvent = {
   type: "github.ci_completed";
@@ -32,9 +37,27 @@ type FeatureDeliveryCiCompletedEvent = {
   automationEnabled: boolean;
 };
 
+type FeatureDeliveryReviewSubmittedEvent = {
+  type: "github.review_submitted";
+  reviewState: "approved" | "changes_requested";
+  automationEnabled: boolean;
+};
+
+type FeatureDeliveryReviewLabelsSyncedEvent = {
+  type: "github.review_labels_synced";
+  engineeringReviewDone: boolean;
+  qaReviewDone: boolean;
+};
+
+type FeatureDeliveryPrSynchronizedEvent = {
+  type: "github.pr_synchronized";
+};
+
 export interface FeatureDeliveryReducerPolicy {
   skipQaPreparation?: boolean;
   skipProductReview?: boolean;
+  resetEngineeringReviewOnNewCommits?: boolean;
+  resetQaReviewOnNewCommits?: boolean;
 }
 
 export type FeatureDeliveryCommand =
@@ -68,6 +91,18 @@ export function reduceFeatureDelivery(
     return event.conclusion === "success"
       ? reduceSuccessfulCi(workItem, event, policy)
       : reduceFailedCi(workItem, event);
+  }
+
+  if (event.type === "github.review_submitted") {
+    return reduceReviewSubmitted(workItem, event, policy);
+  }
+
+  if (event.type === "github.review_labels_synced") {
+    return reduceReviewLabelsSynced(workItem, event, policy);
+  }
+
+  if (event.type === "github.pr_synchronized") {
+    return reducePullRequestSynchronized(workItem, policy);
   }
 
   return emptyDecision();
@@ -270,6 +305,164 @@ function reduceFailedCi(
   };
 }
 
+function reduceReviewSubmitted(
+  workItem: WorkItemRecord,
+  event: FeatureDeliveryReviewSubmittedEvent,
+  policy: FeatureDeliveryReducerPolicy,
+): FeatureDeliveryDecision {
+  if (
+    workItem.state !== "engineering_review"
+    && workItem.state !== "product_review"
+    && workItem.state !== "qa_review"
+  ) {
+    return emptyDecision();
+  }
+
+  let nextState: WorkItemRecord["state"];
+  let flagsToAdd: string[] = [];
+
+  if (workItem.state === "engineering_review") {
+    nextState = nextFeatureDeliveryStateAfterEngineeringReview(event.reviewState, {
+      skipQaPreparation: policy.skipQaPreparation,
+      productReviewRequired: hasFlag(workItem, "product_review_required"),
+      skipProductReview: policy.skipProductReview,
+    });
+    if (event.reviewState === "approved") {
+      flagsToAdd = ["engineering_review_done"];
+    }
+  } else if (workItem.state === "product_review") {
+    nextState = nextFeatureDeliveryStateAfterProductReview(event.reviewState);
+    if (event.reviewState === "approved") {
+      flagsToAdd = ["product_review_done"];
+    }
+  } else {
+    nextState = nextFeatureDeliveryStateAfterQaReview(event.reviewState);
+    if (event.reviewState === "approved") {
+      flagsToAdd = ["qa_review_done"];
+    }
+  }
+
+  const qaReviewDone = event.reviewState === "approved"
+    && (hasFlag(workItem, "qa_review_done") || flagsToAdd.includes("qa_review_done"));
+  const finalState = isManagedFeatureDeliveryState(nextState)
+    ? advanceFeatureDeliveryStateAfterQaEntry(nextState, { qaReviewDone })
+    : nextState;
+  const patches = [patchForState(nextState, {
+    fallbackSubstate: workItem.substate,
+    defaultSubstate: event.reviewState === "approved" ? "waiting_ci" : undefined,
+    explicitSubstate: event.reviewState === "approved" ? undefined : "applying_review_feedback",
+    flagsToAdd,
+  })];
+
+  if (finalState !== nextState) {
+    patches.push(patchForState(finalState, {
+      fallbackSubstate: patches[0]!.substate,
+      defaultSubstate: "waiting_ci",
+    }));
+  }
+
+  return {
+    patches,
+    commands: [
+      ...(event.reviewState === "changes_requested" && event.automationEnabled
+        ? [{ type: "reconcile_work_item", reason: "github.review_changes_requested" } as const]
+        : []),
+      ...(enteredReadyForMerge(workItem.state, patches)
+        ? [{ type: "ready_for_merge_entered" } as const]
+        : []),
+    ],
+  };
+}
+
+function reduceReviewLabelsSynced(
+  workItem: WorkItemRecord,
+  event: FeatureDeliveryReviewLabelsSyncedEvent,
+  policy: FeatureDeliveryReducerPolicy,
+): FeatureDeliveryDecision {
+  if (!isManagedFeatureDeliveryState(workItem.state)) {
+    return emptyDecision();
+  }
+
+  const flagsToAdd = reviewResultFlagsFromLabelSync(event);
+  const normalizedFlagsToAdd = new Set(flagsToAdd);
+  const flagsToRemove = REVIEW_RESULT_FLAGS.filter((flag) => !normalizedFlagsToAdd.has(flag));
+  const flagsActuallyAdded = flagsToAdd.filter((flag) => !hasFlag(workItem, flag));
+  const flagsActuallyRemoved = flagsToRemove.filter((flag) => hasFlag(workItem, flag));
+
+  const nextState = workItem.state === "engineering_review" && event.engineeringReviewDone
+    ? nextFeatureDeliveryStateAfterEngineeringReview("approved", {
+        skipQaPreparation: policy.skipQaPreparation,
+        productReviewRequired: hasFlag(workItem, "product_review_required"),
+        skipProductReview: policy.skipProductReview,
+      })
+    : workItem.state === "qa_review" && event.qaReviewDone
+      ? nextFeatureDeliveryStateAfterQaReview("approved")
+      : workItem.state;
+  const finalState = isManagedFeatureDeliveryState(nextState)
+    ? advanceFeatureDeliveryStateAfterQaEntry(nextState, { qaReviewDone: event.qaReviewDone })
+    : nextState;
+
+  if (
+    nextState === workItem.state
+    && finalState === workItem.state
+    && flagsActuallyAdded.length === 0
+    && flagsActuallyRemoved.length === 0
+  ) {
+    return emptyDecision();
+  }
+
+  const patches = [patchForState(nextState, {
+    explicitSubstate: nextState === workItem.state
+      ? workItem.substate
+      : undefined,
+    fallbackSubstate: workItem.substate,
+    flagsToAdd: flagsActuallyAdded,
+    flagsToRemove: flagsActuallyRemoved,
+  })];
+
+  if (finalState !== nextState) {
+    patches.push(patchForState(finalState, {
+      fallbackSubstate: patches[0]!.substate,
+    }));
+  }
+
+  return {
+    patches,
+    commands: enteredReadyForMerge(workItem.state, patches) ? [{ type: "ready_for_merge_entered" }] : [],
+  };
+}
+
+function reducePullRequestSynchronized(
+  workItem: WorkItemRecord,
+  policy: FeatureDeliveryReducerPolicy,
+): FeatureDeliveryDecision {
+  if (!isManagedFeatureDeliveryState(workItem.state)) {
+    return emptyDecision();
+  }
+
+  const flagsToRemove = new Set<string>(["ci_green"]);
+  if (workItem.state === "ready_for_merge" && policy.resetEngineeringReviewOnNewCommits) {
+    flagsToRemove.add("engineering_review_done");
+    flagsToRemove.add("product_review_done");
+    flagsToRemove.add("qa_review_done");
+  } else {
+    if (workItem.state === "engineering_review" && policy.resetEngineeringReviewOnNewCommits) {
+      flagsToRemove.add("engineering_review_done");
+    }
+    if ((workItem.state === "qa_review" || workItem.state === "ready_for_merge") && policy.resetQaReviewOnNewCommits) {
+      flagsToRemove.add("qa_review_done");
+    }
+  }
+
+  return {
+    patches: [patchForState("auto_review", {
+      explicitSubstate: "waiting_ci",
+      flagsToRemove: Array.from(flagsToRemove),
+    })],
+    commands: [],
+  };
+}
+
 function featureDeliveryStatePathAfterAutoReview(
   workItem: WorkItemRecord,
   input: {
@@ -398,6 +591,49 @@ function hasFlag(workItem: WorkItemRecord, flag: string): boolean {
   return workItem.flags.includes(flag);
 }
 
+function reviewResultFlagsFromLabelSync(
+  event: FeatureDeliveryReviewLabelsSyncedEvent,
+): Array<typeof REVIEW_RESULT_FLAGS[number]> {
+  const flags: Array<typeof REVIEW_RESULT_FLAGS[number]> = [];
+
+  if (event.engineeringReviewDone) {
+    flags.push("engineering_review_done");
+  }
+  if (event.qaReviewDone) {
+    flags.push("qa_review_done");
+  }
+
+  return flags;
+}
+
+function patchForState(
+  state: WorkItemRecord["state"],
+  input: {
+    explicitSubstate?: string;
+    fallbackSubstate?: string;
+    defaultSubstate?: string;
+    flagsToAdd?: string[];
+    flagsToRemove?: string[];
+  },
+): UpdateWorkItemStateInput {
+  const patch: UpdateWorkItemStateInput = {
+    state,
+    substate: input.explicitSubstate ?? featureDeliverySubstateForState(state, {
+      fallback: input.fallbackSubstate,
+      defaultValue: input.defaultSubstate,
+    }),
+  };
+
+  if (input.flagsToAdd && input.flagsToAdd.length > 0) {
+    patch.flagsToAdd = input.flagsToAdd;
+  }
+  if (input.flagsToRemove && input.flagsToRemove.length > 0) {
+    patch.flagsToRemove = input.flagsToRemove;
+  }
+
+  return patch;
+}
+
 function isManagedFeatureDeliveryState(state: WorkItemRecord["state"]): state is ManagedFeatureDeliveryState {
   return [
     "auto_review",
@@ -412,6 +648,8 @@ function isManagedFeatureDeliveryState(state: WorkItemRecord["state"]): state is
 function emptyDecision(): FeatureDeliveryDecision {
   return { patches: [], commands: [] };
 }
+
+const REVIEW_RESULT_FLAGS = ["engineering_review_done", "qa_review_done"] as const;
 
 function isFeatureDeliveryProgressState(state: WorkItemRecord["state"]): state is FeatureDeliveryProgressState {
   return [

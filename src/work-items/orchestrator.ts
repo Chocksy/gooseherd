@@ -4,7 +4,8 @@ import type { SandboxRuntime } from "../runtime/runtime-mode.js";
 import {
   canAutoRebaseFeatureDeliveryBranch,
 } from "./feature-delivery-policy.js";
-import { reduceFeatureDelivery, type FeatureDeliveryDecision } from "./feature-delivery-reducer.js";
+import { applyWorkItemDecision } from "./feature-delivery-decision.js";
+import { reduceFeatureDelivery } from "./feature-delivery-reducer.js";
 import { RunStore } from "../store.js";
 import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask, buildReadyForMergeTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
@@ -535,18 +536,4 @@ function isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): b
   }
 
   return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
-}
-
-async function applyWorkItemDecision(
-  workItems: WorkItemStore,
-  workItem: WorkItemRecord,
-  decision: FeatureDeliveryDecision,
-): Promise<WorkItemRecord> {
-  let current = workItem;
-
-  for (const patch of decision.patches) {
-    current = await workItems.updateState(current.id, patch);
-  }
-
-  return current;
 }

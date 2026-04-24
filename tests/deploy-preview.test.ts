@@ -160,6 +160,40 @@ test("deploy_preview: github_deployment_api soft_fail without pattern", async ()
   assert.ok(result.error?.includes("github_deployment_api"));
 });
 
+test("deploy_preview: github_deployment_api selects deployment URL matching PR number without branch ref filter", async () => {
+  const ctx = new ContextBag();
+  ctx.set("prNumber", 18046);
+
+  const githubService = {
+    async listDeployments(_owner: string, _repo: string, ref?: string) {
+      if (ref) return [];
+      return [
+        { id: 1, environment: "review", created_at: "2026-04-24T10:40:00Z" },
+        { id: 2, environment: "review", created_at: "2026-04-24T10:39:00Z" }
+      ];
+    },
+    async listDeploymentStatuses(_owner: string, _repo: string, deploymentId: number) {
+      if (deploymentId === 1) {
+        return [{ state: "success", environment_url: "https://18045.app.review.hbstf.co" }];
+      }
+      return [{ state: "success", environment_url: "https://18046.app.review.hbstf.co" }];
+    }
+  };
+
+  const result = await deployPreviewNode(
+    makeNodeConfig({
+      strategy: "github_deployment_api",
+      github_environment_pattern: "^review$",
+      readiness_timeout_seconds: 0
+    }),
+    ctx,
+    makeDeps({ githubService: githubService as unknown as NodeDeps["githubService"] })
+  );
+
+  assert.equal(result.outcome, "success");
+  assert.equal(ctx.get("reviewAppUrl"), "https://18046.app.review.hbstf.co");
+});
+
 // ── url_pattern: empty variable validation ──
 
 test("deploy_preview: url_pattern soft_fail when prNumber is empty", async () => {

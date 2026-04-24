@@ -642,12 +642,12 @@ export class GitHubService {
   async listDeployments(
     owner: string,
     repo: string,
-    ref: string
+    ref?: string
   ): Promise<Array<{ id: number; environment: string; created_at: string }>> {
     const response = await this.octokit.repos.listDeployments({
       owner,
       repo,
-      ref,
+      ...(ref ? { ref } : {}),
       per_page: 20
     });
     return response.data.map(d => ({

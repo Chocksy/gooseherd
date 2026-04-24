@@ -181,7 +181,7 @@ async function resolveGithubDeployment(
   }
 
   const { owner, repo } = parseRepoSlug(deps.run.repoSlug);
-  const branchName = ctx.get<string>("branchName") ?? deps.run.branchName;
+  const prNumber = String(ctx.get<number>("prNumber") ?? ctx.get<string>("prNumber") ?? "");
 
   let envRegex: RegExp;
   try {
@@ -197,7 +197,7 @@ async function resolveGithubDeployment(
   await appendLog(logFile, `[deploy_preview] polling GitHub deployments for environment matching '${nc.github_environment_pattern}'...\n`);
 
   while (Date.now() < deadline) {
-    const deployments = await deps.githubService.listDeployments(owner, repo, branchName);
+    const deployments = await deps.githubService.listDeployments(owner, repo);
     const matching = deployments
       .filter((d: DeploymentInfo) => envRegex.test(d.environment))
       .sort((a: DeploymentInfo, b: DeploymentInfo) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -206,6 +206,10 @@ async function resolveGithubDeployment(
       const statuses = await deps.githubService.listDeploymentStatuses(owner, repo, deployment.id);
       const latest = statuses[0] as DeploymentStatus | undefined;
       if (latest?.state === "success" && latest.environment_url) {
+        if (prNumber && !urlMatchesPrNumber(latest.environment_url, prNumber)) {
+          await appendLog(logFile, `[deploy_preview] deployment ${String(deployment.id)} URL does not match PR ${prNumber}, skipping\n`);
+          continue;
+        }
         return latest.environment_url;
       }
       if (latest?.state === "failure" || latest?.state === "error") {
@@ -219,6 +223,11 @@ async function resolveGithubDeployment(
   }
 
   return undefined;
+}
+
+function urlMatchesPrNumber(url: string, prNumber: string): boolean {
+  const escaped = prNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[./-])${escaped}(?:$|[./-])`).test(url);
 }
 
 // ── Strategy: command ──

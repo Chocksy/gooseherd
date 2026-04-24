@@ -12,7 +12,6 @@ configs:
       DATA_DIR: "/app/data"
       DRY_RUN: "false"
       PIPELINE_FILE: "pipelines/pipeline.yml"
-      REVIEW_APP_URL_PATTERN: 'https://{{ "{{prNumber}}" }}.app.review.hbstf.co'
       DEFAULT_BASE_BRANCH: "master"
       BRANCH_PREFIX: "gooseherd"
       GIT_AUTHOR_NAME: "Gooseherd"

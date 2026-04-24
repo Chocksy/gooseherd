@@ -114,15 +114,16 @@ nodes:
     enabled: false
     on_soft_fail: warn
 
-  # Deploy and screenshot the preview
-  # Configure REVIEW_APP_URL_PATTERN env var for url_pattern strategy.
+  # Deploy and screenshot the preview.
+  # Hubstaff review apps publish their URL through GitHub Deployment statuses.
   - id: deploy_preview
     type: deterministic
     action: deploy_preview
     enabled: false
     on_soft_fail: warn
     config:
-      strategy: url_pattern
+      strategy: github_deployment_api
+      github_environment_pattern: "^review$"
       readiness_timeout_seconds: 300
       max_timeout_seconds: 1800
       readiness_poll_interval_seconds: 5

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { eq, desc, and, sql, inArray, ne, getTableColumns } from "drizzle-orm";
 import type { NewRunInput, RunFeedback, RunRecord, RunStatus, TokenUsage, TokenUsageIncrement } from "./types.js";
 import type { Database } from "./db/index.js";
-import { runs, workItems } from "./db/schema.js";
+import { modelPrices, runs, workItems } from "./db/schema.js";
 import { deriveRunIntentFromLegacy, isRunIntent } from "./runs/run-intent.js";
-import { computeCostUsd } from "./llm/model-prices.js";
+import { MODEL_PRICES } from "./llm/model-prices.js";
 
 type RunRow = typeof runs.$inferSelect;
 type RunQueryRow = RunRow & {
@@ -79,16 +79,27 @@ function roundCost(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
 
-function mergeTokenUsage(current: TokenUsage, entry: TokenUsageIncrement): TokenUsage {
+type ResolvedModelPrice =
+  | { status: "priced"; inputPerM: number; outputPerM: number }
+  | { status: "missing" };
+
+function computeEntryCost(entry: TokenUsageIncrement, price: ResolvedModelPrice): number | undefined {
+  if (entry.costUsd !== undefined) return entry.costUsd;
+  if (price.status === "missing") return undefined;
+  return (entry.input / 1_000_000) * price.inputPerM + (entry.output / 1_000_000) * price.outputPerM;
+}
+
+function mergeTokenUsage(current: TokenUsage, entry: TokenUsageIncrement, price: ResolvedModelPrice): TokenUsage {
   const source = entry.source ?? "quality_gate";
   const byModel = [...(current.byModel ?? [])].map(modelUsage => ({ ...modelUsage }));
   const existing = byModel.find(modelUsage => modelUsage.model === entry.model);
-  const entryCost = entry.costUsd ?? computeCostUsd([{ model: entry.model, input: entry.input, output: entry.output }]);
+  const entryCost = computeEntryCost(entry, price);
+  const missingPriceModels = new Set(current.missingPriceModels ?? []);
 
   if (existing) {
     existing.input += entry.input;
     existing.output += entry.output;
-    if (entryCost > 0 || existing.costUsd !== undefined) {
+    if (entryCost !== undefined && (entryCost > 0 || existing.costUsd !== undefined)) {
       existing.costUsd = roundCost((existing.costUsd ?? 0) + entryCost);
     }
   } else {
@@ -96,8 +107,14 @@ function mergeTokenUsage(current: TokenUsage, entry: TokenUsageIncrement): Token
       model: entry.model,
       input: entry.input,
       output: entry.output,
-      ...(entryCost > 0 ? { costUsd: roundCost(entryCost) } : {})
+      ...(entryCost !== undefined && entryCost > 0 ? { costUsd: roundCost(entryCost) } : {})
     });
+  }
+
+  if (entry.costUsd === undefined && price.status === "missing") {
+    missingPriceModels.add(entry.model);
+  } else if (price.status === "priced" || entry.costUsd !== undefined) {
+    missingPriceModels.delete(entry.model);
   }
 
   const next: TokenUsage = {
@@ -105,8 +122,16 @@ function mergeTokenUsage(current: TokenUsage, entry: TokenUsageIncrement): Token
     qualityGateInputTokens: current.qualityGateInputTokens ?? 0,
     qualityGateOutputTokens: current.qualityGateOutputTokens ?? 0,
     byModel,
-    costUsd: roundCost((current.costUsd ?? 0) + entryCost)
+    ...(entryCost !== undefined ? { costUsd: roundCost((current.costUsd ?? 0) + entryCost) } : {}),
   };
+
+  if (missingPriceModels.size > 0) {
+    next.missingPriceModels = [...missingPriceModels].sort((a, b) => a.localeCompare(b));
+    next.costIncomplete = true;
+  } else {
+    delete next.missingPriceModels;
+    delete next.costIncomplete;
+  }
 
   if (source === "agent") {
     next.agentInputTokens = (current.agentInputTokens ?? 0) + entry.input;
@@ -361,8 +386,52 @@ export class RunStore {
       qualityGateInputTokens: 0,
       qualityGateOutputTokens: 0
     };
-    const next = mergeTokenUsage(current, entry);
+    const price = await this.resolveModelPrice(id, entry.model);
+    const next = mergeTokenUsage(current, entry, price);
     return this.updateRun(id, { tokenUsage: next });
+  }
+
+  private async resolveModelPrice(runId: string, model: string): Promise<ResolvedModelPrice> {
+    const now = new Date();
+    const rows = await this.db.select().from(modelPrices).where(eq(modelPrices.model, model)).limit(1);
+    const row = rows[0];
+    if (row) {
+      await this.db.update(modelPrices).set({ lastSeenAt: now }).where(eq(modelPrices.model, model));
+      if (row.inputPerM !== null && row.outputPerM !== null) {
+        return {
+          status: "priced",
+          inputPerM: Number(row.inputPerM),
+          outputPerM: Number(row.outputPerM)
+        };
+      }
+      return { status: "missing" };
+    }
+
+    const fallback = MODEL_PRICES[model];
+    if (fallback) {
+      await this.db.insert(modelPrices).values({
+        model,
+        inputPerM: String(fallback.inputPerM),
+        outputPerM: String(fallback.outputPerM),
+        source: "fallback",
+        firstSeenRunId: runId,
+        lastSeenAt: now,
+        updatedAt: now,
+      }).onConflictDoNothing();
+      return { status: "priced", inputPerM: fallback.inputPerM, outputPerM: fallback.outputPerM };
+    }
+
+    await this.db.insert(modelPrices).values({
+      model,
+      source: "observed",
+      firstSeenRunId: runId,
+      lastSeenAt: now,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: modelPrices.model,
+      set: { lastSeenAt: now }
+    });
+    return { status: "missing" };
   }
 
   async linkToWorkItem(runId: string, workItemId: string): Promise<RunRecord> {

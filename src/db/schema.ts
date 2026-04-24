@@ -683,3 +683,24 @@ export const agentProfiles = pgTable(
     index("agent_profiles_runtime_idx").on(t.runtime),
   ]
 );
+
+// ── model_prices ──
+
+export const modelPrices = pgTable(
+  "model_prices",
+  {
+    model: text("model").primaryKey(),
+    inputPerM: numeric("input_per_m", { precision: 12, scale: 6 }),
+    outputPerM: numeric("output_per_m", { precision: 12, scale: 6 }),
+    currency: text("currency").notNull().default("USD"),
+    source: text("source").notNull().default("observed"),
+    firstSeenRunId: uuid("first_seen_run_id"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text("updated_by"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("model_prices_missing_idx").on(t.source, t.lastSeenAt),
+  ]
+);

@@ -31,6 +31,7 @@ import { NODE_HANDLERS, VALID_ACTIONS } from "./pipeline/node-registry.js";
 import type { LLMCallerConfig } from "./llm/caller.js";
 import { SetupStore } from "./db/setup-store.js";
 import { AgentProfileStore } from "./db/agent-profile-store.js";
+import { ModelPriceStore } from "./db/model-price-store.js";
 import { DockerExecutionBackend } from "./runtime/docker-backend.js";
 import { LocalExecutionBackend } from "./runtime/local-backend.js";
 import type { RuntimeRegistry } from "./runtime/backend.js";
@@ -72,6 +73,7 @@ interface Services {
   config: AppConfig;
   store: RunStore;
   agentProfileStore: AgentProfileStore;
+  modelPriceStore: ModelPriceStore;
   githubService: GitHubService | undefined;
   memoryProvider: CemsProvider | undefined;
   hooks: RunLifecycleHooks;
@@ -98,6 +100,7 @@ type HomeThreadCreator = (input: { channelId: string; text: string }) => Promise
 interface CoreServicesBundle {
   store: RunStore;
   agentProfileStore: AgentProfileStore;
+  modelPriceStore: ModelPriceStore;
   githubService: GitHubService | undefined;
   memoryProvider: CemsProvider | undefined;
   hooks: RunLifecycleHooks;
@@ -178,6 +181,8 @@ async function createCoreServices(config: AppConfig, db: Database): Promise<Core
   await store.init();
   const agentProfileStore = new AgentProfileStore(db, config);
   await agentProfileStore.init();
+  const modelPriceStore = new ModelPriceStore(db);
+  await modelPriceStore.seedFallbackPrices();
 
   const githubService = GitHubService.create(config);
   const memoryProvider = config.cemsEnabled && config.cemsApiUrl && config.cemsApiKey
@@ -256,6 +261,7 @@ async function createCoreServices(config: AppConfig, db: Database): Promise<Core
   return {
     store,
     agentProfileStore,
+    modelPriceStore,
     githubService,
     memoryProvider,
     hooks,
@@ -758,6 +764,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     config,
     store: coreServices.store,
     agentProfileStore: coreServices.agentProfileStore,
+    modelPriceStore: coreServices.modelPriceStore,
     githubService: coreServices.githubService,
     memoryProvider: coreServices.memoryProvider,
     hooks: coreServices.hooks,
@@ -962,6 +969,7 @@ async function startInteractiveServices(
       },
       svc.evalStore,
       svc.agentProfileStore,
+      svc.modelPriceStore,
       svc.controlPlaneStore,
       svc.runnerArtifactStore,
       workItemsEnabled ? svc.dashboardWorkItemsSource : undefined,

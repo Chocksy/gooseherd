@@ -8,6 +8,7 @@ import { buildDashboardSettingsPayload } from "../settings-payload.js";
 import type { DashboardActorPrincipal } from "../actor-principal.js";
 import type { RunStore } from "../../store.js";
 import type { AgentProfileStore } from "../../db/agent-profile-store.js";
+import type { ModelPriceStore } from "../../db/model-price-store.js";
 import type { AgentProfileInput, AgentProvider } from "../../agent-profile.js";
 import {
   getAvailableProviders,
@@ -37,6 +38,7 @@ export interface SettingsRoutesDeps {
   config: AppConfig;
   githubRepositoriesCache?: CachedGitHubRepositories;
   githubService?: GitHubService;
+  modelPriceStore?: ModelPriceStore;
   requestUrl: URL;
   setGitHubRepositoriesCache(cache: CachedGitHubRepositories | undefined): void;
   store: RunStore;
@@ -55,6 +57,7 @@ export async function handleSettingsRoutes(
     config,
     githubRepositoriesCache,
     githubService,
+    modelPriceStore,
     requestUrl,
     setGitHubRepositoriesCache,
     store,
@@ -69,6 +72,7 @@ export async function handleSettingsRoutes(
   if (req.method === "GET" && pathname === "/api/settings") {
     const githubAuthMode = resolveGitHubAuthMode(config);
     const stats = await computeRunStats(store);
+    const modelPriceSummary = modelPriceStore ? (await modelPriceStore.list()).stats : undefined;
     const profiles = agentProfileStore ? (await agentProfileStore.list()).map((profile) => decorateAgentProfile(profile)) : [];
     const capabilities = buildDashboardCapabilities(config, actorPrincipal);
     const configOverrides = {
@@ -94,9 +98,70 @@ export async function handleSettingsRoutes(
           ciWait: configPayload.capabilities.ciWait,
           dryRun: configPayload.capabilities.dryRun,
         },
+        modelPrices: modelPriceSummary,
       },
       stats,
     });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/model-prices") {
+    if (!modelPriceStore) {
+      sendJson(res, 501, { error: "Model price store is unavailable" });
+      return true;
+    }
+    sendJson(res, 200, await modelPriceStore.list());
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/model-prices/recalculate-incomplete") {
+    if (!modelPriceStore) {
+      sendJson(res, 501, { error: "Model price store is unavailable" });
+      return true;
+    }
+    try {
+      requireDashboardAdminActor(actorPrincipal);
+    } catch (error) {
+      sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+      return true;
+    }
+    sendJson(res, 200, await modelPriceStore.recalculateIncompleteRuns());
+    return true;
+  }
+
+  const modelPriceMatch = pathname.match(/^\/api\/model-prices\/(.+)$/);
+  if (req.method === "PUT" && modelPriceMatch) {
+    if (!modelPriceStore) {
+      sendJson(res, 501, { error: "Model price store is unavailable" });
+      return true;
+    }
+    try {
+      requireDashboardAdminActor(actorPrincipal);
+    } catch (error) {
+      sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+      return true;
+    }
+    const raw = await readBody(req);
+    if (raw === null) {
+      sendJson(res, 413, { error: "Request body too large" });
+      return true;
+    }
+    let parsed: { inputPerM?: unknown; outputPerM?: unknown } = {};
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
+    const inputPerM = Number(parsed.inputPerM);
+    const outputPerM = Number(parsed.outputPerM);
+    if (!Number.isFinite(inputPerM) || inputPerM < 0 || !Number.isFinite(outputPerM) || outputPerM < 0) {
+      sendJson(res, 422, { error: "inputPerM and outputPerM must be non-negative numbers" });
+      return true;
+    }
+    const model = decodeURIComponent(modelPriceMatch[1]!);
+    const updatedBy = actorPrincipal?.principalType === "admin_session" ? actorPrincipal.sessionId : undefined;
+    sendJson(res, 200, { price: await modelPriceStore.save(model, inputPerM, outputPerM, updatedBy) });
     return true;
   }
 

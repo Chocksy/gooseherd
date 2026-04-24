@@ -134,6 +134,13 @@
       "when": 1779496800000,
       "tag": "0018_run_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1779500400000,
+      "tag": "0019_model_prices",
+      "breakpoints": true
     }
   ]
 }

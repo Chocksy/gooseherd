@@ -3,6 +3,7 @@ import type { AppConfig } from "./config.js";
 import type { SetupStore } from "./db/setup-store.js";
 import type { Database } from "./db/index.js";
 import type { AgentProfileStore } from "./db/agent-profile-store.js";
+import type { ModelPriceStore } from "./db/model-price-store.js";
 import type { EvalStore } from "./eval/eval-store.js";
 import { GitHubService } from "./github.js";
 import { logError, logInfo } from "./logger.js";
@@ -50,6 +51,7 @@ export function startDashboardServer(
   onSetupComplete?: () => Promise<void>,
   evalStore?: EvalStore,
   agentProfileStore?: AgentProfileStore,
+  modelPriceStore?: ModelPriceStore,
   controlPlaneStore?: ControlPlaneStore,
   runnerArtifactStore?: ArtifactStore,
   workItemsSource?: DashboardWorkItemsSource,
@@ -125,6 +127,7 @@ export function startDashboardServer(
         config,
         githubRepositoriesCache,
         githubService,
+        modelPriceStore,
         requestUrl,
         setGitHubRepositoriesCache: (cache) => {
           githubRepositoriesCache = cache;

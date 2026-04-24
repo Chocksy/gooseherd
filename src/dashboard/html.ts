@@ -4577,6 +4577,11 @@ export function dashboardHtml(config: AppConfig): string {
         var canManageUsers = Boolean(c.permissions && c.permissions.manageUsers);
         var sandboxRuntime = c.runtime && c.runtime.sandbox ? c.runtime.sandbox : null;
         var sandboxRuntimeLabel = (sandboxRuntime && sandboxRuntime.label) || c.sandboxRuntimeLabel || c.sandboxRuntime || '';
+        var priceSummary = c.modelPrices || {};
+        var missingPrices = priceSummary.missingPrices || 0;
+        var priceBadge = missingPrices > 0
+          ? '<span class="settings-badge off">' + missingPrices + ' missing</span>'
+          : '<span class="settings-badge on">Ready</span>';
         var sandboxStatus = sandboxRuntime && sandboxRuntime.enabled === false
           ? ' <span class="settings-badge off">Disabled</span>'
           : ' ' + settingsBadge(Boolean(sandboxRuntime && sandboxRuntime.enabled));
@@ -4612,6 +4617,7 @@ export function dashboardHtml(config: AppConfig): string {
           '<div class="settings-row"><span class="label">Plan Task</span><span class="value compact">' + esc(c.models?.planTask || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Orchestrator</span><span class="value compact">' + esc(c.models?.orchestrator || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Browser Verify</span><span class="value compact">' + esc(c.models?.browserVerify || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Prices</span><span class="value compact">' + priceBadge + ' <a href="/model-prices" class="top-btn" style="padding:6px 12px; margin-left:8px;">Manage</a></span></div>' +
           '</div>' +
           '<div class="settings-section"><h3>Aggregate Stats</h3>' +
           '<div class="stat-grid">' +

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runs, teams, users } from "../src/db/schema.js";
+import { modelPrices, runs, teams, users } from "../src/db/schema.js";
 import { mapPhaseToRunStatus, RunStore } from "../src/store.js";
 import { WorkItemStore } from "../src/work-items/store.js";
 import { createTestDb } from "./helpers/test-db.js";
@@ -146,6 +146,40 @@ test("RunStore accumulates token usage by model", async (t) => {
   assert.equal(updated.tokenUsage?.qualityGateInputTokens, 330);
   assert.equal(updated.tokenUsage?.qualityGateOutputTokens, 1202);
   assert.equal(updated.tokenUsage?.costUsd, 0.016);
+});
+
+test("RunStore records a model price placeholder for unknown models", async (t) => {
+  const { store, db, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "unknown model test",
+      baseBranch: "main",
+      requestedBy: "U123",
+      channelId: "C123",
+      threadTs: "123.456",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  const updated = await store.addTokenUsage(run.id, { model: "new/provider-model", input: 100, output: 50 });
+  const prices = await db.select().from(modelPrices);
+
+  assert.equal(updated.tokenUsage?.costUsd, undefined);
+  assert.equal(updated.tokenUsage?.costIncomplete, true);
+  assert.deepEqual(updated.tokenUsage?.missingPriceModels, ["new/provider-model"]);
+  assert.deepEqual(updated.tokenUsage?.byModel, [
+    { model: "new/provider-model", input: 100, output: 50 }
+  ]);
+  assert.equal(prices.length, 1);
+  assert.equal(prices[0]?.model, "new/provider-model");
+  assert.equal(prices[0]?.inputPerM, null);
+  assert.equal(prices[0]?.outputPerM, null);
+  assert.equal(prices[0]?.source, "observed");
+  assert.equal(prices[0]?.firstSeenRunId, run.id);
 });
 
 test("RunStore persists explicit run intent and derives legacy intent on reads", async (t) => {

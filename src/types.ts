@@ -39,6 +39,8 @@ export interface TokenUsage {
     output: number;
     costUsd?: number;
   }>;
+  missingPriceModels?: string[];
+  costIncomplete?: boolean;
   /** Estimated cost in USD (computed from token counts × model prices). */
   costUsd?: number;
 }

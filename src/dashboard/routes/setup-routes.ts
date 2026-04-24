@@ -7,6 +7,7 @@ import { wizardHtml } from "../wizard-html.js";
 import { agentProfileListHtml } from "../agent-profile-list-html.js";
 import { agentProfileWizardHtml } from "../agent-profile-wizard-html.js";
 import { usersHtml } from "../users-html.js";
+import { modelPricesHtml } from "../model-prices-html.js";
 import type { DashboardActorPrincipal } from "../actor-principal.js";
 import { buildDashboardSessionCookie, hashToken } from "../auth.js";
 import { requireDashboardAdminActor, readBody, sendJson, sendText } from "./shared.js";
@@ -60,6 +61,17 @@ export async function handleSetupRoutes(
       return true;
     }
     sendText(res, 200, usersHtml(config.appName), "text/html");
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/model-prices") {
+    try {
+      requireDashboardAdminActor(actorPrincipal);
+    } catch (error) {
+      sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+      return true;
+    }
+    sendText(res, 200, modelPricesHtml(config.appName), "text/html");
     return true;
   }
 

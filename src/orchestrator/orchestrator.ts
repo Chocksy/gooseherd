@@ -14,7 +14,7 @@ function buildTools(deps: HandleMessageDeps): ToolDefinition[] {
       type: "function",
       function: {
         name: "execute_task",
-        description: "Queue a pipeline run to make code changes in a repository. Call this when the user wants code modified, a feature added, a bug fixed, etc.",
+        description: "Queue a pipeline run only when the user wants a repository changed and the expected output is a code diff or PR. For read-only questions, answer directly or use the available read-only repository tools.",
         parameters: {
           type: "object",
           properties: {
@@ -198,6 +198,13 @@ function buildTools(deps: HandleMessageDeps): ToolDefinition[] {
   return tools;
 }
 
+const MUTATION_INTENT_RE = /\b(add|fix|change|update|remove|delete|move|rename|refactor|implement|create|build|enable|disable|make|set|write|edit|modify|convert|migrate|test|lint|upgrade|bump|patch|repair|resolve)\b/i;
+const READ_ONLY_REPO_QUESTION_RE = /\b(what\s+(?:is|are)|what'?s|explain|describe|tell\s+me\s+about|show\s+me|summari[sz]e)\b.*\b(repo|repos|repository|repositories|project|codebase)\b|\b(repo|repository|project|codebase)\b.*\b(about|overview|summary|tech\s+stack|structure|purpose)\b|\bwhat\s+kind\s+of\s+code\b|\btech\s+stack\b/i;
+
+function isReadOnlyRepositoryQuestion(task: string): boolean {
+  return READ_ONLY_REPO_QUESTION_RE.test(task) && !MUTATION_INTENT_RE.test(task);
+}
+
 /**
  * Handle an incoming message through the LLM orchestrator.
  * The LLM decides whether to answer directly, ask questions,
@@ -337,6 +344,10 @@ async function executeTask(
   // Validate repo is in allowlist
   if (deps.repoAllowlist.length > 0 && !deps.repoAllowlist.includes(repo)) {
     return `Error: repo '${repo}' is not in the allowlist. Allowed repos: ${deps.repoAllowlist.join(", ")}`;
+  }
+
+  if (isReadOnlyRepositoryQuestion(task)) {
+    return "Error: this is a read-only question about a repository, not a code-change task. Do not queue a pipeline run. Use describe_repo, list_files, read_file, or search_code to answer it directly.";
   }
 
   const skipNodes = Array.isArray(args["skipNodes"])

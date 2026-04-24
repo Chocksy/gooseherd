@@ -537,6 +537,34 @@ describe("handleMessage integration", () => {
     assert.ok(result.response.includes("Ruby"));
   });
 
+  test("read-only repository questions are not enqueued even if LLM calls execute_task", async () => {
+    fetchResponses.push(toolCallResponse([{
+      name: "execute_task",
+      arguments: { repo: "test/repo", task: "what is this repository about?" }
+    }]));
+    fetchResponses.push(textResponse("I'll answer that directly instead of starting a code-change run."));
+
+    let enqueueCalled = false;
+    const deps = makeDeps({
+      enqueueRun: async () => {
+        enqueueCalled = true;
+        throw new Error("should not enqueue");
+      }
+    });
+
+    const result = await handleMessage(llmConfig, model, systemContext, makeRequest({
+      message: "test/repo what is this repository about?"
+    }), deps);
+
+    assert.equal(enqueueCalled, false);
+    assert.equal(result.runsQueued.length, 0);
+
+    const toolResult = (fetchCalls[1].body["messages"] as Array<{ role: string; content: string }>)
+      .find(m => m.role === "tool");
+    assert.ok(toolResult?.content.includes("read-only question"));
+    assert.ok(toolResult?.content.includes("describe_repo"));
+  });
+
   test("describe_repo tool registered when dep provided", async () => {
     fetchResponses.push(textResponse("Hi!"));
 

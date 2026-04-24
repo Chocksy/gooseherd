@@ -140,8 +140,8 @@ test("RunStore accumulates token usage by model", async (t) => {
   const updated = await store.addTokenUsage(run.id, { model: "openai/gpt-4.1-mini", input: 30, output: 2 });
 
   assert.deepEqual(updated.tokenUsage?.byModel, [
-    { model: "openai/gpt-4.1-mini", input: 130, output: 202 },
-    { model: "anthropic/claude-sonnet-4-6", input: 200, output: 1000 }
+    { model: "openai/gpt-4.1-mini", input: 130, output: 202, costUsd: 0.0004 },
+    { model: "anthropic/claude-sonnet-4-6", input: 200, output: 1000, costUsd: 0.0156 }
   ]);
   assert.equal(updated.tokenUsage?.qualityGateInputTokens, 330);
   assert.equal(updated.tokenUsage?.qualityGateOutputTokens, 1202);

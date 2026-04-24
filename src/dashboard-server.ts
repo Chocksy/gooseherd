@@ -51,11 +51,11 @@ export function startDashboardServer(
   onSetupComplete?: () => Promise<void>,
   evalStore?: EvalStore,
   agentProfileStore?: AgentProfileStore,
-  modelPriceStore?: ModelPriceStore,
   controlPlaneStore?: ControlPlaneStore,
   runnerArtifactStore?: ArtifactStore,
   workItemsSource?: DashboardWorkItemsSource,
   db?: Database,
+  modelPriceStore?: ModelPriceStore,
 ): Server {
   const githubService = GitHubService.create(config);
   let githubRepositoriesCache: CachedGitHubRepositories | undefined;

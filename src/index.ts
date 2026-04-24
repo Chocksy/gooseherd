@@ -969,11 +969,11 @@ async function startInteractiveServices(
       },
       svc.evalStore,
       svc.agentProfileStore,
-      svc.modelPriceStore,
       svc.controlPlaneStore,
       svc.runnerArtifactStore,
       workItemsEnabled ? svc.dashboardWorkItemsSource : undefined,
       db,
+      svc.modelPriceStore,
     );
   }
 

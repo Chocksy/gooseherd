@@ -8,6 +8,7 @@ import type {
   IssuedRunToken,
   RunCompletionRecord,
   RunEnvelope,
+  RunEventRecord,
   RunnerCompletionPayload,
   RunnerEventPayload,
 } from "./control-plane-types.js";
@@ -15,6 +16,7 @@ import type {
 type PayloadRow = typeof runPayloads.$inferSelect;
 type CompletionRow = typeof runCompletions.$inferSelect;
 type TokenRow = typeof runTokens.$inferSelect;
+type EventRow = typeof runEvents.$inferSelect;
 
 const RUN_TOKEN_CACHE_TTL_MS = 60_000;
 const DEFAULT_RUN_TOKEN_TTL_MS = 20 * 60 * 1_000;
@@ -45,6 +47,17 @@ function toCompletionRecord(row: CompletionRow): RunCompletionRecord {
     idempotencyKey: row.idempotencyKey,
     payload: row.payload as unknown as RunnerCompletionPayload,
     createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function toRunEventRecord(row: EventRow): RunEventRecord {
+  return {
+    runId: row.runId,
+    eventId: row.eventId,
+    eventType: row.eventType as RunEventRecord["eventType"],
+    timestamp: row.timestamp.toISOString(),
+    sequence: row.sequence,
+    payload: row.payload ?? {},
   };
 }
 
@@ -190,6 +203,15 @@ export class ControlPlaneStore {
     }).onConflictDoNothing({
       target: [runEvents.runId, runEvents.eventId],
     });
+  }
+
+  async listEventsAfterSequence(runId: string, afterSequence: number): Promise<RunEventRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(runEvents)
+      .where(and(eq(runEvents.runId, runId), sql`${runEvents.sequence} > ${afterSequence}`))
+      .orderBy(runEvents.sequence);
+    return rows.map(toRunEventRecord);
   }
 
   async upsertArtifact(

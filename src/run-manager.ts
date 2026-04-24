@@ -14,7 +14,9 @@ import type { LearningStore } from "./observer/learning-store.js";
 import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
 import type { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
 import type { RunPrefetchContext } from "./runtime/run-context-types.js";
-import { selectPipelineIdForIntent } from "./runs/run-intent.js";
+import { isFeatureDeliveryAutoReviewOrRepairCiRun, selectPipelineIdForIntent } from "./runs/run-intent.js";
+import type { EmitRunCheckpointInput, RunCheckpointStore } from "./runs/run-checkpoint-store.js";
+import type { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -173,6 +175,16 @@ function isRetryableStatus(status: RunRecord["status"]): boolean {
   return status === "failed" || status === "completed";
 }
 
+function deriveTerminalProgressReason(result: ExecutionResult, run: RunRecord): string {
+  if (!result.commitSha) {
+    return "completed_without_commit_sha";
+  }
+  if (!result.prUrl && !run.prUrl) {
+    return "completed_without_external_pr";
+  }
+  return "completed_without_external_ci_wait";
+}
+
 export type RunTerminalCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
 export type RunStatusChangeCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
 type EnqueueRunInput = Omit<NewRunInput, "runtime"> & { runtime?: NewRunInput["runtime"] };
@@ -193,7 +205,9 @@ export class RunManager {
     private readonly hooks?: RunLifecycleHooks,
     private readonly pipelineStore?: PipelineStore,
     private readonly learningStore?: LearningStore,
-    runContextPrefetcher?: Pick<RunContextPrefetcher, "prefetch">
+    runContextPrefetcher?: Pick<RunContextPrefetcher, "prefetch">,
+    private readonly checkpointStore?: RunCheckpointStore,
+    private readonly checkpointProcessor?: RunCheckpointProcessor,
   ) {
     this.runContextPrefetcher = runContextPrefetcher ?? NOOP_RUN_CONTEXT_PREFETCHER;
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
@@ -678,12 +692,19 @@ export class RunManager {
         this.fireStatusChangeCallbacks(run.id, run.status, run.runtime);
         await upsertRunCard();
       };
+      const checkpointCallback = async (checkpoint: Omit<EmitRunCheckpointInput, "runId">): Promise<void> => {
+        await this.emitAndProcessCheckpoint({
+          runId: stableRunId,
+          ...checkpoint,
+        });
+      };
 
       const pipelineFile = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
       run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
       const backend = this.getBackend(run.runtime);
       const result = await backend.execute(run, {
         onPhase: phaseCallback,
+        onCheckpoint: checkpointCallback,
         onDetail,
         recordTokenUsage: async (entry) => {
           run = await this.store.addTokenUsage(stableRunId, entry);
@@ -694,6 +715,8 @@ export class RunManager {
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);
       const persistedRun = await this.store.getRun(stableRunId);
+
+      await this.maybeEmitTerminalProgressCheckpoint(run, result);
 
       run = await this.store.updateRun(stableRunId, {
         status: "completed",
@@ -767,6 +790,49 @@ export class RunManager {
       // Notify terminal listeners (observer learning loop)
       this.fireTerminalCallbacks(terminalRun.id, terminalRun.status, terminalRun.runtime);
     }
+  }
+
+  private async emitAndProcessCheckpoint(input: EmitRunCheckpointInput): Promise<void> {
+    if (!this.checkpointStore) {
+      return;
+    }
+
+    const emitted = await this.checkpointStore.emit(input);
+    if (!this.checkpointProcessor || (!emitted.inserted && emitted.checkpoint.processedAt)) {
+      return;
+    }
+
+    try {
+      await this.checkpointProcessor.process(emitted.checkpoint);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logError("Failed to process run checkpoint", {
+        runId: input.runId,
+        checkpointKey: input.checkpointKey,
+        error: message,
+      });
+    }
+  }
+
+  private async maybeEmitTerminalProgressCheckpoint(run: RunRecord, result: ExecutionResult): Promise<void> {
+    if (!this.checkpointStore || !isFeatureDeliveryAutoReviewOrRepairCiRun(run)) {
+      return;
+    }
+    if (await this.checkpointStore.hasCheckpoint(run.id, "external_ci_wait_started")) {
+      return;
+    }
+
+    await this.emitAndProcessCheckpoint({
+      runId: run.id,
+      checkpointKey: "terminal_progress_without_external_wait",
+      checkpointType: "run.completed_without_external_wait",
+      payload: {
+        reason: deriveTerminalProgressReason(result, run),
+        commitSha: result.commitSha,
+        changedFiles: result.changedFiles,
+        ciConclusion: run.ciConclusion,
+      },
+    });
   }
 
   private async postRunSummary(run: RunRecord, result?: ExecutionResult): Promise<void> {

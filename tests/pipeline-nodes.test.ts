@@ -12,6 +12,7 @@ import { localTestNode } from "../src/pipeline/nodes/local-test.js";
 import { lightweightChecksNode } from "../src/pipeline/nodes/lightweight-checks.js";
 import { rubySyntaxGateNode } from "../src/pipeline/nodes/ruby-syntax-gate.js";
 import { notifyNode } from "../src/pipeline/nodes/notify.js";
+import { waitCiNode } from "../src/pipeline/ci/wait-ci-node.js";
 import type { NodeConfig, NodeDeps } from "../src/pipeline/types.js";
 import type { AppConfig } from "../src/config.js";
 import type { RunRecord } from "../src/types.js";
@@ -788,5 +789,46 @@ describe("notifyNode", () => {
 
     mockFetch.mock.restore();
     await rm(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe("waitCiNode", () => {
+  test("emits external CI checkpoint after entering awaiting_ci", async () => {
+    const checkpoints: unknown[] = [];
+    const phases: string[] = [];
+    const ctx = new ContextBag({ commitSha: "abc123456789", prNumber: 42 });
+    const deps = makeDeps({
+      configOverrides: {
+        ciWaitEnabled: true,
+        ciCheckFilter: [],
+        ciPatienceTimeoutSeconds: 0,
+        ciMaxWaitSeconds: 1,
+        ciPollIntervalSeconds: 1,
+      },
+      githubService: {
+        listCheckRuns: async () => [],
+      } as unknown as NodeDeps["githubService"],
+      onPhase: async (phase) => {
+        phases.push(phase);
+      },
+      emitRunCheckpoint: async (checkpoint) => {
+        checkpoints.push(checkpoint);
+      },
+    });
+
+    const result = await waitCiNode(makeNodeConfig("wait_ci"), ctx, deps);
+
+    assert.equal(result.outcome, "success");
+    assert.deepEqual(phases, ["awaiting_ci"]);
+    assert.deepEqual(checkpoints, [{
+      checkpointKey: "external_ci_wait_started",
+      checkpointType: "run.waiting_external_ci",
+      payload: {
+        nodeId: "wait_ci",
+        commitSha: "abc123456789",
+        repo: "org/repo",
+        prNumber: 42,
+      },
+    }]);
   });
 });

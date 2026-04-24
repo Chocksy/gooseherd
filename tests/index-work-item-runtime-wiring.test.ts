@@ -23,6 +23,33 @@ test("main wires failed terminal runs into auto-review prefetch rollback handlin
   );
 });
 
+test("main does not drive work item progression from run status callbacks", async () => {
+  const indexPath = path.resolve(import.meta.dirname, "../src/index.ts");
+  const source = await readFile(indexPath, "utf8");
+
+  assert.doesNotMatch(source, /onRunStatusChange\([\s\S]*writebackWorkItem/);
+  assert.match(source, /new RunCheckpointProcessor\(db/);
+  assert.match(source, /const replay = await svc\.runCheckpointProcessor\.processUnprocessed\(\{ limit: 500 \}\)/);
+  assert.doesNotMatch(source, /^\s*await svc\.runCheckpointProcessor\.processUnprocessed\(\{ limit: 500 \}\);\s*$/m);
+});
+
+test("migration journal includes run_checkpoints and migration backfills legacy awaiting_ci runs", async () => {
+  const journal = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../drizzle/meta/_journal.json"), "utf8")) as {
+    entries: Array<{ idx: number; tag: string; when: number }>;
+  };
+  const migration = await readFile(path.resolve(import.meta.dirname, "../drizzle/0020_run_checkpoints.sql"), "utf8");
+
+  assert.ok(journal.entries.some((entry) =>
+    entry.idx === 20 &&
+    entry.tag === "0020_run_checkpoints" &&
+    entry.when > 1779496800000
+  ));
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "run_checkpoints"/);
+  assert.match(migration, /INSERT INTO "run_checkpoints"[\s\S]*"status" = 'awaiting_ci'/);
+  assert.match(migration, /"intent_kind" IN \([\s\S]*'feature_delivery\.self_review'[\s\S]*'feature_delivery\.repair_ci'/);
+  assert.match(migration, /UPDATE "runs"[\s\S]*"status" = 'running'[\s\S]*WHERE "status" = 'awaiting_ci'/);
+});
+
 test("phase 0 startup wiring uses dynamic imports for optional modules", async () => {
   const indexPath = path.resolve(import.meta.dirname, "../src/index.ts");
   const source = await readFile(indexPath, "utf8");

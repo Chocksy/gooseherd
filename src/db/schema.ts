@@ -207,6 +207,31 @@ export const runArtifacts = pgTable(
   ]
 );
 
+export const runCheckpoints = pgTable(
+  "run_checkpoints",
+  {
+    runId: uuid("run_id").notNull(),
+    checkpointKey: text("checkpoint_key").notNull(),
+    checkpointType: text("checkpoint_type").notNull(),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>().default({}),
+    emittedAt: timestamp("emitted_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    processedError: text("processed_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.runId, t.checkpointKey] }),
+    foreignKey({
+      columns: [t.runId],
+      foreignColumns: [runs.id],
+      name: "run_checkpoints_run_id_runs_id_fk",
+    }).onDelete("cascade"),
+    index("run_checkpoints_type_emitted_at_idx").on(t.checkpointType, t.emittedAt),
+    index("run_checkpoints_unprocessed_idx").on(t.emittedAt).where(sql`processed_at IS NULL`),
+  ]
+);
+
 // ── learning_outcomes ──
 
 export const learningOutcomes = pgTable(

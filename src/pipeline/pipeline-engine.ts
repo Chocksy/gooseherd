@@ -114,7 +114,13 @@ export class PipelineEngine {
     skipNodes?: string[],
     enableNodes?: string[],
     abortSignal?: AbortSignal,
-    recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>
+    recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>,
+    onCheckpoint?: (checkpoint: {
+      checkpointKey: string;
+      checkpointType: import("../runs/run-checkpoints.js").RunCheckpointType;
+      payload?: Record<string, unknown>;
+      emittedAt?: string;
+    }) => Promise<void>,
   ): Promise<ExecutionResult> {
     const yamlPath = pipelineFile ?? path.resolve("pipelines/pipeline.yml");
     const pipeline = await loadPipeline(yamlPath);
@@ -160,8 +166,14 @@ export class PipelineEngine {
         await eventLogger.emit("phase_change", { phase });
         await onPhase(phase as PipelinePhase);
       },
+      emitRunCheckpoint: async (checkpoint) => {
+        await onCheckpoint?.({
+          ...checkpoint,
+          emittedAt: new Date().toISOString(),
+        });
+      },
       onDetail,
-      recordTokenUsage
+      recordTokenUsage,
     };
 
     let startIndex = 0;

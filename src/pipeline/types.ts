@@ -4,6 +4,7 @@ import type { TokenUsageIncrement } from "../types.js";
 import type { GitHubService } from "../github.js";
 import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import type { ContextBag } from "./context-bag.js";
+import type { RunCheckpointType } from "../runs/run-checkpoints.js";
 
 // ── Node categories ──
 
@@ -59,6 +60,11 @@ export interface NodeDeps {
   logFile: string;
   workRoot: string;
   onPhase: (phase: string) => Promise<void>;
+  emitRunCheckpoint?: (checkpoint: {
+    checkpointKey: string;
+    checkpointType: RunCheckpointType;
+    payload?: Record<string, unknown>;
+  }) => Promise<void>;
   /** Send a detail string to the Slack run card (throttled by caller). */
   onDetail?: (detail: string) => Promise<void>;
   /** Persist token usage immediately after each successful AI response. */

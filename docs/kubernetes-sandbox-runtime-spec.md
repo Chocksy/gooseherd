@@ -160,6 +160,7 @@ The runner:
 - loads run payload
 - executes the pipeline sequentially inside the pod
 - emits structured progress/events
+- emits lifecycle checkpoint events such as `run.checkpoint`
 - checks cancellation periodically
 - emits a machine-readable completion record
 
@@ -214,6 +215,7 @@ This is a hard requirement because the runner depends on the internal API for:
 
 - payload fetch
 - progress/event reporting
+- checkpoint event reporting
 - cancellation polling
 - completion reporting
 

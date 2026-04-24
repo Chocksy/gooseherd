@@ -18,6 +18,8 @@ The intended flow is:
 
 `npm run k8s:local-up` applies the namespace, PostgreSQL deployment, work PVC, RBAC, and service manifests directly, then creates `gooseherd-env` and `gooseherd-config` dynamically so the current runner image tag and cluster DNS callback URL are injected into the deployment.
 
+The app and runner images should come from the same code revision. The runner emits control-plane events, including `run.checkpoint`, and the app drains those events while polling Kubernetes jobs.
+
 The local bundle keeps `/app/.work` on a `PersistentVolumeClaim` named `gooseherd-work`.
 That means run logs and artifacts survive normal `gooseherd` pod restarts inside the namespace.
 

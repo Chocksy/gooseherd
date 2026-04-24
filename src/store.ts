@@ -540,7 +540,7 @@ function shortRunId(id: string): string {
 export function mapPhaseToRunStatus(phase: string): RunStatus {
   if (phase === "validating") return "validating";
   if (phase === "pushing") return "pushing";
-  if (phase === "awaiting_ci") return "awaiting_ci";
+  if (phase === "awaiting_ci") return "running";
   if (phase === "ci_fixing") return "ci_fixing";
   return "running";
 }

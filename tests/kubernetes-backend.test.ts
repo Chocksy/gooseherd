@@ -120,6 +120,7 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
       revokeRunToken: async (runId: string) => {
         revokedRunId = runId;
       },
+      listEventsAfterSequence: async () => [],
     },
     artifactStore: {
       allocateTargets: async () => ({
@@ -255,6 +256,7 @@ test("kubernetes backend fails when runtime becomes terminal without completion"
         return null;
       },
       revokeRunToken: async () => undefined,
+      listEventsAfterSequence: async () => [],
     },
     artifactStore: {
       allocateTargets: async () => ({ targets: {} }),
@@ -314,6 +316,7 @@ test("kubernetes backend waits for a late success completion after terminal runt
       revokeRunToken: async (runId: string) => {
         revokedRunId = runId;
       },
+      listEventsAfterSequence: async () => [],
     },
     artifactStore: {
       allocateTargets: async () => ({ targets: {} }),
@@ -360,6 +363,7 @@ test("kubernetes backend does not load kubeconfig until it needs a real resource
         issueRunToken: async () => ({ token: "issued-token" }),
         getLatestCompletion: async () => makeCompletion(),
         revokeRunToken: async () => undefined,
+        listEventsAfterSequence: async () => [],
       },
       artifactStore: {
         allocateTargets: async () => ({ targets: {} }),
@@ -376,5 +380,77 @@ test("kubernetes backend does not load kubeconfig until it needs a real resource
     assert.equal(backend.runtime, "kubernetes");
   } finally {
     Object.assign(KubernetesResourceClient, { fromDefaultConfig: original });
+  }
+});
+
+test("kubernetes backend falls back to event timestamp when runner checkpoint emittedAt is invalid", async () => {
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "gooseherd-k8s-backend-checkpoint-"));
+  const phaseChanges: string[] = [];
+  const checkpoints: Array<{ checkpointKey: string; emittedAt?: string }> = [];
+
+  const backend = new KubernetesExecutionBackend({
+    controlPlaneStore: {
+      createRunEnvelope: async () => undefined,
+      issueRunToken: async () => ({ token: "issued-token" }),
+      getLatestCompletion: async () => makeCompletion(),
+      revokeRunToken: async () => undefined,
+      listEventsAfterSequence: async (_runId, afterSequence) => afterSequence === 0
+        ? [{
+            runId: "run-k8s-backend-4",
+            eventId: "evt-1",
+            eventType: "run.checkpoint",
+            timestamp: "2026-04-24T00:00:00.000Z",
+            sequence: 1,
+            payload: {
+              checkpointKey: "external_ci_wait_started",
+              checkpointType: "run.waiting_external_ci",
+              emittedAt: "not-a-date",
+              payload: { source: "runner" },
+            },
+          }]
+        : [],
+    },
+    artifactStore: {
+      allocateTargets: async () => ({ targets: {} }),
+    },
+    runStore: {
+      getRun: async () => undefined,
+    },
+    workRoot: tmpRoot,
+    runnerImage: "gooseherd/k8s-runner:dev",
+    internalBaseUrl: "http://host.minikube.internal:8787",
+    dryRun: false,
+    resourceClient: {
+      applySecret: async () => undefined,
+      applyJob: async () => undefined,
+      readJob: async () => ({ status: { conditions: [{ type: "Complete", status: "True" }] } }),
+      listPodsForJob: async () => [],
+      readJobLogs: async () => "runner completed\n",
+      deleteJob: async () => undefined,
+      deletePodsForJob: async () => undefined,
+      deleteSecret: async () => undefined,
+    },
+    pollIntervalMs: 1,
+    waitTimeoutMs: 5_000,
+    completionWaitMs: 100,
+  });
+
+  try {
+    await backend.execute(makeRun({ id: "run-k8s-backend-4" }), {
+      onPhase: async (phase) => {
+        phaseChanges.push(phase);
+      },
+      onCheckpoint: async (checkpoint) => {
+        checkpoints.push(checkpoint);
+      },
+      pipelineFile: "pipelines/kubernetes-smoke.yml",
+    });
+
+    assert.ok(phaseChanges.includes("agent"));
+    assert.equal(checkpoints.length, 1);
+    assert.equal(checkpoints[0]?.checkpointKey, "external_ci_wait_started");
+    assert.equal(checkpoints[0]?.emittedAt, "2026-04-24T00:00:00.000Z");
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true });
   }
 });

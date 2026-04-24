@@ -41,6 +41,8 @@ import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { RuntimeReconciler } from "./runtime/reconciler.js";
 import { recoverRunsAfterRestart } from "./runtime/startup-recovery.js";
 import { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
+import { RunCheckpointStore } from "./runs/run-checkpoint-store.js";
+import { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
 import {
   resolveKubernetesInternalBaseUrl,
   resolveKubernetesNamespace,
@@ -91,6 +93,7 @@ interface Services {
   dashboardWorkItemsSource?: DashboardWorkItemsSource;
   workItemService?: WorkItemService;
   workItemOrchestrator?: WorkItemOrchestrator;
+  runCheckpointProcessor?: RunCheckpointProcessor;
   workItemGitHubSync?: GitHubWorkItemSync;
   workItemJiraSync?: JiraWorkItemSync;
 }
@@ -687,6 +690,19 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         jira: coreServices.jiraClient,
       })
     : undefined;
+  const runCheckpointStore = new RunCheckpointStore(db);
+  const runCheckpointProcessor = workItemsEnabled
+    ? new RunCheckpointProcessor(db, {
+        config: {
+          defaultBaseBranch: config.defaultBaseBranch,
+          sandboxRuntime: config.sandboxRuntime,
+          autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
+          featureDeliverySkipQaPreparation: config.featureDeliverySkipQaPreparation,
+          featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
+        },
+        readyForMergeHandler: workItemServices.readyForMergeHandler,
+      }, runCheckpointStore)
+    : undefined;
   const runtimeFactsReader = config.sandboxRuntime === "kubernetes"
     ? new (await import("./runtime/kubernetes/runtime-facts.js")).KubernetesRuntimeFactsReader({
         namespace: resolveKubernetesNamespace(),
@@ -697,7 +713,9 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
   const runtimeReconciler = new RuntimeReconciler(
     coreServices.controlPlaneStore,
     runtimeFactsReader,
-    coreServices.store
+    coreServices.store,
+    runCheckpointStore,
+    runCheckpointProcessor,
   );
   const publicBaseUrl = config.dashboardPublicUrl ?? `http://${config.dashboardHost}:${String(config.dashboardPort)}`;
   const runnerArtifactStore: ArtifactStore = new FileArtifactStore(
@@ -734,6 +752,8 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     coreServices.pipelineStore,
     coreServices.learningStore,
     runContextPrefetcher,
+    runCheckpointStore,
+    runCheckpointProcessor,
   );
   runManager.onRunTerminal((runId, _status, runtime) => {
     if (runtime !== "kubernetes") {
@@ -782,6 +802,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     dashboardWorkItemsSource: dashboardWorkItems.dashboardWorkItemsSource,
     workItemService: workItemServices.workItemService,
     workItemOrchestrator: dashboardWorkItems.workItemOrchestrator,
+    runCheckpointProcessor,
     workItemGitHubSync: workItemServices.workItemGitHubSync,
     workItemJiraSync: workItemServices.workItemJiraSync,
   };
@@ -831,17 +852,6 @@ function wireWorkItemLifecycleHandlers(runManager: RunManager, workItemOrchestra
   if (!workItemOrchestrator) {
     return;
   }
-
-  runManager.onRunStatusChange((runId, status) => {
-    if (status !== "awaiting_ci" && status !== "completed") {
-      return;
-    }
-
-    workItemOrchestrator.writebackWorkItem(runId).catch((error) => {
-      const message = error instanceof Error ? error.message : "unknown";
-      logError("Failed to write back auto-review run status", { runId, status, error: message });
-    });
-  });
 
   runManager.onRunTerminal((runId, status) => {
     if (status !== "failed") {
@@ -1048,6 +1058,12 @@ async function main(): Promise<void> {
   globalRefs.config = config;
 
   wireWorkItemLifecycleHandlers(svc.runManager, svc.workItemOrchestrator);
+  if (svc.runCheckpointProcessor) {
+    const replay = await svc.runCheckpointProcessor.processUnprocessed({ limit: 500 });
+    if (replay.processed > 0 || replay.failed > 0) {
+      logInfo("Processed pending run checkpoints", replay);
+    }
+  }
 
   // 5. Recover stale in-progress runs from before restart
   const recovery = await recoverRunsAfterRestart(

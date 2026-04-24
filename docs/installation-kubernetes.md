@@ -51,7 +51,7 @@ sequenceDiagram
     K8s->>Job: Start runner pod
     Job->>GH: Fetch payload from internal API
     Job->>Ext: Clone repo, call LLMs, run pipeline
-    Job->>GH: Send events, artifacts, completion
+    Job->>GH: Send events, checkpoints, artifacts, completion
     GH->>DB: Persist final state
     GH-->>User: Show status in dashboard / Slack
 ```
@@ -71,6 +71,7 @@ From a Kubernetes perspective, Gooseherd consists of these pieces:
 
 4. `Runner image`
    A separate container image used for per-run Kubernetes jobs. Built from `.docker/Dockerfile (target runner)`.
+   Keep the runner image in protocol sync with the app image; current runners emit `run.checkpoint` events used for lifecycle milestones.
 
 5. `Cluster networking`
    Required for:
@@ -96,7 +97,7 @@ sequenceDiagram
     App->>K8s: Create Secret + Job per run
     K8s->>Job: Launch runner container
     Job->>App: Call /internal/runs/:runId/*
-    Job->>App: Report progress and completion
+    Job->>App: Report progress, checkpoints, and completion
 ```
 
 ## Required Kubernetes Resources
@@ -207,6 +208,7 @@ Default runtime value in code:
 - `KUBERNETES_RUNNER_IMAGE=gooseherd/k8s-runner:dev`
 
 For production, build and push your own immutable runner image tag and set `KUBERNETES_RUNNER_IMAGE` explicitly.
+Deploy app and runner images from the same release whenever possible. A stale runner can still complete runs, but missing `run.checkpoint` support delays some WorkItem lifecycle progression until terminal fallback handling.
 
 ## Networking Contract
 
@@ -248,6 +250,7 @@ This is the URL runner jobs use for:
 - payload fetch
 - artifact target fetch
 - event reporting
+- checkpoint event reporting
 - cancellation polling
 - completion submission
 

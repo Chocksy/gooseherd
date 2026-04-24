@@ -316,6 +316,8 @@ docker compose up -d
 
 Database migrations run automatically on startup. PostgreSQL data persists in the `gooseherd-pgdata` volume.
 
+After updates that change the runner/control-plane protocol, deploy app and runner images from the same release. Current runner jobs emit `run.checkpoint` events; stale runner images can still complete runs, but some WorkItem lifecycle progression may wait for terminal fallback handling.
+
 ## 8. docker-compose.yml
 
 Minimal `docker-compose.yml` showing the essential services. The full file includes all environment variables, healthchecks, resource limits, and sandbox volume config:

@@ -8,6 +8,8 @@ import {
   nextFeatureDeliveryStateAfterReadyForMergeRecovery,
 } from "./feature-delivery-policy.js";
 import type { UpdateWorkItemStateInput, WorkItemRecord } from "./types.js";
+import type { FeatureDeliveryProgressCheckpointType } from "../runs/run-checkpoints.js";
+import type { RunIntentKind } from "../runs/run-intent.js";
 
 type FeatureDeliveryProgressState = Extract<
   WorkItemRecord["state"],
@@ -20,14 +22,21 @@ type ManagedFeatureDeliveryState = Extract<
 >;
 
 export type FeatureDeliveryReducerEvent =
-  | FeatureDeliverySelfReviewCheckpointEvent
+  | FeatureDeliveryProgressReadyEvent
   | FeatureDeliveryCiCompletedEvent
   | FeatureDeliveryReviewSubmittedEvent
   | FeatureDeliveryReviewLabelsSyncedEvent
   | FeatureDeliveryPrSynchronizedEvent;
 
-type FeatureDeliverySelfReviewCheckpointEvent = {
-  type: "run.self_review_checkpoint_succeeded";
+type FeatureDeliveryProgressReadyEvent = {
+  type: "run.feature_delivery_progress_ready";
+  checkpointType: FeatureDeliveryProgressCheckpointType;
+  intentKind: Extract<
+    RunIntentKind,
+    | "feature_delivery.self_review"
+    | "feature_delivery.apply_review_feedback"
+    | "feature_delivery.repair_ci"
+  >;
 };
 
 type FeatureDeliveryCiCompletedEvent = {
@@ -83,8 +92,8 @@ export function reduceFeatureDelivery(
     return emptyDecision();
   }
 
-  if (event.type === "run.self_review_checkpoint_succeeded") {
-    return reduceSelfReviewCheckpoint(workItem, policy);
+  if (event.type === "run.feature_delivery_progress_ready") {
+    return reduceFeatureDeliveryProgressReady(workItem, policy);
   }
 
   if (event.type === "github.ci_completed") {
@@ -130,7 +139,7 @@ export function featureDeliverySubstateForState(
   }
 }
 
-function reduceSelfReviewCheckpoint(
+function reduceFeatureDeliveryProgressReady(
   workItem: WorkItemRecord,
   policy: FeatureDeliveryReducerPolicy,
 ): FeatureDeliveryDecision {

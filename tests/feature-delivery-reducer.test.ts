@@ -32,7 +32,7 @@ test("reducer keeps auto_review after self-review checkpoint when ci is not gree
       state: "auto_review",
       substate: "applying_review_feedback",
     }),
-    { type: "run.self_review_checkpoint_succeeded" },
+    { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
   );
 
   assert.deepEqual(decision.patches, [{
@@ -49,7 +49,7 @@ test("reducer advances auto_review to engineering_review after self-review check
       state: "auto_review",
       flags: ["ci_green"],
     }),
-    { type: "run.self_review_checkpoint_succeeded" },
+    { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
   );
 
   assert.deepEqual(decision.patches, [{
@@ -66,7 +66,7 @@ test("reducer skips engineering_review after self-review checkpoint when approva
       state: "auto_review",
       flags: ["ci_green", "engineering_review_done"],
     }),
-    { type: "run.self_review_checkpoint_succeeded" },
+    { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
   );
 
   assert.deepEqual(decision.patches, [
@@ -89,7 +89,7 @@ test("reducer reaches ready_for_merge after self-review checkpoint when sticky a
       state: "auto_review",
       flags: ["ci_green", "engineering_review_done", "qa_review_done"],
     }),
-    { type: "run.self_review_checkpoint_succeeded" },
+    { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
     {
       skipQaPreparation: true,
       skipProductReview: true,
@@ -125,7 +125,7 @@ test("reducer carries sticky product review approval through the allowed state p
         "product_review_done",
       ],
     }),
-    { type: "run.self_review_checkpoint_succeeded" },
+    { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
   );
 
   assert.deepEqual(decision.patches, [
@@ -889,7 +889,7 @@ test("reducer ignores non feature_delivery work items", () => {
       workflow: "product_discovery",
       state: "in_progress",
     }),
-    { type: "run.self_review_checkpoint_succeeded" },
+    { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
   );
 
   assert.deepEqual(decision.patches, []);

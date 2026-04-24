@@ -896,7 +896,7 @@ test("continueRun returns undefined for non-existent parent", async () => {
   await testDb.cleanup();
 });
 
-test("run manager notifies status listeners for awaiting_ci and completed transitions", async () => {
+test("run manager keeps run status running while phase awaits CI", async () => {
   const { store, testDb } = await setupTestStore();
   const mockClient = makeMockSlackClient();
   const config = makeConfig();
@@ -940,7 +940,8 @@ test("run manager notifies status listeners for awaiting_ci and completed transi
 
   await waitForRunDone(store, run.id);
 
-  assert.ok(seenStatuses.includes("awaiting_ci"));
+  assert.ok(seenStatuses.includes("running"));
+  assert.ok(!seenStatuses.includes("awaiting_ci"));
   assert.equal(seenStatuses.at(-1), "completed");
 
   await testDb.cleanup();

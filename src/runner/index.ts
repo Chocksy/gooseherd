@@ -68,6 +68,9 @@ async function executeSharedPipeline(
     async (entry) => {
       await client.addTokenUsage(entry);
     },
+    async (checkpoint) => {
+      await emit("run.checkpoint", checkpoint);
+    },
   );
 }
 

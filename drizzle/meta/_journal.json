@@ -141,6 +141,13 @@
       "when": 1779500400000,
       "tag": "0019_model_prices",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1779504000000,
+      "tag": "0020_run_checkpoints",
+      "breakpoints": true
     }
   ]
 }

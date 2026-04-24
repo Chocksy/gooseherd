@@ -28,7 +28,7 @@ Gooseherd is a **pipeline engine for AI coding agents** — think GitHub Actions
                          │                                         │
                          │  ┌──────────────────────────────────┐   │
                          │  │          Run Manager             │   │
-                         │  │  (queue, concurrency, lifecycle) │   │
+                         │  │  (queue, status, checkpoints)    │   │
                          │  └──────────────┬───────────────────┘   │
                          │                 │                       │
                          │                 ▼                       │
@@ -248,6 +248,18 @@ Data flows between nodes via a **Context Bag** — a typed key-value store that 
 │  ...                                                         │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+## Run Lifecycle Signals
+
+Gooseherd keeps three run lifecycle signals separate:
+
+| Signal | Purpose | Example |
+|--------|---------|---------|
+| `Run.status` | Coarse execution state for queues, dashboards, retries, and terminal handling. | `queued`, `running`, `completed`, `failed` |
+| `Run.phase` | Technical progress inside the selected pipeline/runtime. | `cloning`, `agent`, `pushing`, `awaiting_ci`, `ci_fixing` |
+| `run_checkpoints` | Persisted, idempotent milestones that external automation may consume. | `run.waiting_external_ci`, `run.completed_without_external_wait` |
+
+`awaiting_ci` is a phase, not a business status for new runs. When the `wait_ci` node starts waiting on GitHub checks, the run remains `status=running`, `phase=awaiting_ci`, and emits a `run.waiting_external_ci` checkpoint. Feature-delivery WorkItems consume these checkpoints through the reducer instead of advancing directly from status changes.
 
 ## Per-Repo Config
 
@@ -510,6 +522,8 @@ Every pipeline run emits structured events to `<runDir>/events.jsonl`:
 - `error` — on failures
 
 The dashboard reads these via `GET /api/runs/:id/pipeline-events` and renders a visual timeline.
+
+Kubernetes runner jobs also emit control-plane events through `POST /internal/runs/:runId/events`. These include `run.phase_changed`, `run.progress`, and `run.checkpoint`; the app-side Kubernetes backend drains those events while polling the job and forwards checkpoints into the same persisted `run_checkpoints` flow used by local/docker runtimes.
 
 ## Clone Progress Reporting
 

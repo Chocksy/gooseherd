@@ -75,6 +75,7 @@ export type RunnerEventType =
   | "run.started"
   | "run.progress"
   | "run.phase_changed"
+  | "run.checkpoint"
   | "run.warning"
   | "run.artifact_status"
   | "run.cancellation_observed"
@@ -86,4 +87,9 @@ export interface RunnerEventPayload {
   timestamp: string;
   sequence: number;
   payload?: Record<string, unknown>;
+}
+
+export interface RunEventRecord extends RunnerEventPayload {
+  runId: string;
+  payload: Record<string, unknown>;
 }

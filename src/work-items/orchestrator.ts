@@ -2,6 +2,7 @@ import type { Database } from "../db/index.js";
 import { sql } from "drizzle-orm";
 import type { SandboxRuntime } from "../runtime/runtime-mode.js";
 import type { RunRecord } from "../types.js";
+import type { FeatureDeliveryProgressCheckpointType, RunCheckpointRecord } from "../runs/run-checkpoints.js";
 import {
   canAutoRebaseFeatureDeliveryBranch,
 } from "./feature-delivery-policy.js";
@@ -147,6 +148,36 @@ export class WorkItemOrchestrator {
       return undefined;
     }
 
+    const checkpointType: FeatureDeliveryProgressCheckpointType =
+      run.phase === "awaiting_ci" || run.status === "awaiting_ci"
+        ? "run.waiting_external_ci"
+        : "run.completed_without_external_wait";
+    return this.applyRunProgressCheckpoint(run as RunRecord & { workItemId: string }, { checkpointType, payload: { source: "legacy_writeback" } });
+  }
+
+  async handleRunProgressCheckpoint(
+    runId: string,
+    checkpoint: Pick<RunCheckpointRecord, "checkpointType" | "payload">,
+  ): Promise<WorkItemRecord | undefined> {
+    const run = await this.runs.getRun(runId);
+    if (!run?.workItemId || !isFeatureDeliveryAutoReviewOrRepairCiRun(run)) {
+      return undefined;
+    }
+
+    return this.applyRunProgressCheckpoint(run as RunRecord & { workItemId: string }, {
+      checkpointType: checkpoint.checkpointType,
+      payload: checkpoint.payload,
+    });
+  }
+
+  private async applyRunProgressCheckpoint(
+    run: RunRecord & { workItemId: string },
+    checkpoint: { checkpointType: string; payload?: Record<string, unknown> },
+  ): Promise<WorkItemRecord | undefined> {
+    if (checkpoint.checkpointType !== "run.waiting_external_ci" && checkpoint.checkpointType !== "run.completed_without_external_wait") {
+      return undefined;
+    }
+
     const workItem = await this.workItems.getWorkItem(run.workItemId);
     if (!workItem || workItem.workflow !== "feature_delivery" || workItem.state !== "auto_review") {
       return workItem;
@@ -154,7 +185,11 @@ export class WorkItemOrchestrator {
 
     const decision = reduceFeatureDelivery(
       workItem,
-      { type: "run.self_review_checkpoint_succeeded" },
+      {
+        type: "run.feature_delivery_progress_ready",
+        checkpointType: checkpoint.checkpointType,
+        intentKind: deriveFeatureDeliveryProgressIntentKind(run),
+      },
       {
         skipQaPreparation: this.deps.config?.featureDeliverySkipQaPreparation ?? false,
         skipProductReview: this.deps.config?.featureDeliverySkipProductReview ?? false,
@@ -537,6 +572,23 @@ function isActiveWorkItemSystemRun(run: RunRecord): boolean {
 
 function isSuccessfulWorkItemCheckpoint(run: RunRecord): boolean {
   return isSuccessfulFeatureDeliveryProgressCheckpoint(run);
+}
+
+function deriveFeatureDeliveryProgressIntentKind(run: RunRecord):
+  | "feature_delivery.self_review"
+  | "feature_delivery.apply_review_feedback"
+  | "feature_delivery.repair_ci" {
+  if (
+    run.intent?.kind === "feature_delivery.self_review" ||
+    run.intent?.kind === "feature_delivery.apply_review_feedback" ||
+    run.intent?.kind === "feature_delivery.repair_ci"
+  ) {
+    return run.intent.kind;
+  }
+  if (run.requestedBy === CI_FIX_REQUESTED_BY) {
+    return "feature_delivery.repair_ci";
+  }
+  return "feature_delivery.self_review";
 }
 
 function isLatestRollbackCandidate(run: {

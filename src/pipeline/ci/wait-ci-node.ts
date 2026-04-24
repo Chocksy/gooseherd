@@ -46,6 +46,16 @@ export async function waitCiNode(
   const checkFilter = config.ciCheckFilter;
 
   await deps.onPhase("awaiting_ci");
+  await deps.emitRunCheckpoint?.({
+    checkpointKey: "external_ci_wait_started",
+    checkpointType: "run.waiting_external_ci",
+    payload: {
+      nodeId: "wait_ci",
+      commitSha,
+      repo: deps.run.repoSlug,
+      prNumber: ctx.get<number>("prNumber") ?? deps.run.prNumber,
+    },
+  });
   await appendLog(logFile, `\n[ci:wait] polling checks for ${commitSha.slice(0, 8)}...\n`);
 
   // Phase 1: Patience window — wait for check suites to appear

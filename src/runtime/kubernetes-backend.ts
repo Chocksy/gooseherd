@@ -20,9 +20,11 @@ import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
 import { readKubernetesTerminalFact } from "./kubernetes/runtime-facts.js";
 import { buildRunnerConfigPayload } from "./runner-config-payload.js";
+import { isRecord } from "../utils/type-guards.js";
+import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
 
 interface KubernetesExecutionBackendDeps {
-  controlPlaneStore: Pick<ControlPlaneStore, "createRunEnvelope" | "issueRunToken" | "getLatestCompletion" | "revokeRunToken">;
+  controlPlaneStore: Pick<ControlPlaneStore, "createRunEnvelope" | "issueRunToken" | "getLatestCompletion" | "revokeRunToken" | "listEventsAfterSequence">;
   artifactStore: Pick<ArtifactStore, "allocateTargets">;
   runStore: Pick<RunStore, "getRun">;
   workRoot: string;
@@ -110,14 +112,20 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       jobName,
     });
     await writeFile(manifestPath, renderManifestYaml(redactSecretToken(secret), job), "utf8");
+    let lastDrainedEventSequence = 0;
 
     try {
       await this.resourceClient.applySecret(secret);
       await this.resourceClient.applyJob(job);
-      const runtimeFact = await this.waitForTerminalFact(jobName, ctx.abortSignal, ctx.onDetail);
-      const completion = await this.waitForCompletion(run.id, runtimeFact, ctx.abortSignal, ctx.onDetail);
+      lastDrainedEventSequence = await this.drainRunnerEvents(run.id, ctx, lastDrainedEventSequence);
+      const runtimeFact = await this.waitForTerminalFact(run.id, jobName, ctx, lastDrainedEventSequence);
+      lastDrainedEventSequence = runtimeFact.lastDrainedEventSequence;
+      lastDrainedEventSequence = await this.drainRunnerEvents(run.id, ctx, lastDrainedEventSequence);
+      const completion = await this.waitForCompletion(run.id, runtimeFact.fact, ctx, lastDrainedEventSequence);
+      lastDrainedEventSequence = completion.lastDrainedEventSequence;
+      await this.drainRunnerEvents(run.id, ctx, lastDrainedEventSequence);
       const runtimeLogs = await this.captureLogs(jobName, logsPath);
-      return this.translateOutcome(run, completion, runtimeFact, runtimeLogs);
+      return this.translateOutcome(run, completion.completion, runtimeFact.fact, runtimeLogs);
     } finally {
       await this.cleanup(run.id, jobName, secretName).catch(() => {});
     }
@@ -129,23 +137,25 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
   }
 
   private async waitForTerminalFact(
+    runId: string,
     jobName: string,
-    abortSignal?: AbortSignal,
-    onDetail?: (detail: string) => Promise<void>,
-  ): Promise<TerminalFact> {
+    ctx: RunExecutionContext,
+    lastDrainedEventSequence: number,
+  ): Promise<{ fact: TerminalFact; lastDrainedEventSequence: number }> {
     const deadline = Date.now() + this.waitTimeoutMs;
 
     while (Date.now() < deadline) {
-      if (abortSignal?.aborted) {
+      if (ctx.abortSignal?.aborted) {
         throw new Error("Run cancelled");
       }
 
+      lastDrainedEventSequence = await this.drainRunnerEvents(runId, ctx, lastDrainedEventSequence);
       const fact = await this.readRuntimeFact(jobName);
       if (fact !== "running") {
-        return fact;
+        return { fact, lastDrainedEventSequence };
       }
 
-      await onDetail?.(`Waiting for Kubernetes job ${jobName} to reach terminal state.`);
+      await ctx.onDetail?.(`Waiting for Kubernetes job ${jobName} to reach terminal state.`);
       await sleep(this.pollIntervalMs);
     }
 
@@ -159,30 +169,63 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
   private async waitForCompletion(
     runId: string,
     runtimeFact: TerminalFact,
-    abortSignal?: AbortSignal,
-    onDetail?: (detail: string) => Promise<void>,
-  ): Promise<RunCompletionRecord | null> {
+    ctx: RunExecutionContext,
+    lastDrainedEventSequence: number,
+  ): Promise<{ completion: RunCompletionRecord | null; lastDrainedEventSequence: number }> {
+    lastDrainedEventSequence = await this.drainRunnerEvents(runId, ctx, lastDrainedEventSequence);
     const initialCompletion = await this.deps.controlPlaneStore.getLatestCompletion(runId);
     if (initialCompletion || runtimeFact === "running") {
-      return initialCompletion;
+      return { completion: initialCompletion, lastDrainedEventSequence };
     }
 
     const deadline = Date.now() + this.completionWaitMs;
     while (Date.now() < deadline) {
-      if (abortSignal?.aborted) {
+      if (ctx.abortSignal?.aborted) {
         throw new Error("Run cancelled");
       }
 
-      await onDetail?.(`Waiting for Kubernetes completion callback for run ${runId}.`);
+      await ctx.onDetail?.(`Waiting for Kubernetes completion callback for run ${runId}.`);
       await sleep(this.pollIntervalMs);
+      lastDrainedEventSequence = await this.drainRunnerEvents(runId, ctx, lastDrainedEventSequence);
 
       const completion = await this.deps.controlPlaneStore.getLatestCompletion(runId);
       if (completion) {
-        return completion;
+        return { completion, lastDrainedEventSequence };
       }
     }
 
-    return null;
+    return { completion: null, lastDrainedEventSequence };
+  }
+
+  private async drainRunnerEvents(runId: string, ctx: RunExecutionContext, afterSequence: number): Promise<number> {
+    let lastDrainedEventSequence = afterSequence;
+    const events = await this.deps.controlPlaneStore.listEventsAfterSequence(runId, afterSequence);
+    for (const event of events) {
+      lastDrainedEventSequence = Math.max(lastDrainedEventSequence, event.sequence);
+      if (event.eventType === "run.phase_changed") {
+        const phase = event.payload.phase;
+        if (typeof phase === "string") {
+          await ctx.onPhase(phase as Parameters<RunExecutionContext["onPhase"]>[0]);
+        }
+      } else if (event.eventType === "run.checkpoint") {
+        const { checkpointKey, checkpointType, payload, emittedAt } = event.payload;
+        const checkpointEmittedAt = normalizeRunCheckpointEmittedAt(emittedAt, event.timestamp);
+        if (typeof checkpointKey === "string" && typeof checkpointType === "string" && isRunCheckpointType(checkpointType)) {
+          await ctx.onCheckpoint?.({
+            checkpointKey,
+            checkpointType,
+            payload: isRecord(payload) ? payload : undefined,
+            emittedAt: checkpointEmittedAt,
+          });
+        }
+      } else if (event.eventType === "run.progress") {
+        const detail = event.payload.detail;
+        if (typeof detail === "string") {
+          await ctx.onDetail?.(detail);
+        }
+      }
+    }
+    return lastDrainedEventSequence;
   }
 
   private translateOutcome(

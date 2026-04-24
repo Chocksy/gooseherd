@@ -328,9 +328,9 @@ export function isFeatureDeliveryAutoReviewOrRepairCiRun(
 }
 
 export function isSuccessfulFeatureDeliveryProgressCheckpoint(
-  run: Pick<RunRecord, "status" | "intent" | "requestedBy">,
+  run: Pick<RunRecord, "status" | "phase" | "intent" | "requestedBy">,
 ): boolean {
-  if (run.status !== "awaiting_ci" && run.status !== "completed") {
+  if (run.phase !== "awaiting_ci" && run.status !== "awaiting_ci" && run.status !== "completed") {
     return false;
   }
   if (isFeatureDeliveryAutoReviewOrRepairCiIntent(run.intent)) {

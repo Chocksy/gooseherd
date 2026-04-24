@@ -164,6 +164,7 @@ For auto-review forensic logging, set `AUTO_REVIEW_DEBUG_LOG_MODE=off|failures|a
 
 Built-in run inspector at `http://localhost:8787`:
 - Live run status and phase tracking
+- CI waits are shown as `status=running` with `phase=awaiting_ci`; WorkItem automation advances from persisted run checkpoints rather than transient statuses
 - Tail logs, changed files view
 - Run feedback (`+1/-1` + notes)
 - One-click retry for failed runs
@@ -216,7 +217,7 @@ Important distinction:
 
 ### Full Local Kubernetes Deployment
 
-The repo now includes a minimal local deployment bundle in [kubernetes/local/README.md](/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/kubernetes/local/README.md) plus helper scripts:
+The repo now includes a minimal local deployment bundle in [kubernetes/local/README.md](kubernetes/local/README.md) plus helper scripts:
 
 ```bash
 minikube start --driver=docker
@@ -299,9 +300,11 @@ The target local architecture is:
 - Gooseherd service reachable from runner jobs through cluster DNS
 - local browser access through `kubectl port-forward` or `minikube service`
 
-The implementation plan for this local deployment path lives in [docs/plans/2026-04-10-local-minikube-deployment-plan.md](/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/docs/plans/2026-04-10-local-minikube-deployment-plan.md).
+The implementation plan for this local deployment path lives in [docs/plans/2026-04-10-local-minikube-deployment-plan.md](docs/plans/2026-04-10-local-minikube-deployment-plan.md).
 
 For the deployment contract and operational caveats, see [docs/installation-kubernetes.md](docs/installation-kubernetes.md).
+
+Kubernetes runner images must be built from the same code revision as the app image, or at least include support for the current control-plane event protocol. In particular, runner jobs now emit `run.checkpoint` events so the app can persist lifecycle milestones such as `run.waiting_external_ci`.
 
 ## Testing
 

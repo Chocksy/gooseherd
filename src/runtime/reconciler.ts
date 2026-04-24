@@ -1,6 +1,12 @@
 import type { RunStore } from "../store.js";
 import type { ControlPlaneStore } from "./control-plane-store.js";
 import type { TerminalFact } from "./terminal-fact.js";
+import type { RunCheckpointProcessor } from "../runs/run-checkpoint-processor.js";
+import type { RunCheckpointStore } from "../runs/run-checkpoint-store.js";
+import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
+import { isFeatureDeliveryAutoReviewOrRepairCiRun } from "../runs/run-intent.js";
+import { isRecord } from "../utils/type-guards.js";
+import { logError } from "../logger.js";
 
 interface RuntimeFactsReader {
   getTerminalFact(runId: string): Promise<TerminalFact>;
@@ -8,12 +14,15 @@ interface RuntimeFactsReader {
 
 export class RuntimeReconciler {
   constructor(
-    private readonly controlPlaneStore: Pick<ControlPlaneStore, "getLatestCompletion">,
+    private readonly controlPlaneStore: Pick<ControlPlaneStore, "getLatestCompletion" | "listEventsAfterSequence">,
     private readonly runtimeFacts: RuntimeFactsReader,
     private readonly runStore: RunStore,
+    private readonly checkpointStore?: RunCheckpointStore,
+    private readonly checkpointProcessor?: RunCheckpointProcessor,
   ) {}
 
   async reconcileRun(runId: string): Promise<void> {
+    await this.drainCheckpointEvents(runId);
     const completion = await this.controlPlaneStore.getLatestCompletion(runId);
     const fact = await this.runtimeFacts.getTerminalFact(runId);
     const run = await this.runStore.getRun(runId);
@@ -56,6 +65,9 @@ export class RuntimeReconciler {
         tokenUsage: completion.payload.tokenUsage,
         title: completion.payload.title,
       });
+      if (run) {
+        await this.maybeEmitTerminalProgressCheckpoint(run, completion.payload);
+      }
       return;
     }
 
@@ -76,6 +88,77 @@ export class RuntimeReconciler {
         phase: "failed",
         finishedAt: new Date().toISOString(),
         error: "completion missing after terminal runtime state",
+      });
+    }
+  }
+
+  private async drainCheckpointEvents(runId: string): Promise<void> {
+    if (!this.checkpointStore) {
+      return;
+    }
+
+    const events = await this.controlPlaneStore.listEventsAfterSequence(runId, 0);
+    for (const event of events) {
+      if (event.eventType !== "run.checkpoint") {
+        continue;
+      }
+
+      const { checkpointKey, checkpointType, payload, emittedAt } = event.payload;
+      if (typeof checkpointKey !== "string" || typeof checkpointType !== "string" || !isRunCheckpointType(checkpointType)) {
+        continue;
+      }
+
+      await this.emitAndProcessCheckpoint({
+        runId,
+        checkpointKey,
+        checkpointType,
+        payload: isRecord(payload) ? payload : undefined,
+        emittedAt: normalizeRunCheckpointEmittedAt(emittedAt, event.timestamp),
+      });
+    }
+  }
+
+  private async maybeEmitTerminalProgressCheckpoint(
+    run: Awaited<ReturnType<RunStore["getRun"]>> & {},
+    completion: NonNullable<Awaited<ReturnType<ControlPlaneStore["getLatestCompletion"]>>>["payload"],
+  ): Promise<void> {
+    if (!this.checkpointStore || !run || !isFeatureDeliveryAutoReviewOrRepairCiRun(run)) {
+      return;
+    }
+    if (await this.checkpointStore.hasCheckpoint(run.id, "external_ci_wait_started")) {
+      return;
+    }
+
+    await this.emitAndProcessCheckpoint({
+      runId: run.id,
+      checkpointKey: "terminal_progress_without_external_wait",
+      checkpointType: "run.completed_without_external_wait",
+      payload: {
+        reason: "reconciled_completed_without_external_ci_wait",
+        commitSha: completion.commitSha,
+        changedFiles: completion.changedFiles,
+      },
+    });
+  }
+
+  private async emitAndProcessCheckpoint(input: Parameters<RunCheckpointStore["emit"]>[0]): Promise<void> {
+    if (!this.checkpointStore) {
+      return;
+    }
+
+    const emitted = await this.checkpointStore.emit(input);
+    if (!this.checkpointProcessor || (!emitted.inserted && emitted.checkpoint.processedAt)) {
+      return;
+    }
+
+    try {
+      await this.checkpointProcessor.process(emitted.checkpoint);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logError("Failed to process reconciled run checkpoint", {
+        runId: input.runId,
+        checkpointKey: input.checkpointKey,
+        error: message,
       });
     }
   }

@@ -1,5 +1,12 @@
 import type { RunRecord } from "../types.js";
 import type { WorkItemRecord } from "../work-items/types.js";
+import {
+  FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
+  FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
+  FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
+  FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
+  FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
+} from "../pipeline/builtin-pipelines.js";
 
 export type RunIntent =
   | GenericTaskRunIntent
@@ -74,11 +81,11 @@ const FEATURE_DELIVERY_AUTO_REVIEW_KINDS = new Set([
 ]);
 
 const PIPELINE_BY_INTENT_KIND: Partial<Record<RunIntentKind, string>> = {
-  "feature_delivery.self_review": "pipeline",
-  "feature_delivery.apply_review_feedback": "pipeline",
-  "feature_delivery.repair_ci": "ci-fix",
-  "feature_delivery.sync_branch": "branch-sync",
-  "feature_delivery.finalize_pr": "ready-for-merge",
+  "feature_delivery.self_review": FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
+  "feature_delivery.apply_review_feedback": FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
+  "feature_delivery.repair_ci": FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
+  "feature_delivery.sync_branch": FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
+  "feature_delivery.finalize_pr": FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
 };
 
 const LEGACY_WORK_ITEM_SYSTEM_REQUESTERS = new Set([

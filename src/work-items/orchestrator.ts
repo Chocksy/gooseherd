@@ -8,6 +8,13 @@ import {
 import { applyWorkItemDecision } from "./feature-delivery-decision.js";
 import { reduceFeatureDelivery } from "./feature-delivery-reducer.js";
 import { RunStore } from "../store.js";
+import {
+  FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
+  FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
+  FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
+  FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
+  FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
+} from "../pipeline/builtin-pipelines.js";
 import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask, buildReadyForMergeTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { WorkItemStore } from "./store.js";
@@ -242,7 +249,7 @@ export class WorkItemOrchestrator {
         prNumber: current.githubPrNumber,
         workItemId: current.id,
         autoReviewSourceSubstate: current.substate,
-        pipelineHint: "branch-sync",
+        pipelineHint: FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
         intent: buildFeatureDeliverySyncBranchIntent(current, {
           maxBehindCommits,
           triggerReason: reason,
@@ -310,7 +317,7 @@ export class WorkItemOrchestrator {
         prNumber: current.githubPrNumber,
         workItemId: current.id,
         autoReviewSourceSubstate: current.substate,
-        pipelineHint: "ready-for-merge",
+        pipelineHint: FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
         intent: buildFeatureDeliveryFinalizePrIntent(current, {
           strategy: "squash",
           triggerReason: reason,
@@ -485,7 +492,7 @@ function resolveLaunchPlan(workItem: WorkItemRecord, reason?: string): {
           triggerReason: reason,
         }),
         legacyRequestedBy: AUTO_REVIEW_REQUESTED_BY,
-        legacyPipelineHint: "pipeline",
+        legacyPipelineHint: FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
         existingBranchName: workItem.githubPrHeadBranch,
         buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
       };
@@ -494,7 +501,7 @@ function resolveLaunchPlan(workItem: WorkItemRecord, reason?: string): {
         nextSubstate: workItem.substate,
         intent: buildFeatureDeliveryApplyReviewFeedbackIntent(workItem, { triggerReason: reason }),
         legacyRequestedBy: AUTO_REVIEW_REQUESTED_BY,
-        legacyPipelineHint: "pipeline",
+        legacyPipelineHint: FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
         existingBranchName: workItem.githubPrHeadBranch,
         buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
       };
@@ -506,7 +513,7 @@ function resolveLaunchPlan(workItem: WorkItemRecord, reason?: string): {
           triggerReason: reason,
         }),
         legacyRequestedBy: AUTO_REVIEW_REQUESTED_BY,
-        legacyPipelineHint: "pipeline",
+        legacyPipelineHint: FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
         existingBranchName: workItem.githubPrHeadBranch,
         buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
       };
@@ -515,7 +522,7 @@ function resolveLaunchPlan(workItem: WorkItemRecord, reason?: string): {
         nextSubstate: workItem.substate,
         intent: buildFeatureDeliveryRepairCiIntent(workItem, { triggerReason: reason }),
         legacyRequestedBy: CI_FIX_REQUESTED_BY,
-        legacyPipelineHint: "ci-fix",
+        legacyPipelineHint: FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
         existingBranchName: requireWorkItemPrHeadBranch(workItem),
         buildTask: (current) => buildCiFixTask(buildTaskInput(current)),
       };

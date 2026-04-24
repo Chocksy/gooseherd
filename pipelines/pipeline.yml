@@ -1,6 +1,6 @@
 version: 1
 name: "pipeline"
-description: "Unified pipeline — all nodes, orchestrator controls via skipNodes/enableNodes"
+description: "Generic/manual implementation pipeline. Feature-delivery WorkItem automation uses explicit intent-specific pipelines."
 
 context:
   max_validation_rounds: 2

@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { startWebhookServer } from "../src/observer/webhook-server.js";
-
-let nextPort = 33600 + Math.floor(Math.random() * 1000);
-
-function getPort(): number {
-  return nextPort++;
-}
 
 function signGitHubWebhook(body: string, secret: string): string {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -57,7 +52,6 @@ async function requestJson(
 }
 
 test("github webhook responds before waiting for async payload sync", async (t) => {
-  const port = getPort();
   let releasePayloadSync: (() => void) | undefined;
   const payloadSyncBlocked = new Promise<void>((resolve) => {
     releasePayloadSync = resolve;
@@ -69,7 +63,7 @@ test("github webhook responds before waiting for async payload sync", async (t) 
 
   const handle = startWebhookServer(
     {
-      port,
+      port: 0,
       githubWebhookSecret: "github-secret",
     },
     () => {},
@@ -93,6 +87,10 @@ test("github webhook responds before waiting for async payload sync", async (t) 
     }
     handle.server.once("listening", () => resolve());
   });
+  const address = handle.server.address();
+  assert.notEqual(address, null);
+  assert.notEqual(typeof address, "string");
+  const port = (address as AddressInfo).port;
 
   const body = {
     action: "labeled",

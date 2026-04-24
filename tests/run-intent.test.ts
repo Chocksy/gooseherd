@@ -21,8 +21,14 @@ const BASE_FEATURE = {
 
 test("selectPipelineIdForIntent maps feature-delivery intents to built-in pipelines", () => {
   const cases: Array<[RunIntent, string]> = [
-    [{ ...BASE_FEATURE, kind: "feature_delivery.self_review", sourceSubstate: "pr_adopted" }, "pipeline"],
-    [{ ...BASE_FEATURE, kind: "feature_delivery.apply_review_feedback", sourceSubstate: "applying_review_feedback" }, "pipeline"],
+    [
+      { ...BASE_FEATURE, kind: "feature_delivery.self_review", sourceSubstate: "pr_adopted" },
+      "feature-delivery-self-review",
+    ],
+    [
+      { ...BASE_FEATURE, kind: "feature_delivery.apply_review_feedback", sourceSubstate: "applying_review_feedback" },
+      "feature-delivery-review-feedback",
+    ],
     [{ ...BASE_FEATURE, kind: "feature_delivery.repair_ci", sourceSubstate: "ci_failed" }, "ci-fix"],
     [{ ...BASE_FEATURE, kind: "feature_delivery.sync_branch", maxBehindCommits: 5 }, "branch-sync"],
     [{ ...BASE_FEATURE, kind: "feature_delivery.finalize_pr", strategy: "squash" }, "ready-for-merge"],

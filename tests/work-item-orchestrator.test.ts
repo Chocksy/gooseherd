@@ -191,7 +191,7 @@ test("orchestrator promotes auto_review pr_adopted work items into collecting_co
   assert.equal(runRows[0]?.branchName, "feature/hbl-404");
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.runtime, "kubernetes");
-  assert.equal(runRows[0]?.pipelineHint, "pipeline");
+  assert.equal(runRows[0]?.pipelineHint, "feature-delivery-self-review");
   assert.equal(runRows[0]?.intentKind, "feature_delivery.self_review");
   assert.equal(runRows[0]?.intent?.kind, "feature_delivery.self_review");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "pr_adopted");
@@ -214,6 +214,7 @@ test("orchestrator auto-launches one linked run for auto_review items applying r
   assert.equal(runRows[0]?.workItemId, workItem.id);
   assert.equal(runRows[0]?.status, "queued");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "applying_review_feedback");
+  assert.equal(runRows[0]?.pipelineHint, "feature-delivery-review-feedback");
   assert.equal(runRows[0]?.intentKind, "feature_delivery.apply_review_feedback");
   assert.equal(runRows[0]?.intent?.kind, "feature_delivery.apply_review_feedback");
 });
@@ -259,7 +260,7 @@ test("orchestrator launches a self-review run for auto_review ci_green_pending_s
   assert.equal(workItemRow?.substate, "collecting_context");
   assert.equal(runRows.length, 1);
   assert.equal(runRows[0]?.requestedBy, "work-item:auto-review");
-  assert.equal(runRows[0]?.pipelineHint, "pipeline");
+  assert.equal(runRows[0]?.pipelineHint, "feature-delivery-self-review");
   assert.equal(runRows[0]?.intentKind, "feature_delivery.self_review");
   assert.equal(runRows[0]?.intent?.kind, "feature_delivery.self_review");
   assert.equal(runRows[0]?.branchName, "feature/hbl-404");

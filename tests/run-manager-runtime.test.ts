@@ -204,6 +204,56 @@ test("processRun passes resolved pipelineFile to backend execution", async () =>
   await testDb.cleanup();
 });
 
+test("processRun resolves work-item pipeline from intent instead of legacy pipelineHint", async () => {
+  const { store, testDb } = await setupTestStore();
+  const config = makeConfig({ pipelineFile: "pipelines/default.yml" } as Partial<AppConfig>);
+  let receivedPipelineFile: string | undefined;
+  const runtimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run, ctx) => {
+        receivedPipelineFile = ctx.pipelineFile;
+        return {
+          branchName: run.branchName,
+          logsPath: `/tmp/${run.id}.log`,
+          commitSha: "abc123",
+          changedFiles: [],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+  const manager = new RunManager(config, store, runtimeRegistry, undefined);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "repair CI",
+    baseBranch: "main",
+    requestedBy: "work-item:ci-fix",
+    channelId: "C1",
+    threadTs: "1",
+    pipelineHint: "wrong-pipeline",
+    workItemId: "11111111-1111-1111-1111-111111111111",
+    prUrl: "https://github.com/org/repo/pull/3",
+    prNumber: 3,
+    intent: {
+      version: 1,
+      kind: "feature_delivery.repair_ci",
+      source: "work_item",
+      workItemId: "11111111-1111-1111-1111-111111111111",
+      repo: "org/repo",
+      prNumber: 3,
+      prUrl: "https://github.com/org/repo/pull/3",
+      sourceSubstate: "ci_failed",
+    },
+  });
+
+  await waitForRunDone(store, run.id);
+  assert.match(receivedPipelineFile ?? "", /pipelines\/ci-fix\.yml$/);
+  await testDb.cleanup();
+});
+
 test("requeueExistingRun dispatches using persisted runtime instead of config default", async () => {
   const { store, testDb } = await setupTestStore();
   const config = makeConfig({ sandboxRuntime: "docker" } as Partial<AppConfig>);

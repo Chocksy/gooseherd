@@ -5,6 +5,7 @@ import type { ContextBag } from "../context-bag.js";
 import type { RunRecord } from "../../types.js";
 import type { RunPrefetchContext } from "../../runtime/run-context-types.js";
 import { runShellCapture, shellEscape } from "../shell.js";
+import { isFeatureDeliveryAutoReviewRun } from "../../runs/run-intent.js";
 
 /**
  * Hydrate context node: build prompt file with run context and instructions.
@@ -728,7 +729,7 @@ function getExternalContextInstructions(prefetchContext: RunPrefetchContext | un
 }
 
 function getAutoReviewSummaryInstructions(run: RunRecord): string[] {
-  if (run.requestedBy !== "work-item:auto-review") {
+  if (!isFeatureDeliveryAutoReviewRun(run)) {
     return [];
   }
 

@@ -165,6 +165,17 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
     const result = await backend.execute(makeRun({
       prefetchContext,
       autoReviewSourceSubstate: "pr_adopted",
+      intent: {
+        version: 1,
+        kind: "feature_delivery.self_review",
+        source: "work_item",
+        workItemId: "11111111-1111-1111-1111-111111111111",
+        repo: "org/repo",
+        prNumber: 42,
+        prUrl: "https://github.com/org/repo/pull/42",
+        sourceSubstate: "pr_adopted",
+      },
+      intentKind: "feature_delivery.self_review",
     }), {
       onPhase: async () => undefined,
       pipelineFile: "pipelines/kubernetes-smoke.yml",
@@ -188,6 +199,8 @@ test("kubernetes backend launches job, waits for success, redacts manifest token
     assert.equal(revokedRunId, "run-k8s-backend-1");
     assert.deepEqual(createdEnvelope?.payloadJson.prefetch, prefetchContext);
     assert.equal(createdEnvelope?.payloadJson.autoReviewSourceSubstate, "pr_adopted");
+    assert.equal((createdEnvelope?.payloadJson.intent as { kind?: string } | undefined)?.kind, "feature_delivery.self_review");
+    assert.equal(createdEnvelope?.payloadJson.intentKind, "feature_delivery.self_review");
     assert.deepEqual(createdEnvelope?.payloadJson.runnerConfig, {
       agentCommandTemplate: "profile command",
       agentFollowUpTemplate: "profile follow-up",

@@ -1116,6 +1116,185 @@ test("github sync clears ci_green but suppresses ci-fix launch when aggregate CI
   assert.deepEqual(reconcileCalls, []);
 });
 
+test("github sync suppresses failed-CI reconcile for active intent-based self-review and repair-ci runs", async (t) => {
+  for (const intentKind of ["feature_delivery.self_review", "feature_delivery.repair_ci"] as const) {
+    await t.test(intentKind, async (t) => {
+      const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls, db } = await createGitHubSyncFixture({
+        githubService: {
+          getPullRequestCiSnapshot: async () => ({
+            headSha: `active-${intentKind}`,
+            conclusion: "failure",
+            failedRuns: [{ id: 1, name: "unit-tests", status: "completed", conclusion: "failure" }],
+            failedAnnotations: [],
+          }),
+        },
+      });
+      t.after(cleanup);
+
+      const delivery = await service.createDeliveryFromJira({
+        title: `Intent active ${intentKind}`,
+        summary: "Do not launch ci-fix twice",
+        ownerTeamId,
+        homeChannelId: "C_GROWTH",
+        homeThreadTs: `1740000000.${intentKind === "feature_delivery.self_review" ? "701" : "702"}`,
+        jiraIssueKey: intentKind === "feature_delivery.self_review" ? "HBL-701" : "HBL-702",
+        createdByUserId: pmUserId,
+        repo: "hubstaff/gooseherd",
+        githubPrNumber: intentKind === "feature_delivery.self_review" ? 701 : 702,
+        githubPrUrl: `https://github.com/hubstaff/gooseherd/pull/${intentKind === "feature_delivery.self_review" ? 701 : 702}`,
+        githubPrHeadSha: `active-${intentKind}`,
+        initialState: "auto_review",
+        initialSubstate: "ci_green_pending_self_review",
+        flags: ["pr_opened", "ci_green", "github_pr_adopted", "ai_assist_enabled"],
+      });
+
+      const runStore = new RunStore(db);
+      await runStore.init();
+      const activeRun = await runStore.createRun(
+        {
+          repoSlug: delivery.repo!,
+          task: "Existing intent system run",
+          baseBranch: "main",
+          requestedBy: "manual:dashboard",
+          channelId: delivery.homeChannelId,
+          threadTs: delivery.homeThreadTs,
+          runtime: "local",
+          workItemId: delivery.id,
+          prUrl: delivery.githubPrUrl,
+          prNumber: delivery.githubPrNumber,
+          intent: intentKind === "feature_delivery.self_review"
+            ? {
+                version: 1,
+                kind: "feature_delivery.self_review",
+                source: "work_item",
+                workItemId: delivery.id,
+                repo: delivery.repo!,
+                prNumber: delivery.githubPrNumber!,
+                prUrl: delivery.githubPrUrl!,
+                sourceSubstate: "ci_green_pending_self_review",
+              }
+            : {
+                version: 1,
+                kind: "feature_delivery.repair_ci",
+                source: "work_item",
+                workItemId: delivery.id,
+                repo: delivery.repo!,
+                prNumber: delivery.githubPrNumber!,
+                prUrl: delivery.githubPrUrl!,
+                sourceSubstate: "ci_failed",
+              },
+        },
+        "gooseherd",
+        delivery.githubPrHeadBranch,
+      );
+      await runStore.updateRun(activeRun.id, { status: "running", phase: "agent" });
+
+      const updated = await sync.handleWebhookPayload({
+        eventType: "check_suite",
+        action: "completed",
+        repo: "hubstaff/gooseherd",
+        conclusion: "failure",
+        status: "completed",
+        headSha: `active-${intentKind}`,
+        pullRequestNumbers: [delivery.githubPrNumber!],
+      });
+
+      assert.equal(updated?.substate, "ci_green_pending_self_review");
+      assert.deepEqual(reconcileCalls, []);
+    });
+  }
+});
+
+test("github sync does not suppress failed-CI reconcile for active sync-branch or finalize-pr intents", async (t) => {
+  for (const intentKind of ["feature_delivery.sync_branch", "feature_delivery.finalize_pr"] as const) {
+    await t.test(intentKind, async (t) => {
+      const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls, db } = await createGitHubSyncFixture({
+        githubService: {
+          getPullRequestCiSnapshot: async () => ({
+            headSha: `nonblocking-${intentKind}`,
+            conclusion: "failure",
+            failedRuns: [{ id: 1, name: "unit-tests", status: "completed", conclusion: "failure" }],
+            failedAnnotations: [],
+          }),
+        },
+      });
+      t.after(cleanup);
+
+      const prNumber = intentKind === "feature_delivery.sync_branch" ? 703 : 704;
+      const delivery = await service.createDeliveryFromJira({
+        title: `Nonblocking ${intentKind}`,
+        summary: "CI failure should still reconcile",
+        ownerTeamId,
+        homeChannelId: "C_GROWTH",
+        homeThreadTs: `1740000000.${prNumber}`,
+        jiraIssueKey: `HBL-${prNumber}`,
+        createdByUserId: pmUserId,
+        repo: "hubstaff/gooseherd",
+        githubPrNumber: prNumber,
+        githubPrUrl: `https://github.com/hubstaff/gooseherd/pull/${prNumber}`,
+        githubPrHeadSha: `nonblocking-${intentKind}`,
+        initialState: "auto_review",
+        initialSubstate: "ci_green_pending_self_review",
+        flags: ["pr_opened", "ci_green", "github_pr_adopted", "ai_assist_enabled"],
+      });
+
+      const runStore = new RunStore(db);
+      await runStore.init();
+      const activeRun = await runStore.createRun(
+        {
+          repoSlug: delivery.repo!,
+          task: "Existing nonblocking intent run",
+          baseBranch: "main",
+          requestedBy: "manual:dashboard",
+          channelId: delivery.homeChannelId,
+          threadTs: delivery.homeThreadTs,
+          runtime: "local",
+          workItemId: delivery.id,
+          prUrl: delivery.githubPrUrl,
+          prNumber: delivery.githubPrNumber,
+          intent: intentKind === "feature_delivery.sync_branch"
+            ? {
+                version: 1,
+                kind: "feature_delivery.sync_branch",
+                source: "work_item",
+                workItemId: delivery.id,
+                repo: delivery.repo!,
+                prNumber: delivery.githubPrNumber!,
+                prUrl: delivery.githubPrUrl!,
+                maxBehindCommits: 5,
+              }
+            : {
+                version: 1,
+                kind: "feature_delivery.finalize_pr",
+                source: "work_item",
+                workItemId: delivery.id,
+                repo: delivery.repo!,
+                prNumber: delivery.githubPrNumber!,
+                prUrl: delivery.githubPrUrl!,
+                strategy: "squash",
+              },
+        },
+        "gooseherd",
+        delivery.githubPrHeadBranch,
+      );
+      await runStore.updateRun(activeRun.id, { status: "running", phase: "agent" });
+
+      const updated = await sync.handleWebhookPayload({
+        eventType: "check_suite",
+        action: "completed",
+        repo: "hubstaff/gooseherd",
+        conclusion: "failure",
+        status: "completed",
+        headSha: `nonblocking-${intentKind}`,
+        pullRequestNumbers: [delivery.githubPrNumber!],
+      });
+
+      assert.equal(updated?.substate, "ci_failed");
+      assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.ci_failed" }]);
+    });
+  }
+});
+
 test("github sync ignores stale failed CI for an older head sha", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
     githubService: {

@@ -1,5 +1,6 @@
 import type { RunPrefetchContext } from "./runtime/run-context-types.js";
 import type { SandboxRuntime } from "./runtime/runtime-mode.js";
+import type { RunIntent, RunIntentKind } from "./runs/run-intent.js";
 
 export type RunStatus =
   | "queued"
@@ -98,6 +99,8 @@ export interface RunRecord {
   workItemId?: string;
   prefetchContext?: RunPrefetchContext;
   autoReviewSourceSubstate?: string;
+  intent?: RunIntent;
+  intentKind?: RunIntentKind;
 }
 
 export interface NewRunInput {
@@ -127,6 +130,7 @@ export interface NewRunInput {
   prNumber?: number;
   prefetchContext?: RunPrefetchContext;
   autoReviewSourceSubstate?: string;
+  intent?: RunIntent;
 }
 
 export interface ExecutionResult {

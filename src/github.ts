@@ -568,6 +568,9 @@ export class GitHubService {
       if (params.updateExistingBody !== false) {
         updateParams.body = params.body;
       }
+      if (!Object.hasOwn(updateParams, "title") && !Object.hasOwn(updateParams, "body")) {
+        return { url: pr.html_url, number: pr.number };
+      }
       await this.octokit.pulls.update(updateParams);
       return { url: pr.html_url, number: pr.number };
     }

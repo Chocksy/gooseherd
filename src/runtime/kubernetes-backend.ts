@@ -80,6 +80,8 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
         run: payload,
         prefetch: payload.prefetchContext,
         autoReviewSourceSubstate: payload.autoReviewSourceSubstate,
+        intent: payload.intent,
+        intentKind: payload.intentKind,
         ...(this.deps.runnerConfigSource ? { runnerConfig: buildRunnerConfigPayload(this.deps.runnerConfigSource) } : {}),
       },
       runtime: "kubernetes",

@@ -14,6 +14,7 @@ import type { LearningStore } from "./observer/learning-store.js";
 import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
 import type { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
 import type { RunPrefetchContext } from "./runtime/run-context-types.js";
+import { selectPipelineIdForIntent } from "./runs/run-intent.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -222,7 +223,7 @@ export class RunManager {
       durationMs,
       costUsd: run.tokenUsage?.costUsd ?? 0,
       changedFiles: run.changedFiles?.length ?? 0,
-      pipelineId: run.pipelineHint,
+      pipelineId: selectPipelineIdForIntent(run.intent, run.pipelineHint),
       timestamp: new Date().toISOString()
     });
   }
@@ -664,7 +665,7 @@ export class RunManager {
         await upsertRunCard();
       };
 
-      const pipelineFile = await this.resolvePipeline(run.pipelineHint, run.id);
+      const pipelineFile = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
       run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
       const backend = this.getBackend(run.runtime);
       const result = await backend.execute(run, {

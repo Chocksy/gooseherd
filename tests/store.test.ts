@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { teams, users } from "../src/db/schema.js";
+import { runs, teams, users } from "../src/db/schema.js";
 import { mapPhaseToRunStatus, RunStore } from "../src/store.js";
 import { WorkItemStore } from "../src/work-items/store.js";
 import { createTestDb } from "./helpers/test-db.js";
 
-async function createStore(): Promise<{ store: RunStore; cleanup: () => Promise<void> }> {
+async function createStore(): Promise<{ store: RunStore; db: Awaited<ReturnType<typeof createTestDb>>["db"]; cleanup: () => Promise<void> }> {
   const testDb = await createTestDb();
   const store = new RunStore(testDb.db);
   await store.init();
-  return { store, cleanup: testDb.cleanup };
+  return { store, db: testDb.db, cleanup: testDb.cleanup };
 }
 
 test("createRun stores queued phase and metadata updates persist", async (t) => {
@@ -116,6 +116,110 @@ test("RunStore persists prefetchContext and autoReviewSourceSubstate", async (t)
   assert.equal(loaded?.prefetchContext?.workItem.id, "11111111-1111-1111-1111-111111111111");
   assert.equal(loaded?.prefetchContext?.github?.pr.title, "Prefetch test PR");
   assert.equal(loaded?.prefetchContext?.jira?.issue.key, "HBL-1");
+});
+
+test("RunStore persists explicit run intent and derives legacy intent on reads", async (t) => {
+  const { store, db, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const intent = {
+    version: 1,
+    kind: "generic_task",
+    source: "dashboard",
+    requestedBy: "manual:dashboard",
+    pipelineHint: "custom-pipeline",
+  } as const;
+
+  const created = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "intent test",
+      baseBranch: "main",
+      requestedBy: "manual:dashboard",
+      channelId: "dashboard",
+      threadTs: "123.456",
+      runtime: "local",
+      intent,
+    },
+    "gooseherd",
+  );
+
+  assert.deepEqual(created.intent, intent);
+  assert.equal(created.intentKind, "generic_task");
+
+  await db.insert(runs).values({
+    id: "22222222-2222-2222-2222-222222222222",
+    runtime: "local",
+    status: "queued",
+    phase: "queued",
+    repoSlug: "owner/repo",
+    task: "legacy run",
+    baseBranch: "main",
+    branchName: "gooseherd/legacy",
+    requestedBy: "work-item:auto-review",
+    channelId: "C123",
+    threadTs: "123.456",
+    prUrl: "https://github.com/owner/repo/pull/7",
+    prNumber: 7,
+    workItemId: "11111111-1111-1111-1111-111111111111",
+    autoReviewSourceSubstate: "applying_review_feedback",
+  });
+
+  const legacy = await store.getRun("22222222-2222-2222-2222-222222222222");
+  assert.equal(legacy?.intent?.kind, "feature_delivery.apply_review_feedback");
+  assert.equal(legacy?.intentKind, "feature_delivery.apply_review_feedback");
+});
+
+test("RunStore derives intent kind from the validated or derived intent", async (t) => {
+  const { store, db, cleanup } = await createStore();
+  t.after(cleanup);
+
+  await db.insert(runs).values({
+    id: "33333333-3333-3333-3333-333333333333",
+    runtime: "local",
+    status: "queued",
+    phase: "queued",
+    repoSlug: "owner/repo",
+    task: "mismatched intent",
+    baseBranch: "main",
+    branchName: "gooseherd/mismatched",
+    requestedBy: "work-item:auto-review",
+    channelId: "C123",
+    threadTs: "123.456",
+    prUrl: "https://github.com/owner/repo/pull/9",
+    prNumber: 9,
+    workItemId: "11111111-1111-1111-1111-111111111111",
+    autoReviewSourceSubstate: "applying_review_feedback",
+    intentKind: "feature_delivery.repair_ci",
+  });
+
+  const loaded = await store.getRun("33333333-3333-3333-3333-333333333333");
+
+  assert.equal(loaded?.intent?.kind, "feature_delivery.apply_review_feedback");
+  assert.equal(loaded?.intentKind, "feature_delivery.apply_review_feedback");
+});
+
+test("RunStore normalizes invalid explicit intent before persisting", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const created = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "invalid intent",
+      baseBranch: "main",
+      requestedBy: "manual:dashboard",
+      channelId: "dashboard",
+      threadTs: "123.456",
+      runtime: "local",
+      intent: { version: 1, kind: "generic_task" } as never,
+    },
+    "gooseherd",
+  );
+
+  assert.equal(created.intent?.kind, "generic_task");
+  assert.equal(created.intent?.source, "dashboard");
+  assert.equal(created.intentKind, "generic_task");
 });
 
 test("RunStore can clear persisted work-item launch context fields", async (t) => {

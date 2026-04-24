@@ -458,6 +458,41 @@ test("GitHubService.findOrCreatePullRequest preserves title when updateExistingT
   assert.equal(updates[0]?.body, "body may still be refreshed");
 });
 
+test("GitHubService.findOrCreatePullRequest skips update when title and body are both preserved", async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    pulls: {
+      list: async () => ({
+        data: [
+          {
+            number: 8,
+            html_url: "https://github.com/vsevolod/openai_bot/pull/8",
+          },
+        ],
+      }),
+      update: async (params: Record<string, unknown>) => {
+        updates.push(params);
+        return { data: { html_url: "https://github.com/vsevolod/openai_bot/pull/8", number: 8 } };
+      },
+    },
+  };
+
+  const result = await service.findOrCreatePullRequest({
+    repoSlug: "vsevolod/openai_bot",
+    title: "gooseherd: Preserve adopted PR metadata",
+    body: "body should not be sent",
+    head: "codex/add-gpt-5-5-model",
+    base: "master",
+    updateExistingTitle: false,
+    updateExistingBody: false,
+  });
+
+  assert.equal(result.number, 8);
+  assert.equal(result.url, "https://github.com/vsevolod/openai_bot/pull/8");
+  assert.deepEqual(updates, []);
+});
+
 test("GitHubService: unresolved review comments keep only unresolved threads", async () => {
   const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
   service.octokit = {

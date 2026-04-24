@@ -192,6 +192,8 @@ test("orchestrator promotes auto_review pr_adopted work items into collecting_co
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.runtime, "kubernetes");
   assert.equal(runRows[0]?.pipelineHint, "pipeline");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.self_review");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.self_review");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "pr_adopted");
   assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/77");
   assert.equal(runRows[0]?.prNumber, 77);
@@ -212,6 +214,8 @@ test("orchestrator auto-launches one linked run for auto_review items applying r
   assert.equal(runRows[0]?.workItemId, workItem.id);
   assert.equal(runRows[0]?.status, "queued");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "applying_review_feedback");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.apply_review_feedback");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.apply_review_feedback");
 });
 
 test("orchestrator launches a standalone ci-fix run for auto_review ci_failed", async (t) => {
@@ -231,6 +235,8 @@ test("orchestrator launches a standalone ci-fix run for auto_review ci_failed", 
   assert.equal(runRows.length, 1);
   assert.equal(runRows[0]?.requestedBy, "work-item:ci-fix");
   assert.equal(runRows[0]?.pipelineHint, "ci-fix");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.repair_ci");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.repair_ci");
   assert.equal(runRows[0]?.branchName, "feature/hbl-404");
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_failed");
@@ -254,6 +260,8 @@ test("orchestrator launches a self-review run for auto_review ci_green_pending_s
   assert.equal(runRows.length, 1);
   assert.equal(runRows[0]?.requestedBy, "work-item:auto-review");
   assert.equal(runRows[0]?.pipelineHint, "pipeline");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.self_review");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.self_review");
   assert.equal(runRows[0]?.branchName, "feature/hbl-404");
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_green_pending_self_review");
@@ -302,6 +310,8 @@ test("orchestrator queues a standalone branch-sync run for stale ready_for_merge
   assert.equal(runRows.length, 1);
   assert.equal(runRows[0]?.requestedBy, "work-item:branch-sync");
   assert.equal(runRows[0]?.pipelineHint, "branch-sync");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.sync_branch");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.sync_branch");
   assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/90");
   assert.equal(runRows[0]?.prNumber, 90);
   assert.equal(runRows[0]?.branchName, "feature/hbl-405");
@@ -332,6 +342,8 @@ test("orchestrator queues a standalone ready-for-merge run for multi-commit PR w
   assert.equal(runRows.length, 1);
   assert.equal(runRows[0]?.requestedBy, "work-item:ready-for-merge");
   assert.equal(runRows[0]?.pipelineHint, "ready-for-merge");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.finalize_pr");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.finalize_pr");
   assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/90");
   assert.equal(runRows[0]?.prNumber, 90);
   assert.equal(runRows[0]?.branchName, "feature/hbl-405");
@@ -563,6 +575,47 @@ test("orchestrator reconcile ignores unrelated active linked runs when auto-revi
   assert.equal(runRows.length, 2);
   assert.ok(runRows.some((run) => run.requestedBy === "manual:dashboard" && run.status === "queued"));
   assert.ok(runRows.some((run) => run.requestedBy === "work-item:auto-review" && run.status === "queued"));
+});
+
+test("orchestrator reconcile does not treat active branch-sync run as active auto-review automation", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+
+  const branchSync = await runStore.createRun(
+    {
+      repoSlug: workItem.repo,
+      task: `Sync branch for ${workItem.title}`,
+      baseBranch: "main",
+      requestedBy: "work-item:branch-sync",
+      channelId: workItem.homeChannelId,
+      threadTs: workItem.homeThreadTs,
+      runtime: "local",
+      workItemId: workItem.id,
+      prUrl: workItem.githubPrUrl,
+      prNumber: workItem.githubPrNumber,
+      intent: {
+        version: 1,
+        kind: "feature_delivery.sync_branch",
+        source: "work_item",
+        workItemId: workItem.id,
+        repo: workItem.repo,
+        prNumber: workItem.githubPrNumber!,
+        prUrl: workItem.githubPrUrl!,
+        maxBehindCommits: 5,
+      },
+    },
+    "gooseherd",
+    workItem.githubPrHeadBranch,
+  );
+  await runStore.updateRun(branchSync.id, { status: "running", phase: "agent" });
+
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+  await reconcileWorkItem(db, workItem.id, "github.ci_failed");
+
+  const runRows = await runStore.listRunsForWorkItem(workItem.id);
+  assert.equal(runRows.length, 2);
+  assert.ok(runRows.some((run) => run.intent?.kind === "feature_delivery.sync_branch"));
+  assert.ok(runRows.some((run) => run.intent?.kind === "feature_delivery.repair_ci"));
 });
 
 test("orchestrator reconcile does not duplicate an existing active work-item:ci-fix run", async (t) => {

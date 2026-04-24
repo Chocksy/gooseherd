@@ -1,6 +1,7 @@
 import type { Database } from "../db/index.js";
 import { sql } from "drizzle-orm";
 import type { SandboxRuntime } from "../runtime/runtime-mode.js";
+import type { RunRecord } from "../types.js";
 import {
   canAutoRebaseFeatureDeliveryBranch,
 } from "./feature-delivery-policy.js";
@@ -10,6 +11,17 @@ import { RunStore } from "../store.js";
 import { buildAutoReviewTask, buildBranchSyncTask, buildCiFixTask, buildReadyForMergeTask } from "./auto-review-task.js";
 import { WorkItemEventsStore } from "./events-store.js";
 import { WorkItemStore } from "./store.js";
+import {
+  buildFeatureDeliveryApplyReviewFeedbackIntent,
+  buildFeatureDeliveryFinalizePrIntent,
+  buildFeatureDeliveryRepairCiIntent,
+  buildFeatureDeliverySelfReviewIntent,
+  buildFeatureDeliverySyncBranchIntent,
+  isFeatureDeliveryAutoReviewOrRepairCiRun,
+  isFeatureDeliveryAutoReviewRun,
+  isSuccessfulFeatureDeliveryProgressCheckpoint,
+  type FeatureDeliveryRunIntent,
+} from "../runs/run-intent.js";
 import {
   AI_ASSIST_DISABLED_FLAG,
   AI_ASSIST_ENABLED_FLAG,
@@ -22,7 +34,6 @@ const AUTO_REVIEW_REQUESTED_BY = "work-item:auto-review";
 const CI_FIX_REQUESTED_BY = "work-item:ci-fix";
 const BRANCH_SYNC_REQUESTED_BY = "work-item:branch-sync";
 const READY_FOR_MERGE_REQUESTED_BY = "work-item:ready-for-merge";
-const WORK_ITEM_SYSTEM_RUN_REQUESTERS = new Set([AUTO_REVIEW_REQUESTED_BY, CI_FIX_REQUESTED_BY]);
 const ACTIVE_AUTO_REVIEW_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
 const PREFETCH_FAILURE_PATTERN = /prefetch/i;
 
@@ -80,7 +91,7 @@ export class WorkItemOrchestrator {
         return;
       }
 
-      const launchPlan = resolveLaunchPlan(current);
+      const launchPlan = resolveLaunchPlan(current, reason);
       updatedWorkItem = await txWorkItems.updateState(workItemId, {
         state: current.state,
         substate: launchPlan.nextSubstate,
@@ -90,7 +101,7 @@ export class WorkItemOrchestrator {
         repoSlug: requireWorkItemRepo(current),
         task: launchPlan.buildTask(current),
         baseBranch: current.githubPrBaseBranch ?? baseBranch,
-        requestedBy: launchPlan.requestedBy,
+        requestedBy: launchPlan.legacyRequestedBy,
         channelId: current.homeChannelId,
         threadTs: current.homeThreadTs,
         runtime,
@@ -98,7 +109,8 @@ export class WorkItemOrchestrator {
         prNumber: current.githubPrNumber,
         workItemId: current.id,
         autoReviewSourceSubstate: current.substate,
-        pipelineHint: launchPlan.pipelineHint,
+        pipelineHint: launchPlan.legacyPipelineHint,
+        intent: launchPlan.intent,
       }, "gooseherd", launchPlan.existingBranchName);
       launchedRunId = queuedRun.id;
 
@@ -108,7 +120,8 @@ export class WorkItemOrchestrator {
         payload: {
           runId: queuedRun.id,
           reason,
-          requestedBy: launchPlan.requestedBy,
+          requestedBy: launchPlan.legacyRequestedBy,
+          intentKind: launchPlan.intent.kind,
           substate: updatedWorkItem.substate,
         },
       });
@@ -171,7 +184,7 @@ export class WorkItemOrchestrator {
       }
 
       const latestRuns = await txRuns.listRunsForWorkItem(latestRun.workItemId!);
-      const latestAutoReview = latestRuns.find((candidate) => candidate.requestedBy === AUTO_REVIEW_REQUESTED_BY);
+      const latestAutoReview = latestRuns.find((candidate) => isFeatureDeliveryAutoReviewRun(candidate));
       if (!latestAutoReview || latestAutoReview.id !== latestRun.id) {
         return;
       }
@@ -230,6 +243,10 @@ export class WorkItemOrchestrator {
         workItemId: current.id,
         autoReviewSourceSubstate: current.substate,
         pipelineHint: "branch-sync",
+        intent: buildFeatureDeliverySyncBranchIntent(current, {
+          maxBehindCommits,
+          triggerReason: reason,
+        }),
       }, "gooseherd", requireWorkItemPrHeadBranch(current));
       launchedRunId = queuedRun.id;
       currentWorkItem = current;
@@ -294,6 +311,10 @@ export class WorkItemOrchestrator {
         workItemId: current.id,
         autoReviewSourceSubstate: current.substate,
         pipelineHint: "ready-for-merge",
+        intent: buildFeatureDeliveryFinalizePrIntent(current, {
+          strategy: "squash",
+          triggerReason: reason,
+        }),
       }, "gooseherd", requireWorkItemPrHeadBranch(current));
       launchedRunId = queuedRun.id;
       currentWorkItem = current;
@@ -447,10 +468,11 @@ function buildTaskInput(workItem: WorkItemRecord) {
   };
 }
 
-function resolveLaunchPlan(workItem: WorkItemRecord): {
+function resolveLaunchPlan(workItem: WorkItemRecord, reason?: string): {
   nextSubstate: string | undefined;
-  requestedBy: string;
-  pipelineHint: string;
+  intent: FeatureDeliveryRunIntent;
+  legacyRequestedBy: string;
+  legacyPipelineHint: string;
   existingBranchName?: string;
   buildTask: (current: WorkItemRecord) => string;
 } {
@@ -458,32 +480,42 @@ function resolveLaunchPlan(workItem: WorkItemRecord): {
     case "pr_adopted":
       return {
         nextSubstate: "collecting_context",
-        requestedBy: AUTO_REVIEW_REQUESTED_BY,
-        pipelineHint: "pipeline",
+        intent: buildFeatureDeliverySelfReviewIntent(workItem, {
+          sourceSubstate: "pr_adopted",
+          triggerReason: reason,
+        }),
+        legacyRequestedBy: AUTO_REVIEW_REQUESTED_BY,
+        legacyPipelineHint: "pipeline",
         existingBranchName: workItem.githubPrHeadBranch,
         buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
       };
     case "applying_review_feedback":
       return {
         nextSubstate: workItem.substate,
-        requestedBy: AUTO_REVIEW_REQUESTED_BY,
-        pipelineHint: "pipeline",
+        intent: buildFeatureDeliveryApplyReviewFeedbackIntent(workItem, { triggerReason: reason }),
+        legacyRequestedBy: AUTO_REVIEW_REQUESTED_BY,
+        legacyPipelineHint: "pipeline",
         existingBranchName: workItem.githubPrHeadBranch,
         buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
       };
     case "ci_green_pending_self_review":
       return {
         nextSubstate: "collecting_context",
-        requestedBy: AUTO_REVIEW_REQUESTED_BY,
-        pipelineHint: "pipeline",
+        intent: buildFeatureDeliverySelfReviewIntent(workItem, {
+          sourceSubstate: "ci_green_pending_self_review",
+          triggerReason: reason,
+        }),
+        legacyRequestedBy: AUTO_REVIEW_REQUESTED_BY,
+        legacyPipelineHint: "pipeline",
         existingBranchName: workItem.githubPrHeadBranch,
         buildTask: (current) => buildAutoReviewTask(buildTaskInput(current)),
       };
     case "ci_failed":
       return {
         nextSubstate: workItem.substate,
-        requestedBy: CI_FIX_REQUESTED_BY,
-        pipelineHint: "ci-fix",
+        intent: buildFeatureDeliveryRepairCiIntent(workItem, { triggerReason: reason }),
+        legacyRequestedBy: CI_FIX_REQUESTED_BY,
+        legacyPipelineHint: "ci-fix",
         existingBranchName: requireWorkItemPrHeadBranch(workItem),
         buildTask: (current) => buildCiFixTask(buildTaskInput(current)),
       };
@@ -492,15 +524,12 @@ function resolveLaunchPlan(workItem: WorkItemRecord): {
   }
 }
 
-function isActiveWorkItemSystemRun(run: { status: string; requestedBy: string }): boolean {
-  return WORK_ITEM_SYSTEM_RUN_REQUESTERS.has(run.requestedBy) && ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status);
+function isActiveWorkItemSystemRun(run: RunRecord): boolean {
+  return isFeatureDeliveryAutoReviewOrRepairCiRun(run) && ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status);
 }
 
-function isSuccessfulWorkItemCheckpoint(run: { status: string; requestedBy: string }): boolean {
-  if (!WORK_ITEM_SYSTEM_RUN_REQUESTERS.has(run.requestedBy)) {
-    return false;
-  }
-  return run.status === "awaiting_ci" || run.status === "completed";
+function isSuccessfulWorkItemCheckpoint(run: RunRecord): boolean {
+  return isSuccessfulFeatureDeliveryProgressCheckpoint(run);
 }
 
 function isLatestRollbackCandidate(run: {
@@ -509,6 +538,7 @@ function isLatestRollbackCandidate(run: {
   error?: string;
   workItemId?: string;
   autoReviewSourceSubstate?: string;
+  intent?: RunRecord["intent"];
 } | undefined): run is {
   status: string;
   requestedBy: string;
@@ -521,7 +551,7 @@ function isLatestRollbackCandidate(run: {
   }
   return (
     run.status === "failed" &&
-    run.requestedBy === AUTO_REVIEW_REQUESTED_BY &&
+    isFeatureDeliveryAutoReviewRun(run as RunRecord) &&
     typeof run.error === "string" &&
     PREFETCH_FAILURE_PATTERN.test(run.error) &&
     typeof run.workItemId === "string" &&

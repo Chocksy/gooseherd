@@ -105,6 +105,72 @@ test("deriveRunRecordFromPayload preserves prefetched context and auto-review su
   assert.equal(run.autoReviewSourceSubstate, "pr_adopted");
 });
 
+test("deriveRunRecordFromPayload preserves intent and derives legacy intent when missing", () => {
+  const explicit = deriveRunRecordFromPayload({
+    ...samplePayload,
+    payloadJson: {
+      run: {
+        ...samplePayload.payloadJson.run,
+        intent: {
+          version: 1,
+          kind: "feature_delivery.repair_ci",
+          source: "work_item",
+          workItemId: "11111111-1111-1111-1111-111111111111",
+          repo: "org/repo",
+          prNumber: 7,
+          prUrl: "https://github.com/org/repo/pull/7",
+          sourceSubstate: "ci_failed",
+        },
+        intentKind: "feature_delivery.repair_ci",
+      },
+    },
+  });
+  assert.equal(explicit.intent?.kind, "feature_delivery.repair_ci");
+  assert.equal(explicit.intentKind, "feature_delivery.repair_ci");
+
+  const legacy = deriveRunRecordFromPayload({
+    ...samplePayload,
+    payloadJson: {
+      run: {
+        ...samplePayload.payloadJson.run,
+        requestedBy: "work-item:auto-review",
+        workItemId: "11111111-1111-1111-1111-111111111111",
+        repoSlug: "org/repo",
+        prNumber: 8,
+        prUrl: "https://github.com/org/repo/pull/8",
+        autoReviewSourceSubstate: "applying_review_feedback",
+      },
+    },
+  });
+  assert.equal(legacy.intent?.kind, "feature_delivery.apply_review_feedback");
+  assert.equal(legacy.intentKind, "feature_delivery.apply_review_feedback");
+});
+
+test("deriveRunRecordFromPayload derives intent kind from valid intent over payload hint", () => {
+  const run = deriveRunRecordFromPayload({
+    ...samplePayload,
+    payloadJson: {
+      run: {
+        ...samplePayload.payloadJson.run,
+        intent: {
+          version: 1,
+          kind: "feature_delivery.repair_ci",
+          source: "work_item",
+          workItemId: "11111111-1111-1111-1111-111111111111",
+          repo: "org/repo",
+          prNumber: 7,
+          prUrl: "https://github.com/org/repo/pull/7",
+          sourceSubstate: "ci_failed",
+        },
+        intentKind: "feature_delivery.self_review",
+      },
+    },
+  });
+
+  assert.equal(run.intent?.kind, "feature_delivery.repair_ci");
+  assert.equal(run.intentKind, "feature_delivery.repair_ci");
+});
+
 test("deriveRunRecordFromPayload reads top-level prefetched context from control-plane payload", () => {
   const run = deriveRunRecordFromPayload({
     ...samplePayload,

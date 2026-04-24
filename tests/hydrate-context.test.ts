@@ -526,6 +526,40 @@ test("hydrateContextNode: auto-review runs require structured review summary out
   assert.match(content, /do not use .* changelog|do not use .* summary of the pr/i, "Should forbid using the arrays as a changelog");
 });
 
+test("hydrateContextNode: auto-review summary instructions are enabled by intent", async (t) => {
+  const dir = await makeTempRepo();
+  const repoDir = path.join(dir, "repo");
+  await mkdir(repoDir, { recursive: true });
+  const promptFile = path.join(dir, "task.md");
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const ctx = new ContextBag({ repoDir, promptFile });
+  const deps = makeMockDeps({
+    logFile,
+    run: {
+      ...makeMockDeps().run,
+      requestedBy: "manual:dashboard",
+      intent: {
+        version: 1,
+        kind: "feature_delivery.apply_review_feedback",
+        source: "work_item",
+        workItemId: "11111111-1111-1111-1111-111111111111",
+        repo: "owner/repo",
+        prNumber: 7,
+        prUrl: "https://github.com/owner/repo/pull/7",
+        sourceSubstate: "applying_review_feedback",
+      },
+    },
+  });
+
+  await hydrateContextNode({ id: "hydrate", type: "deterministic", action: "hydrate_context" }, ctx, deps);
+
+  const content = await readFile(promptFile, "utf8");
+  assert.ok(content.includes("GOOSEHERD_REVIEW_SUMMARY"), "Should require the structured review summary sentinel");
+});
+
 test("hydrateContextNode: falls back to run prefetch context and omits empty prefetched sections", async (t) => {
   const dir = await makeTempRepo();
   const repoDir = path.join(dir, "repo");

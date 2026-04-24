@@ -24,6 +24,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { RunPrefetchContext } from "../runtime/run-context-types.js";
+import type { RunIntent } from "../runs/run-intent.js";
 
 // Custom bytea type for encrypted fields
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -76,6 +77,8 @@ export const runs = pgTable(
     workItemId: uuid("work_item_id"),
     prefetchContext: jsonb("prefetch_context").$type<RunPrefetchContext>(),
     autoReviewSourceSubstate: text("auto_review_source_substate"),
+    intent: jsonb("intent").$type<RunIntent>(),
+    intentKind: text("intent_kind"),
   },
   (t) => [
     index("runs_runtime_idx").on(t.runtime),
@@ -89,6 +92,12 @@ export const runs = pgTable(
     index("runs_team_id_idx")
       .on(t.teamId)
       .where(sql`team_id IS NOT NULL`),
+    index("runs_intent_kind_idx")
+      .on(t.intentKind)
+      .where(sql`intent_kind IS NOT NULL`),
+    index("runs_work_item_intent_kind_idx")
+      .on(t.workItemId, t.intentKind)
+      .where(sql`work_item_id IS NOT NULL AND intent_kind IS NOT NULL`),
   ]
 );
 

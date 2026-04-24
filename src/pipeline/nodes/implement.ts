@@ -6,6 +6,8 @@ import { appendLog, runShellCapture } from "../shell.js";
 import { buildAgentCommand } from "../agent-command.js";
 import { filterInternalGeneratedFiles, isInternalGeneratedFile, mergeInternalArtifacts } from "../internal-generated-files.js";
 import { logInfo, logWarn } from "../../logger.js";
+import { isFeatureDeliveryAutoReviewRun } from "../../runs/run-intent.js";
+import type { RunRecord } from "../../types.js";
 
 export interface AgentAnalysis {
   verdict: "clean" | "suspect" | "empty" | "context_conflict";
@@ -63,7 +65,6 @@ export interface AutoReviewOutputInspection {
   preview?: string;
 }
 
-const AUTO_REVIEW_REQUESTED_BY = "work-item:auto-review";
 const AUTO_REVIEW_SUMMARY_ARTIFACT = "auto-review-summary.json";
 const AUTO_REVIEW_SUMMARY_PATTERN = /^\s*GOOSEHERD_REVIEW_SUMMARY:/m;
 const AUTO_REVIEW_SUMMARY_PREFIX = "GOOSEHERD_REVIEW_SUMMARY:";
@@ -120,7 +121,7 @@ export async function implementNode(
 
   if (result.code !== 0) {
     const autoReviewSummaryArtifact = runDir
-      ? await persistAutoReviewSummaryArtifact(run.requestedBy, runDir, combinedOutput, [])
+      ? await persistAutoReviewSummaryArtifact(run, runDir, combinedOutput, [])
       : undefined;
     if (autoReviewSummaryArtifact) {
       await appendLog(logFile, `[implement] wrote auto-review summary artifact: ${autoReviewSummaryArtifact.path}\n`);
@@ -139,7 +140,7 @@ export async function implementNode(
       logFile,
       `[implement] failure classification: timeoutDetected=${String(timeoutDetected)}\n`
     );
-    emitAutoReviewDebugDiagnostics(run.requestedBy, config.autoReviewDebugLogMode, "failure", {
+    emitAutoReviewDebugDiagnostics(run, config.autoReviewDebugLogMode, "failure", {
       runId: run.id,
       exitCode: result.code,
       stdoutBytes: byteLength(result.stdout),
@@ -171,14 +172,14 @@ export async function implementNode(
   // Analyze agent output
   const analysis = await analyzeAgentOutput(repoDir, result.stdout, result.stderr, logFile);
   const autoReviewSummaryArtifact = runDir
-    ? await persistAutoReviewSummaryArtifact(run.requestedBy, runDir, combinedOutput, analysis.filesChanged)
+    ? await persistAutoReviewSummaryArtifact(run, runDir, combinedOutput, analysis.filesChanged)
     : undefined;
   if (autoReviewSummaryArtifact) {
     await appendLog(logFile, `[implement] wrote auto-review summary artifact: ${autoReviewSummaryArtifact.path}\n`);
   }
 
   if (analysis.verdict === "context_conflict") {
-    emitAutoReviewDebugDiagnostics(run.requestedBy, config.autoReviewDebugLogMode, "failure", {
+    emitAutoReviewDebugDiagnostics(run, config.autoReviewDebugLogMode, "failure", {
       runId: run.id,
       exitCode: result.code,
       stdoutBytes: byteLength(result.stdout),
@@ -204,10 +205,10 @@ export async function implementNode(
   }
 
   if (analysis.verdict === "empty") {
-    if (isAutoReviewRun(run.requestedBy)) {
-      const noop = classifyAutoReviewNoop(run.requestedBy, combinedOutput);
+    if (isAutoReviewRun(run)) {
+      const noop = classifyAutoReviewNoop(run, combinedOutput);
       emitAutoReviewDebugDiagnostics(
-        run.requestedBy,
+        run,
         config.autoReviewDebugLogMode,
         noop.allowed ? "success" : "failure",
         {
@@ -268,7 +269,7 @@ export async function implementNode(
 
   // Extract cost/token data from pi-agent JSONL output (agent_end event)
   const agentCost = extractPiAgentCost(result.stdout);
-  emitAutoReviewDebugDiagnostics(run.requestedBy, config.autoReviewDebugLogMode, "success", {
+  emitAutoReviewDebugDiagnostics(run, config.autoReviewDebugLogMode, "success", {
     runId: run.id,
     exitCode: result.code,
     stdoutBytes: byteLength(result.stdout),
@@ -490,10 +491,10 @@ export function extractAutoReviewSummary(output: string): AutoReviewSummaryArtif
 }
 
 export function classifyAutoReviewNoop(
-  requestedBy: string | undefined,
+  runOrRequestedBy: RunRecord | string | undefined,
   output: string,
 ): AutoReviewNoopClassification {
-  if (!isAutoReviewRun(requestedBy)) {
+  if (!isAutoReviewRun(runOrRequestedBy)) {
     return { allowed: false };
   }
 
@@ -525,12 +526,12 @@ export function classifyAutoReviewNoop(
 }
 
 export async function persistAutoReviewSummaryArtifact(
-  requestedBy: string | undefined,
+  runOrRequestedBy: RunRecord | string | undefined,
   runDir: string,
   output: string,
   changedFiles: string[] = []
 ): Promise<{ path: string; summary: AutoReviewSummaryArtifact } | undefined> {
-  if (!isAutoReviewRun(requestedBy)) {
+  if (!isAutoReviewRun(runOrRequestedBy)) {
     return undefined;
   }
 
@@ -709,11 +710,11 @@ function byteLength(value: string): number {
 }
 
 function shouldEmitAutoReviewDebugDiagnostics(
-  requestedBy: string | undefined,
+  runOrRequestedBy: RunRecord | string | undefined,
   mode: string | undefined,
   outcome: "success" | "failure",
 ): boolean {
-  if (!isAutoReviewRun(requestedBy)) {
+  if (!isAutoReviewRun(runOrRequestedBy)) {
     return false;
   }
   if (mode === "off") {
@@ -726,12 +727,12 @@ function shouldEmitAutoReviewDebugDiagnostics(
 }
 
 function emitAutoReviewDebugDiagnostics(
-  requestedBy: string | undefined,
+  runOrRequestedBy: RunRecord | string | undefined,
   mode: string | undefined,
   outcome: "success" | "failure",
   details: Record<string, unknown>,
 ): void {
-  if (!shouldEmitAutoReviewDebugDiagnostics(requestedBy, mode, outcome)) {
+  if (!shouldEmitAutoReviewDebugDiagnostics(runOrRequestedBy, mode, outcome)) {
     return;
   }
   if (outcome === "failure") {
@@ -936,6 +937,9 @@ function tokenizeGroundingText(value: string): string[] {
     .filter((token) => token.length >= 3);
 }
 
-function isAutoReviewRun(requestedBy: string | undefined): boolean {
-  return requestedBy === AUTO_REVIEW_REQUESTED_BY;
+function isAutoReviewRun(runOrRequestedBy: RunRecord | string | undefined): boolean {
+  if (typeof runOrRequestedBy === "string" || runOrRequestedBy === undefined) {
+    return runOrRequestedBy === "work-item:auto-review";
+  }
+  return isFeatureDeliveryAutoReviewRun(runOrRequestedBy);
 }

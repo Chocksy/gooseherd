@@ -10,6 +10,7 @@ import { RunnerControlPlaneClient } from "./control-plane-client.js";
 import { sleep } from "../utils/sleep.js";
 import { isRecord } from "../utils/type-guards.js";
 import type { RunPrefetchContext } from "../runtime/run-context-types.js";
+import { deriveRunIntentFromLegacy, isRunIntent } from "../runs/run-intent.js";
 
 export type RunnerPipelineExecutor = (
   run: RunRecord,
@@ -129,17 +130,38 @@ export function deriveRunRecordFromPayload(payload: RunEnvelope): RunRecord {
   const source = maybeRootRun ?? payload.payloadJson;
   const prefetchContext = readPrefetchContext(source, payload.payloadJson);
   const runIdShort = payload.runId.slice(0, 8);
+  const requestedBy = readString(source, "requestedBy") ?? "runner";
+  const pipelineHint = readString(source, "pipelineHint");
+  const repoSlug = readString(source, "repoSlug") ?? "unknown/unknown";
+  const prNumber = readInteger(source, "prNumber");
+  const prUrl = readString(source, "prUrl");
+  const workItemId = readString(source, "workItemId");
+  const autoReviewSourceSubstate =
+    readString(source, "autoReviewSourceSubstate") ?? readString(payload.payloadJson, "autoReviewSourceSubstate");
+  const skipNodes = readStringArray(source, "skipNodes");
+  const enableNodes = readStringArray(source, "enableNodes");
+  const intent = readRunIntent(source, payload.payloadJson) ?? deriveRunIntentFromLegacy({
+    requestedBy,
+    pipelineHint,
+    workItemId,
+    autoReviewSourceSubstate,
+    repoSlug,
+    prNumber,
+    prUrl,
+    skipNodes,
+    enableNodes,
+  });
 
   return {
     id: readString(source, "id") ?? payload.runId,
     runtime: payload.runtime,
     status: "running",
     phase: "queued",
-    repoSlug: readString(source, "repoSlug") ?? "unknown/unknown",
+    repoSlug,
     task: readString(source, "task") ?? "",
     baseBranch: readString(source, "baseBranch") ?? "main",
     branchName: readString(source, "branchName") ?? `goose/${runIdShort}`,
-    requestedBy: readString(source, "requestedBy") ?? "runner",
+    requestedBy,
     channelId: readString(source, "channelId") ?? "runner",
     threadTs: readString(source, "threadTs") ?? payload.runId,
     createdAt: readString(source, "createdAt") ?? payload.createdAt,
@@ -150,13 +172,31 @@ export function deriveRunRecordFromPayload(payload: RunEnvelope): RunRecord {
     chainIndex: readInteger(source, "chainIndex"),
     parentBranchName: readString(source, "parentBranchName"),
     feedbackNote: readString(source, "feedbackNote"),
-    pipelineHint: readString(source, "pipelineHint"),
-    skipNodes: readStringArray(source, "skipNodes"),
-    enableNodes: readStringArray(source, "enableNodes"),
+    pipelineHint,
+    skipNodes,
+    enableNodes,
     teamId: readString(source, "teamId"),
     prefetchContext,
-    autoReviewSourceSubstate: readString(source, "autoReviewSourceSubstate") ?? readString(payload.payloadJson, "autoReviewSourceSubstate"),
+    autoReviewSourceSubstate,
+    prUrl,
+    prNumber,
+    workItemId,
+    intent,
+    intentKind: intent.kind,
   };
+}
+
+function readRunIntent(
+  source: Record<string, unknown>,
+  payloadJson: Record<string, unknown>,
+): RunRecord["intent"] | undefined {
+  if (isRunIntent(source.intent)) {
+    return source.intent;
+  }
+  if (isRunIntent(payloadJson.intent)) {
+    return payloadJson.intent;
+  }
+  return undefined;
 }
 
 function readPrefetchContext(

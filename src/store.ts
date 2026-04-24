@@ -3,6 +3,7 @@ import { eq, desc, and, sql, inArray, ne, getTableColumns } from "drizzle-orm";
 import type { NewRunInput, RunFeedback, RunRecord, RunStatus } from "./types.js";
 import type { Database } from "./db/index.js";
 import { runs, workItems } from "./db/schema.js";
+import { deriveRunIntentFromLegacy, isRunIntent } from "./runs/run-intent.js";
 
 type RunRow = typeof runs.$inferSelect;
 type RunQueryRow = RunRow & {
@@ -12,6 +13,22 @@ type RunQueryRow = RunRow & {
 const runColumns = getTableColumns(runs);
 
 function rowToRecord(row: RunQueryRow): RunRecord {
+  const prUrl = row.prUrl ?? row.linkedPrUrl ?? undefined;
+  const prNumber = row.prNumber ?? row.linkedPrNumber ?? undefined;
+  const intent = isRunIntent(row.intent)
+    ? row.intent
+    : deriveRunIntentFromLegacy({
+        requestedBy: row.requestedBy,
+        pipelineHint: row.pipelineHint ?? undefined,
+        workItemId: row.workItemId ?? undefined,
+        autoReviewSourceSubstate: row.autoReviewSourceSubstate ?? undefined,
+        repoSlug: row.repoSlug,
+        prNumber,
+        prUrl,
+        skipNodes: row.skipNodes ?? undefined,
+        enableNodes: row.enableNodes ?? undefined,
+      });
+
   return {
     id: row.id,
     runtime: row.runtime as RunRecord["runtime"],
@@ -32,7 +49,7 @@ function rowToRecord(row: RunQueryRow): RunRecord {
     commitSha: row.commitSha ?? undefined,
     changedFiles: row.changedFiles ?? undefined,
     internalArtifacts: row.internalArtifacts ?? undefined,
-    prUrl: row.prUrl ?? row.linkedPrUrl ?? undefined,
+    prUrl,
     feedback: row.feedback as RunFeedback | undefined,
     error: row.error ?? undefined,
     parentRunId: row.parentRunId ?? undefined,
@@ -45,13 +62,15 @@ function rowToRecord(row: RunQueryRow): RunRecord {
     enableNodes: row.enableNodes ?? undefined,
     ciFixAttempts: row.ciFixAttempts ?? undefined,
     ciConclusion: row.ciConclusion ?? undefined,
-    prNumber: row.prNumber ?? row.linkedPrNumber ?? undefined,
+    prNumber,
     title: row.title ?? undefined,
     tokenUsage: row.tokenUsage as RunRecord["tokenUsage"],
     teamId: row.teamId ?? undefined,
     workItemId: row.workItemId ?? undefined,
     prefetchContext: (row.prefetchContext ?? undefined) as RunRecord["prefetchContext"],
     autoReviewSourceSubstate: row.autoReviewSourceSubstate ?? undefined,
+    intent,
+    intentKind: intent.kind,
   };
 }
 
@@ -100,6 +119,10 @@ export class RunStore {
       }
     }
 
+    const intent = isRunIntent(input.intent)
+      ? input.intent
+      : deriveRunIntentFromLegacy(input);
+
     await this.db.insert(runs).values({
       id,
       runtime: input.runtime,
@@ -127,6 +150,8 @@ export class RunStore {
       teamId: input.teamId,
       prefetchContext: input.prefetchContext,
       autoReviewSourceSubstate: input.autoReviewSourceSubstate,
+      intent,
+      intentKind: intent.kind,
     });
 
     return (await this.getRun(id))!;

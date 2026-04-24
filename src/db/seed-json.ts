@@ -25,6 +25,7 @@ import {
   sessions,
   conversations,
 } from "./schema.js";
+import { isRunIntent } from "../runs/run-intent.js";
 
 const DATA_DIR = process.env.DATA_DIR ?? "data";
 
@@ -79,6 +80,8 @@ interface JsonRun {
   title?: string;
   tokenUsage?: unknown;
   teamId?: string;
+  intent?: unknown;
+  intentKind?: string;
 }
 
 async function seedRuns(): Promise<number> {
@@ -88,6 +91,7 @@ async function seedRuns(): Promise<number> {
   const db = getDb();
   let count = 0;
   for (const r of data) {
+    const intent = isRunIntent(r.intent) ? r.intent : undefined;
     await db
       .insert(runs)
       .values({
@@ -125,6 +129,8 @@ async function seedRuns(): Promise<number> {
         title: r.title,
         tokenUsage: r.tokenUsage,
         teamId: r.teamId,
+        intent,
+        intentKind: intent?.kind ?? r.intentKind,
       })
       .onConflictDoNothing();
     count++;

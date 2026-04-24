@@ -15,6 +15,7 @@ import { logError } from "../logger.js";
 import { RunStore } from "../store.js";
 import { WorkItemService } from "./service.js";
 import { WorkItemStore } from "./store.js";
+import { isFeatureDeliveryAutoReviewOrRepairCiRun } from "../runs/run-intent.js";
 import {
   AI_ASSIST_DISABLED_FLAG,
   AI_ASSIST_ENABLED_FLAG,
@@ -25,7 +26,6 @@ import {
 const ENGINEERING_REVIEW_PASSED_LABEL = "code review passed";
 const QA_PASSED_LABEL = "qa passed";
 const ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
-const WORK_ITEM_SYSTEM_RUN_REQUESTERS = new Set(["work-item:auto-review", "work-item:ci-fix"]);
 
 export interface GitHubWorkItemWebhookPayload {
   eventType: "pull_request" | "pull_request_review" | "check_suite";
@@ -841,7 +841,10 @@ export class GitHubWorkItemSync {
 
   private async hasActiveSystemRun(workItemId: string): Promise<boolean> {
     const runs = await this.runs.listRunsForWorkItem(workItemId);
-    return runs.some((run) => WORK_ITEM_SYSTEM_RUN_REQUESTERS.has(run.requestedBy) && ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES.has(run.status));
+    return runs.some((run) =>
+      isFeatureDeliveryAutoReviewOrRepairCiRun(run) &&
+      ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES.has(run.status)
+    );
   }
 
   private isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {

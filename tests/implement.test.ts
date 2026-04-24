@@ -282,6 +282,31 @@ test("persistAutoReviewSummaryArtifact: writes parsed summary for auto-review ru
   assert.deepEqual(saved, artifact?.summary);
 });
 
+test("persistAutoReviewSummaryArtifact: writes summary for auto-review intent", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-review-intent-summary-"));
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const artifact = await persistAutoReviewSummaryArtifact(
+    makeRun({
+      requestedBy: "manual:dashboard",
+      intent: {
+        version: 1,
+        kind: "feature_delivery.self_review",
+        source: "work_item",
+        workItemId: "11111111-1111-1111-1111-111111111111",
+        repo: "owner/repo",
+        prNumber: 7,
+        prUrl: "https://github.com/owner/repo/pull/7",
+        sourceSubstate: "pr_adopted",
+      },
+    }),
+    dir,
+    'GOOSEHERD_REVIEW_SUMMARY: {"selectedFindings":[],"ignoredFindings":[],"rationale":"No remaining findings."}',
+  );
+
+  assert.ok(artifact, "Expected auto-review summary artifact to be created from intent");
+});
+
 test("persistAutoReviewSummaryArtifact: falls back to context conflict rationale", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "auto-review-conflict-"));
   t.after(async () => { await rm(dir, { recursive: true, force: true }); });

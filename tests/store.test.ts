@@ -118,6 +118,36 @@ test("RunStore persists prefetchContext and autoReviewSourceSubstate", async (t)
   assert.equal(loaded?.prefetchContext?.jira?.issue.key, "HBL-1");
 });
 
+test("RunStore accumulates token usage by model", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "token usage test",
+      baseBranch: "main",
+      requestedBy: "U123",
+      channelId: "C123",
+      threadTs: "123.456",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  await store.addTokenUsage(run.id, { model: "openai/gpt-4.1-mini", input: 100, output: 200 });
+  await store.addTokenUsage(run.id, { model: "anthropic/claude-sonnet-4-6", input: 200, output: 1000 });
+  const updated = await store.addTokenUsage(run.id, { model: "openai/gpt-4.1-mini", input: 30, output: 2 });
+
+  assert.deepEqual(updated.tokenUsage?.byModel, [
+    { model: "openai/gpt-4.1-mini", input: 130, output: 202 },
+    { model: "anthropic/claude-sonnet-4-6", input: 200, output: 1000 }
+  ]);
+  assert.equal(updated.tokenUsage?.qualityGateInputTokens, 330);
+  assert.equal(updated.tokenUsage?.qualityGateOutputTokens, 1202);
+  assert.equal(updated.tokenUsage?.costUsd, 0.016);
+});
+
 test("RunStore persists explicit run intent and derives legacy intent on reads", async (t) => {
   const { store, db, cleanup } = await createStore();
   t.after(cleanup);

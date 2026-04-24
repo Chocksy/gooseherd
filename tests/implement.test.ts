@@ -7,6 +7,7 @@ import {
   analyzeAgentOutput,
   classifyAutoReviewNoop,
   extractAutoReviewSummary,
+  extractPiAgentCost,
   inspectAutoReviewOutput,
   implementNode,
   persistAutoReviewSummaryArtifact,
@@ -17,6 +18,45 @@ import type { RunRecord } from "../src/types.js";
 import { runShellCapture } from "../src/pipeline/shell.js";
 
 // ── Helper: create a real git repo with changes ──
+
+test("extractPiAgentCost aggregates assistant usage by model", () => {
+  const stdout = [
+    JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        model: "openai/gpt-4.1-mini",
+        usage: { input: 100, output: 200, cost: { total: 0.001 } }
+      }
+    }),
+    JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        model: "anthropic/claude-sonnet-4-6",
+        usage: { input: 200, output: 1000, cost: { total: 0.016 } }
+      }
+    }),
+    JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        model: "openai/gpt-4.1-mini",
+        usage: { input: 30, output: 2, cost: { total: 0.0001 } }
+      }
+    })
+  ].join("\n");
+
+  const cost = extractPiAgentCost(stdout);
+
+  assert.deepEqual(cost?.byModel, [
+    { model: "openai/gpt-4.1-mini", input: 130, output: 202, costUsd: 0.0011 },
+    { model: "anthropic/claude-sonnet-4-6", input: 200, output: 1000, costUsd: 0.016 }
+  ]);
+  assert.equal(cost?.inputTokens, 330);
+  assert.equal(cost?.outputTokens, 1202);
+  assert.equal(cost?.totalCost, 0.0171);
+});
 
 async function makeGitRepo(prefix = "impl-test-"): Promise<{ dir: string; logFile: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));

@@ -92,6 +92,12 @@ export async function scopeJudgeNode(
     totalInputTokens += raw.inputTokens;
     totalOutputTokens += raw.outputTokens;
     usedModel = raw.model;
+    await deps.recordTokenUsage?.({
+      model: raw.model,
+      input: raw.inputTokens,
+      output: raw.outputTokens,
+      source: "quality_gate"
+    }).catch(() => {});
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown";
     logError("scope_judge: LLM call failed, fail-open", { error: msg });
@@ -120,6 +126,12 @@ export async function scopeJudgeNode(
       totalInputTokens += raw.inputTokens;
       totalOutputTokens += raw.outputTokens;
       usedModel = raw.model;
+      await deps.recordTokenUsage?.({
+        model: raw.model,
+        input: raw.inputTokens,
+        output: raw.outputTokens,
+        source: "quality_gate"
+      }).catch(() => {});
     } catch (err) {
       // Keep original result on escalation failure
       const msg = err instanceof Error ? err.message : "unknown";

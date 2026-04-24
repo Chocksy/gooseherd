@@ -2,6 +2,7 @@ import type {
   RunEnvelope,
   RunnerCompletionPayload,
   RunnerEventPayload,
+  RunnerTokenUsagePayload,
 } from "../runtime/control-plane-types.js";
 import { sleep } from "../utils/sleep.js";
 import { isRecord } from "../utils/type-guards.js";
@@ -99,7 +100,7 @@ function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || /abort|timed out|timeout/i.test(error.message));
 }
 
-type RequestSuffix = "payload" | "artifacts" | "events" | "complete" | "cancellation";
+type RequestSuffix = "payload" | "artifacts" | "events" | "complete" | "cancellation" | "token-usage";
 
 function nextRetryDelayMs(attempt: number): number {
   const baseDelay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
@@ -122,6 +123,10 @@ export class RunnerControlPlaneClient {
 
   async complete(payload: RunnerCompletionPayload, opts?: RetryOptions): Promise<void> {
     await this.request("POST", "complete", payload, opts?.maxAttempts);
+  }
+
+  async addTokenUsage(payload: RunnerTokenUsagePayload, opts?: RetryOptions): Promise<void> {
+    await this.request("POST", "token-usage", payload, opts?.maxAttempts);
   }
 
   async getCancellation(opts?: RetryOptions): Promise<{ cancelRequested: boolean }> {

@@ -17,6 +17,7 @@ export class InProcessExecutionBackend<Runtime extends "local" | "docker"> imple
       run.skipNodes,
       run.enableNodes,
       ctx.abortSignal,
+      ctx.recordTokenUsage,
     );
   }
 }

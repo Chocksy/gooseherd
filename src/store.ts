@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq, desc, and, sql, inArray, ne, getTableColumns } from "drizzle-orm";
-import type { NewRunInput, RunFeedback, RunRecord, RunStatus } from "./types.js";
+import type { NewRunInput, RunFeedback, RunRecord, RunStatus, TokenUsage, TokenUsageIncrement } from "./types.js";
 import type { Database } from "./db/index.js";
 import { runs, workItems } from "./db/schema.js";
 import { deriveRunIntentFromLegacy, isRunIntent } from "./runs/run-intent.js";
+import { computeCostUsd } from "./llm/model-prices.js";
 
 type RunRow = typeof runs.$inferSelect;
 type RunQueryRow = RunRow & {
@@ -72,6 +73,50 @@ function rowToRecord(row: RunQueryRow): RunRecord {
     intent,
     intentKind: intent.kind,
   };
+}
+
+function roundCost(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+function mergeTokenUsage(current: TokenUsage, entry: TokenUsageIncrement): TokenUsage {
+  const source = entry.source ?? "quality_gate";
+  const byModel = [...(current.byModel ?? [])].map(modelUsage => ({ ...modelUsage }));
+  const existing = byModel.find(modelUsage => modelUsage.model === entry.model);
+  const entryCost = entry.costUsd ?? computeCostUsd([{ model: entry.model, input: entry.input, output: entry.output }]);
+
+  if (existing) {
+    existing.input += entry.input;
+    existing.output += entry.output;
+    if (entryCost > 0 || existing.costUsd !== undefined) {
+      existing.costUsd = roundCost((existing.costUsd ?? 0) + entryCost);
+    }
+  } else {
+    byModel.push({
+      model: entry.model,
+      input: entry.input,
+      output: entry.output,
+      ...(entryCost > 0 ? { costUsd: roundCost(entryCost) } : {})
+    });
+  }
+
+  const next: TokenUsage = {
+    ...current,
+    qualityGateInputTokens: current.qualityGateInputTokens ?? 0,
+    qualityGateOutputTokens: current.qualityGateOutputTokens ?? 0,
+    byModel,
+    costUsd: roundCost((current.costUsd ?? 0) + entryCost)
+  };
+
+  if (source === "agent") {
+    next.agentInputTokens = (current.agentInputTokens ?? 0) + entry.input;
+    next.agentOutputTokens = (current.agentOutputTokens ?? 0) + entry.output;
+  } else {
+    next.qualityGateInputTokens += entry.input;
+    next.qualityGateOutputTokens += entry.output;
+  }
+
+  return next;
 }
 
 export class RunStore {
@@ -306,6 +351,18 @@ export class RunStore {
     const result = await this.getRun(id);
     if (!result) throw new Error(`Run not found: ${id}`);
     return result;
+  }
+
+  async addTokenUsage(id: string, entry: TokenUsageIncrement): Promise<RunRecord> {
+    const run = await this.getRun(id);
+    if (!run) throw new Error(`Run not found: ${id}`);
+
+    const current = run.tokenUsage ?? {
+      qualityGateInputTokens: 0,
+      qualityGateOutputTokens: 0
+    };
+    const next = mergeTokenUsage(current, entry);
+    return this.updateRun(id, { tokenUsage: next });
   }
 
   async linkToWorkItem(runId: string, workItemId: string): Promise<RunRecord> {

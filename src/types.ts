@@ -33,7 +33,21 @@ export interface TokenUsage {
   qualityGateOutputTokens: number;
   agentInputTokens?: number;
   agentOutputTokens?: number;
+  byModel?: Array<{
+    model: string;
+    input: number;
+    output: number;
+    costUsd?: number;
+  }>;
   /** Estimated cost in USD (computed from token counts × model prices). */
+  costUsd?: number;
+}
+
+export interface TokenUsageIncrement {
+  model: string;
+  input: number;
+  output: number;
+  source?: "quality_gate" | "agent";
   costUsd?: number;
 }
 

@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config.js";
 import type { RunRecord } from "../types.js";
+import type { TokenUsageIncrement } from "../types.js";
 import type { GitHubService } from "../github.js";
 import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import type { ContextBag } from "./context-bag.js";
@@ -60,6 +61,8 @@ export interface NodeDeps {
   onPhase: (phase: string) => Promise<void>;
   /** Send a detail string to the Slack run card (throttled by caller). */
   onDetail?: (detail: string) => Promise<void>;
+  /** Persist token usage immediately after each successful AI response. */
+  recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>;
   /** When set, shell commands route through this Docker sandbox container. */
   sandboxId?: string;
   /** Request deferred sandbox creation with a specific image. Used by setup_sandbox node. */

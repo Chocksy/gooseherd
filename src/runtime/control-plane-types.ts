@@ -1,4 +1,4 @@
-import type { TokenUsage } from "../types.js";
+import type { TokenUsage, TokenUsageIncrement } from "../types.js";
 
 export type RunStatus =
   | "queued"
@@ -60,6 +60,8 @@ export interface RunnerCompletionPayload {
   tokenUsage?: TokenUsage;
   title?: string;
 }
+
+export type RunnerTokenUsagePayload = TokenUsageIncrement;
 
 export interface RunCompletionRecord {
   id: number;

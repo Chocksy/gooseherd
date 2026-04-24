@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { RunnerCompletionPayload, RunnerEventPayload } from "./control-plane-types.js";
+import type { RunnerCompletionPayload, RunnerEventPayload, RunnerTokenUsagePayload } from "./control-plane-types.js";
 import { ControlPlaneConflictError, type ControlPlaneStore } from "./control-plane-store.js";
 import { authenticateRunnerRequest } from "./control-plane-auth.js";
 import type { ArtifactStore } from "./artifact-store.js";
+import type { RunStore } from "../store.js";
 import { isRecord } from "../utils/type-guards.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -56,7 +57,7 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
   return body === null ? null : body.toString("utf8");
 }
 
-type ControlPlaneAction = "payload" | "artifacts" | "artifact_upload" | "cancellation" | "events" | "complete";
+type ControlPlaneAction = "payload" | "artifacts" | "artifact_upload" | "cancellation" | "events" | "complete" | "token_usage";
 
 function parseRoute(pathname: string): { runId: string; action: ControlPlaneAction; artifactKey?: string } | undefined {
   try {
@@ -69,9 +70,10 @@ function parseRoute(pathname: string): { runId: string; action: ControlPlaneActi
       };
     }
 
-    const match = /^\/internal\/runs\/([^/]+)\/(payload|artifacts|cancellation|events|complete)$/.exec(pathname);
+    const match = /^\/internal\/runs\/([^/]+)\/(payload|artifacts|cancellation|events|complete|token-usage)$/.exec(pathname);
     if (!match) return undefined;
-    return { runId: decodeURIComponent(match[1] ?? ""), action: match[2] as ControlPlaneAction };
+    const action = match[2] === "token-usage" ? "token_usage" : match[2];
+    return { runId: decodeURIComponent(match[1] ?? ""), action: action as ControlPlaneAction };
   } catch {
     return undefined;
   }
@@ -95,12 +97,23 @@ function validateRunnerCompletionPayload(value: unknown): value is RunnerComplet
   return true;
 }
 
+function validateRunnerTokenUsagePayload(value: unknown): value is RunnerTokenUsagePayload {
+  if (!isRecord(value)) return false;
+  if (typeof value.model !== "string" || value.model.trim() === "") return false;
+  if (typeof value.input !== "number" || value.input < 0) return false;
+  if (typeof value.output !== "number" || value.output < 0) return false;
+  if (value.source !== undefined && value.source !== "quality_gate" && value.source !== "agent") return false;
+  if (value.costUsd !== undefined && (typeof value.costUsd !== "number" || value.costUsd < 0)) return false;
+  return true;
+}
+
 export async function routeControlPlaneRequest(
   req: IncomingMessage,
   res: ServerResponse,
   pathname: string,
   controlPlaneStore: ControlPlaneStore,
   artifactStore: ArtifactStore,
+  runStore?: Pick<RunStore, "addTokenUsage">,
 ): Promise<boolean> {
   const route = parseRoute(pathname);
   if (!route) return false;
@@ -169,7 +182,7 @@ export async function routeControlPlaneRequest(
     return true;
   }
 
-  if (req.method === "POST" && (action === "events" || action === "complete")) {
+  if (req.method === "POST" && (action === "events" || action === "complete" || action === "token_usage")) {
     const rawBody = await readBody(req);
     if (rawBody === null) {
       sendJson(res, 413, { error: "Request body too large" });
@@ -190,6 +203,20 @@ export async function routeControlPlaneRequest(
         return true;
       }
       await controlPlaneStore.appendEvent(runId, parsedBody);
+      sendJson(res, 202, { accepted: true });
+      return true;
+    }
+
+    if (action === "token_usage") {
+      if (!runStore) {
+        sendJson(res, 501, { error: "Token usage recording is unavailable" });
+        return true;
+      }
+      if (!validateRunnerTokenUsagePayload(parsedBody)) {
+        sendJson(res, 422, { error: "Invalid token usage payload" });
+        return true;
+      }
+      await runStore.addTokenUsage(runId, parsedBody);
       sendJson(res, 202, { accepted: true });
       return true;
     }

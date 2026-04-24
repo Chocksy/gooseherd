@@ -118,6 +118,7 @@ export async function implementNode(
   if (rawAgentOutputArtifacts?.length) {
     await appendLog(logFile, `[implement] wrote raw agent output artifacts: ${rawAgentOutputArtifacts.join(", ")}\n`);
   }
+  const agentCost = extractPiAgentCost(result.stdout);
 
   if (result.code !== 0) {
     const autoReviewSummaryArtifact = runDir
@@ -130,6 +131,7 @@ export async function implementNode(
     if (contextConflictReason) {
       return {
         outcome: "failure",
+        outputs: agentCost ? { agentCost } : undefined,
         error: `Agent reported context conflict: ${contextConflictReason}`,
         rawOutput: combinedOutput.slice(-2000)
       };
@@ -161,7 +163,10 @@ export async function implementNode(
     );
     return {
       outcome: "failure",
-      outputs: internalArtifacts ? { internalArtifacts } : undefined,
+      outputs: {
+        ...(internalArtifacts ? { internalArtifacts } : {}),
+        ...(agentCost ? { agentCost } : {})
+      },
       error: timeoutDetected
         ? `Agent timed out after ${String(config.agentTimeoutSeconds)}s`
         : `Agent exited with code ${String(result.code)}`,
@@ -198,7 +203,10 @@ export async function implementNode(
     );
     return {
       outcome: "failure",
-      outputs: internalArtifacts ? { internalArtifacts } : undefined,
+      outputs: {
+        ...(internalArtifacts ? { internalArtifacts } : {}),
+        ...(agentCost ? { agentCost } : {})
+      },
       error: `Agent reported context conflict: ${analysis.contextConflictReason ?? "unknown reason"}`,
       rawOutput: (result.stdout + result.stderr).slice(-2000)
     };
@@ -236,6 +244,7 @@ export async function implementNode(
               rawAgentOutputArtifacts,
               autoReviewSummaryArtifact ? [autoReviewSummaryArtifact.path] : undefined
             ),
+            ...(agentCost ? { agentCost } : {}),
             ...(autoReviewSummaryArtifact
               ? {
                   autoReviewSummary: autoReviewSummaryArtifact.summary,
@@ -252,7 +261,10 @@ export async function implementNode(
       );
       return {
         outcome: "failure",
-        outputs: internalArtifacts ? { internalArtifacts } : undefined,
+        outputs: {
+          ...(internalArtifacts ? { internalArtifacts } : {}),
+          ...(agentCost ? { agentCost } : {})
+        },
         error: noop.reason ?? `Agent exited 0 but made no meaningful changes. Signals: ${analysis.signals.join("; ") || "none"}`,
         rawOutput: (result.stdout + result.stderr).slice(-2000)
       };
@@ -261,14 +273,15 @@ export async function implementNode(
     const internalArtifacts = mergeInternalArtifacts(rawAgentOutputArtifacts);
     return {
       outcome: "failure",
-      outputs: internalArtifacts ? { internalArtifacts } : undefined,
+      outputs: {
+        ...(internalArtifacts ? { internalArtifacts } : {}),
+        ...(agentCost ? { agentCost } : {})
+      },
       error: `Agent exited 0 but made no meaningful changes. Signals: ${analysis.signals.join("; ") || "none"}`,
       rawOutput: (result.stdout + result.stderr).slice(-2000)
     };
   }
 
-  // Extract cost/token data from pi-agent JSONL output (agent_end event)
-  const agentCost = extractPiAgentCost(result.stdout);
   emitAutoReviewDebugDiagnostics(run, config.autoReviewDebugLogMode, "success", {
     runId: run.id,
     exitCode: result.code,
@@ -422,6 +435,7 @@ export interface AgentCost {
   outputTokens: number;
   totalTokens: number;
   totalCost: number;
+  byModel: Array<{ model: string; input: number; output: number; costUsd: number }>;
 }
 
 /**
@@ -434,6 +448,7 @@ export function extractPiAgentCost(stdout: string): AgentCost | null {
   let totalOutput = 0;
   let totalCost = 0;
   let found = false;
+  const byModel = new Map<string, { model: string; input: number; output: number; costUsd: number }>();
 
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -447,10 +462,19 @@ export function extractPiAgentCost(stdout: string): AgentCost | null {
         const msg = event.message as Record<string, unknown> | undefined;
         if (msg?.role === "assistant" && msg.usage) {
           const usage = msg.usage as Record<string, unknown>;
-          totalInput += (usage.input as number) ?? 0;
-          totalOutput += (usage.output as number) ?? 0;
+          const input = (usage.input as number) ?? 0;
+          const output = (usage.output as number) ?? 0;
           const cost = usage.cost as Record<string, number> | undefined;
-          if (cost) totalCost += cost.total ?? 0;
+          const costUsd = cost?.total ?? 0;
+          const model = typeof msg.model === "string" && msg.model.trim() ? msg.model : "agent/unknown";
+          totalInput += input;
+          totalOutput += output;
+          totalCost += costUsd;
+          const existing = byModel.get(model) ?? { model, input: 0, output: 0, costUsd: 0 };
+          existing.input += input;
+          existing.output += output;
+          existing.costUsd += costUsd;
+          byModel.set(model, existing);
           found = true;
         }
       }
@@ -465,7 +489,8 @@ export function extractPiAgentCost(stdout: string): AgentCost | null {
     inputTokens: totalInput,
     outputTokens: totalOutput,
     totalTokens: totalInput + totalOutput,
-    totalCost
+    totalCost,
+    byModel: [...byModel.values()]
   };
 }
 

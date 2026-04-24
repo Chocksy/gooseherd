@@ -46,6 +46,7 @@ function buildRunnerServices(): RunnerServices {
 
 async function executeSharedPipeline(
   services: RunnerServices,
+  client: RunnerControlPlaneClient,
   run: RunRecord,
   payload: RunEnvelope,
   emit: RunnerEventEmitter,
@@ -64,6 +65,9 @@ async function executeSharedPipeline(
     run.skipNodes,
     run.enableNodes,
     abortSignal,
+    async (entry) => {
+      await client.addTokenUsage(entry);
+    },
   );
 }
 
@@ -71,7 +75,7 @@ export async function main(): Promise<void> {
   const client = buildRunnerClientFromEnv();
   const services = buildRunnerServices();
   await runPipelineRunner(client, (run, payload, emit, abortSignal) =>
-    executeSharedPipeline(services, run, payload, emit, abortSignal),
+    executeSharedPipeline(services, client, run, payload, emit, abortSignal),
   );
   logInfo("Runner completed", { runId: process.env.RUN_ID ?? "unknown" });
 }

@@ -72,7 +72,7 @@ export function startDashboardServer(
       const pathname = requestUrl.pathname;
 
       if (controlPlaneStore && runnerArtifactStore) {
-        const handled = await routeControlPlaneRequest(req, res, pathname, controlPlaneStore, runnerArtifactStore);
+        const handled = await routeControlPlaneRequest(req, res, pathname, controlPlaneStore, runnerArtifactStore, store);
         if (handled) return;
       }
 

@@ -8,7 +8,7 @@ import type { AppConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
 import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunStore, mapPhaseToRunStatus } from "./store.js";
-import type { ExecutionResult, NewRunInput, RunRecord } from "./types.js";
+import type { ExecutionResult, NewRunInput, RunRecord, TokenUsage } from "./types.js";
 import type { PipelineStore } from "./pipeline/pipeline-store.js";
 import type { LearningStore } from "./observer/learning-store.js";
 import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
@@ -153,6 +153,20 @@ function formatDuration(startedAt: string, finishedAt: string): string | undefin
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
   return `${String(minutes)}m ${String(seconds)}s`;
+}
+
+function totalRecordedTokens(tokenUsage: TokenUsage | undefined): number {
+  if (!tokenUsage) return 0;
+  return (tokenUsage.qualityGateInputTokens ?? 0)
+    + (tokenUsage.qualityGateOutputTokens ?? 0)
+    + (tokenUsage.agentInputTokens ?? 0)
+    + (tokenUsage.agentOutputTokens ?? 0);
+}
+
+function chooseTokenUsage(persisted: TokenUsage | undefined, result: TokenUsage | undefined): TokenUsage | undefined {
+  if (!persisted) return result;
+  if (!result) return persisted;
+  return totalRecordedTokens(persisted) >= totalRecordedTokens(result) ? persisted : result;
 }
 
 function isRetryableStatus(status: RunRecord["status"]): boolean {
@@ -671,11 +685,15 @@ export class RunManager {
       const result = await backend.execute(run, {
         onPhase: phaseCallback,
         onDetail,
+        recordTokenUsage: async (entry) => {
+          run = await this.store.addTokenUsage(stableRunId, entry);
+        },
         abortSignal: abortController.signal,
         pipelineFile
       });
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);
+      const persistedRun = await this.store.getRun(stableRunId);
 
       run = await this.store.updateRun(stableRunId, {
         status: "completed",
@@ -687,7 +705,7 @@ export class RunManager {
         internalArtifacts: result.internalArtifacts,
         prUrl: result.prUrl,
         prNumber: result.prNumber,
-        tokenUsage: result.tokenUsage,
+        tokenUsage: chooseTokenUsage(persistedRun?.tokenUsage, result.tokenUsage),
         title: result.title,
         error: undefined
       });

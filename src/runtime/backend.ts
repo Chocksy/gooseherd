@@ -1,9 +1,11 @@
 import type { ExecutionResult, RunRecord } from "../types.js";
+import type { TokenUsageIncrement } from "../types.js";
 import type { PipelinePhase } from "../pipeline/pipeline-engine.js";
 
 export interface RunExecutionContext {
   onPhase: (phase: PipelinePhase) => Promise<void>;
   onDetail?: (detail: string) => Promise<void>;
+  recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>;
   abortSignal?: AbortSignal;
   pipelineFile?: string;
 }

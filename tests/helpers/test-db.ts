@@ -7,7 +7,7 @@
  *   await cleanup(); // drops schema + closes connection
  *
  * Requires a local PostgreSQL instance. Defaults:
- *   DATABASE_URL_TEST=postgres://razvan@localhost:5432/gooseherd_test
+ *   DATABASE_URL_TEST=postgres://gooseherd:gooseherd@localhost:5432/gooseherd_test
  */
 
 import { randomUUID } from "node:crypto";
@@ -18,7 +18,7 @@ import postgres from "postgres";
 import * as schema from "../../src/db/schema.js";
 import type { Database } from "../../src/db/index.js";
 
-const DEFAULT_TEST_URL = "postgres://razvan@localhost:5432/gooseherd_test";
+const DEFAULT_TEST_URL = "postgres://gooseherd:gooseherd@localhost:5432/gooseherd_test";
 const SILENT_TEST_NOTICE = () => undefined;
 
 // Read all migration SQL files once at module load

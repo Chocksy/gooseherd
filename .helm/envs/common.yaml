@@ -1,7 +1,7 @@
 configs:
   gooseherd-config:
     data:
-      APP_NAME: "Gooseherd"
+      APP_NAME: "Hubble"
       DASHBOARD_ENABLED: "true"
       DASHBOARD_HOST: "0.0.0.0"
       DASHBOARD_PORT: "8787"
@@ -13,9 +13,9 @@ configs:
       DRY_RUN: "false"
       PIPELINE_FILE: "pipelines/pipeline.yml"
       DEFAULT_BASE_BRANCH: "master"
-      BRANCH_PREFIX: "gooseherd"
-      GIT_AUTHOR_NAME: "Gooseherd"
-      GIT_AUTHOR_EMAIL: "gooseherd-bot@hubstaff.com"
+      BRANCH_PREFIX: "hubble"
+      GIT_AUTHOR_NAME: "Hubble Bot"
+      GIT_AUTHOR_EMAIL: "hubble-bot@hubstaff.com"
       GITHUB_DEFAULT_OWNER: "NetsoftHoldings"
       JIRA_CLOUD_ID: "f08f7806-067d-4c7e-a389-ab81e39039dc"
       JIRA_BASE_URL: "https://netsoftllc.atlassian.net"
@@ -24,7 +24,7 @@ configs:
       WORK_ITEMS_ENABLED: "true"
       DEFAULT_TEAM_NAME: "default"
       DEFAULT_TEAM_SLACK_CHANNEL_ID: "C0AUL5D0KN3"
-      SLACK_COMMAND_NAME: "gooseherd"
+      SLACK_COMMAND_NAME: "hubble"
       SLACK_AUTH_REDIRECT_URI: "https://gooseherd.hbstf.co/auth/slack/callback"
       GITHUB_APP_ID: "3478231"
       GITHUB_APP_INSTALLATION_ID: "126441572"

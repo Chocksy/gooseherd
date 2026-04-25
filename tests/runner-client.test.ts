@@ -215,6 +215,30 @@ test("runner client retries HTTP 408 and then succeeds", async () => {
   }
 });
 
+test("runner client does not retry token usage posts", async () => {
+  let attempts = 0;
+  const server = await startServer((_req, res) => {
+    attempts += 1;
+    jsonResponse(res, 503, { error: "server error" });
+  });
+
+  const client = new RunnerControlPlaneClient({
+    baseUrl: server.baseUrl,
+    runId: "run-token-usage",
+    token: "secret",
+  });
+
+  try {
+    await assert.rejects(
+      () => client.addTokenUsage({ model: "openai/gpt-4.1-mini", input: 10, output: 20 }, { maxAttempts: 5 }),
+      /token-usage/,
+    );
+    assert.equal(attempts, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test("runner client treats 404 as terminal and does not retry", async () => {
   let attempts = 0;
   const server = await startServer((_req, res) => {

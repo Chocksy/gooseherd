@@ -701,6 +701,8 @@ export const modelPrices = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("model_prices_missing_idx").on(t.source, t.lastSeenAt),
+    index("model_prices_missing_idx")
+      .on(t.source, t.lastSeenAt)
+      .where(sql`${t.inputPerM} IS NULL OR ${t.outputPerM} IS NULL`),
   ]
 );

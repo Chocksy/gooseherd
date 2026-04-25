@@ -126,7 +126,8 @@ export class RunnerControlPlaneClient {
   }
 
   async addTokenUsage(payload: RunnerTokenUsagePayload, opts?: RetryOptions): Promise<void> {
-    await this.request("POST", "token-usage", payload, opts?.maxAttempts);
+    void opts;
+    await this.request("POST", "token-usage", payload, 1);
   }
 
   async getCancellation(opts?: RetryOptions): Promise<{ cancelRequested: boolean }> {

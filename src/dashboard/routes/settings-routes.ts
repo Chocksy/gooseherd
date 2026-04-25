@@ -45,6 +45,25 @@ export interface SettingsRoutesDeps {
   userDirectory?: UserDirectoryService;
 }
 
+export function parseModelPriceUpdate(
+  value: { inputPerM?: unknown; outputPerM?: unknown },
+): { inputPerM: number; outputPerM: number } | null {
+  if (
+    typeof value.inputPerM === "string" && value.inputPerM.trim() === ""
+    || typeof value.outputPerM === "string" && value.outputPerM.trim() === ""
+  ) {
+    return null;
+  }
+
+  const inputPerM = Number(value.inputPerM);
+  const outputPerM = Number(value.outputPerM);
+  if (!Number.isFinite(inputPerM) || inputPerM < 0 || !Number.isFinite(outputPerM) || outputPerM < 0) {
+    return null;
+  }
+
+  return { inputPerM, outputPerM };
+}
+
 export async function handleSettingsRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -153,15 +172,14 @@ export async function handleSettingsRoutes(
       sendJson(res, 400, { error: "Invalid JSON body" });
       return true;
     }
-    const inputPerM = Number(parsed.inputPerM);
-    const outputPerM = Number(parsed.outputPerM);
-    if (!Number.isFinite(inputPerM) || inputPerM < 0 || !Number.isFinite(outputPerM) || outputPerM < 0) {
+    const update = parseModelPriceUpdate(parsed);
+    if (!update) {
       sendJson(res, 422, { error: "inputPerM and outputPerM must be non-negative numbers" });
       return true;
     }
     const model = decodeURIComponent(modelPriceMatch[1]!);
     const updatedBy = actorPrincipal?.principalType === "admin_session" ? actorPrincipal.sessionId : undefined;
-    sendJson(res, 200, { price: await modelPriceStore.save(model, inputPerM, outputPerM, updatedBy) });
+    sendJson(res, 200, { price: await modelPriceStore.save(model, update.inputPerM, update.outputPerM, updatedBy) });
     return true;
   }
 

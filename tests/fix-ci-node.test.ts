@@ -199,6 +199,11 @@ test("fixCiNode derives CI context from prefetchContext and treats missing ciLog
   assert.match(prompt, /src\.ts:1/);
   assert.match(prompt, /Failed Job Log/);
   assert.match(prompt, /Expected semicolon/);
+
+  const log = await readFile(logFile, "utf8");
+  assert.match(log, /\[ci:fix\] prompt file: .*ci-fix-round-1\.md/);
+  assert.match(log, /\[ci:fix\] prompt context: failed_runs=unit-tests annotations=1 log_tail=yes changed_files=1/);
+  assert.match(log, /\[ci:fix\] ci annotation 1: src\.ts:1 — Expected semicolon/);
 });
 
 test("fixCiNode returns a clean failure when only internal-generated files are present", async (t) => {

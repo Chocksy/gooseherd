@@ -303,6 +303,7 @@ function makePrefetchContext(overrides: Partial<RunPrefetchContext> = {}): RunPr
           },
         ],
         failedAnnotationsTotalCount: 55,
+        failedLogTail: "npm test\nExpected ordering to include prefetched sections.\n",
       },
     },
     jira: {
@@ -460,6 +461,15 @@ test("hydrateContextNode: renders prefetched context sections ahead of instructi
   assert.ok(content.includes("src/pipeline/nodes/hydrate-context.ts:123"), "Should include inline comment location");
   assert.ok(content.includes("Expected ordering to include prefetched sections."), "Should include CI annotations");
   assert.ok(content.includes("Eve"), "Should include Jira comment author");
+
+  const log = await readFile(logFile, "utf8");
+  assert.match(log, /\[context\] prompt file: .*task\.md/);
+  assert.match(log, /\[context\] prefetch: sources=github_pr,github_ci,jira work_item=yes pr=#42 ci=failure/);
+  assert.match(log, /\[context\] ci: failed_runs=test annotations=1\/55 log_tail=yes/);
+  assert.match(
+    log,
+    /\[context\] first ci annotation: test: src\/pipeline\/nodes\/hydrate-context\.ts:123 — Expected ordering to include prefetched sections\./
+  );
 });
 
 test("hydrateContextNode: includes current branch diff and conflict instructions for prefetched review context", async (t) => {

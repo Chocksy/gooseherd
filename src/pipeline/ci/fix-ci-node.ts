@@ -54,6 +54,7 @@ export async function fixCiNode(
   const runDir = ctx.getRequired<string>("runDir");
   const fixPromptFile = path.join(runDir, `ci-fix-round-${String(attempt)}.md`);
   await writeFile(fixPromptFile, fixPrompt, "utf8");
+  await appendCiFixPromptSummaryLog(logFile, fixPromptFile, annotations, logTail, changedFiles, failedRunNames);
   const beforeHead = await currentHead(repoDir, logFile);
 
   // Run the coding agent with the fix prompt
@@ -115,6 +116,39 @@ export async function fixCiNode(
 async function currentHead(repoDir: string, logFile: string): Promise<string> {
   const result = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
   return result.stdout.trim().split("\n").pop()?.trim() ?? "";
+}
+
+async function appendCiFixPromptSummaryLog(
+  logFile: string,
+  promptFile: string,
+  annotations: CIAnnotation[],
+  logTail: string,
+  changedFiles: string[],
+  failedRunNames: string[]
+): Promise<void> {
+  const lines = [
+    `[ci:fix] prompt file: ${promptFile}`,
+    [
+      `[ci:fix] prompt context: failed_runs=${failedRunNames.length > 0 ? failedRunNames.join(", ") : "none"}`,
+      `annotations=${String(annotations.length)}`,
+      `log_tail=${logTail.trim() ? "yes" : "no"}`,
+      `changed_files=${String(filterInternalGeneratedFiles(changedFiles).length)}`,
+    ].join(" "),
+  ];
+
+  for (const [index, annotation] of annotations.slice(0, 3).entries()) {
+    lines.push(
+      `[ci:fix] ci annotation ${String(index + 1)}: ${annotation.file}:${String(annotation.line)} — ${truncateSingleLine(annotation.message, 240)}`
+    );
+  }
+
+  await appendLog(logFile, `\n${lines.join("\n")}\n`);
+}
+
+function truncateSingleLine(value: string, max: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max)}...`;
 }
 
 async function changedFilesBetween(

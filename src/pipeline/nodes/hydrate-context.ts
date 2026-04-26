@@ -4,7 +4,7 @@ import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import type { RunRecord } from "../../types.js";
 import type { RunPrefetchContext } from "../../runtime/run-context-types.js";
-import { runShellCapture, shellEscape } from "../shell.js";
+import { appendLog, runShellCapture, shellEscape } from "../shell.js";
 import { isFeatureDeliveryAutoReviewRun } from "../../runs/run-intent.js";
 
 /**
@@ -128,6 +128,7 @@ export async function hydrateContextNode(
   }
 
   await writeFile(promptFile, sections.join("\n"), "utf8");
+  await appendContextSummaryLog(deps.logFile, promptFile, prefetchContext);
 
   // Write dynamic AGENTS.md into the cloned repo for pi-agent auto-discovery.
   // Pi-agent automatically finds and injects AGENTS.md into its system prompt.
@@ -287,6 +288,55 @@ export function getModeInstructions(mode: string): string[] {
 
 function getPrefetchContext(run: RunRecord, ctx: ContextBag): RunPrefetchContext | undefined {
   return ctx.get<RunPrefetchContext>("prefetchContext") ?? run.prefetchContext;
+}
+
+async function appendContextSummaryLog(
+  logFile: string,
+  promptFile: string,
+  prefetchContext: RunPrefetchContext | undefined
+): Promise<void> {
+  const lines = [`[context] prompt file: ${promptFile}`];
+
+  if (!prefetchContext) {
+    lines.push("[context] prefetch: none");
+    await appendLog(logFile, `\n${lines.join("\n")}\n`);
+    return;
+  }
+
+  const githubPrNumber = prefetchContext.github?.pr.number ?? prefetchContext.workItem.githubPrNumber;
+  lines.push(
+    [
+      `[context] prefetch: sources=${prefetchContext.meta.sources.join(",") || "none"}`,
+      "work_item=yes",
+      githubPrNumber !== undefined ? `pr=#${String(githubPrNumber)}` : "pr=none",
+      `ci=${prefetchContext.github?.ci.conclusion ?? "none"}`,
+    ].join(" ")
+  );
+
+  const ci = prefetchContext.github?.ci;
+  if (ci) {
+    const failedRuns = ci.failedRuns?.map((run) => run.name).filter(Boolean) ?? [];
+    const annotationCount = ci.failedAnnotations?.length ?? 0;
+    const annotationCountLabel = ci.failedAnnotationsTotalCount !== undefined
+      ? `${String(annotationCount)}/${String(ci.failedAnnotationsTotalCount)}`
+      : String(annotationCount);
+    lines.push(
+      [
+        `[context] ci: failed_runs=${failedRuns.length > 0 ? failedRuns.join(", ") : "none"}`,
+        `annotations=${annotationCountLabel}`,
+        `log_tail=${ci.failedLogTail?.trim() ? "yes" : "no"}`,
+      ].join(" ")
+    );
+
+    const firstAnnotation = ci.failedAnnotations?.[0];
+    if (firstAnnotation) {
+      lines.push(
+        `[context] first ci annotation: ${firstAnnotation.checkRunName}: ${firstAnnotation.path}:${String(firstAnnotation.line)} — ${truncateSingleLine(firstAnnotation.message, 240)}`
+      );
+    }
+  }
+
+  await appendLog(logFile, `\n${lines.join("\n")}\n`);
 }
 
 function buildPrefetchedContextSections(prefetchContext: RunPrefetchContext): string[] {

@@ -2229,6 +2229,76 @@ test("github sync marks delivery done when linked pull request is merged", async
   assert.ok(updated?.flags.includes("merged"));
 });
 
+test("github sync marks auto review delivery done when linked pull request is merged", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Merged during auto review",
+    summary: "Merged before automation finished",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7041",
+    jiraIssueKey: "HBL-4101",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1031,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1031",
+    initialState: "auto_review",
+    initialSubstate: "ci_green_pending_self_review",
+    flags: ["pr_opened", "ci_green"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "closed",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1031,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1031",
+    merged: true,
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "done");
+  assert.equal(updated?.substate, "merged");
+  assert.ok(updated?.flags.includes("merged"));
+});
+
+test("github sync cancels auto review delivery when linked pull request is closed without merge", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Closed during auto review",
+    summary: "Closed before automation finished",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7042",
+    jiraIssueKey: "HBL-4102",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1032,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1032",
+    initialState: "auto_review",
+    initialSubstate: "ci_failed",
+    flags: ["pr_opened"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "closed",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1032,
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1032",
+    merged: false,
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "cancelled");
+  assert.equal(updated?.substate, "closed_unmerged");
+  assert.ok(updated?.flags.includes("pr_closed"));
+});
+
 test("github sync resets ready_for_merge to auto review on synchronize", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
   t.after(cleanup);

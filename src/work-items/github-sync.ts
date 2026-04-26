@@ -248,6 +248,9 @@ export class GitHubWorkItemSync {
       if (payload.action === "closed" && payload.merged) {
         return this.markPullRequestMerged(current, payload);
       }
+      if (payload.action === "closed" && payload.merged === false) {
+        return this.markPullRequestClosedUnmerged(current, payload);
+      }
 
       if (payload.action === "synchronize") {
         return this.handlePullRequestSynchronize(current, payload);
@@ -606,6 +609,29 @@ export class GitHubWorkItemSync {
     await this.events.append({
       workItemId: updated.id,
       eventType: "github.pr_merged",
+      payload: {
+        repo: payload.repo,
+        prNumber: payload.prNumber,
+        prUrl: payload.prUrl,
+      },
+    });
+
+    return updated;
+  }
+
+  private async markPullRequestClosedUnmerged(
+    workItem: WorkItemRecord,
+    payload: GitHubWorkItemWebhookPayload
+  ): Promise<WorkItemRecord> {
+    const updated = await this.workItems.updateState(workItem.id, {
+      state: "cancelled",
+      substate: "closed_unmerged",
+      flagsToAdd: ["pr_closed"],
+    });
+
+    await this.events.append({
+      workItemId: updated.id,
+      eventType: "github.pr_closed",
       payload: {
         repo: payload.repo,
         prNumber: payload.prNumber,

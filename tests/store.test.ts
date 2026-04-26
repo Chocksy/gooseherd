@@ -445,7 +445,7 @@ test("mapPhaseToRunStatus handles phase mapping", () => {
   assert.equal(mapPhaseToRunStatus("validating"), "validating");
   assert.equal(mapPhaseToRunStatus("pushing"), "pushing");
   assert.equal(mapPhaseToRunStatus("awaiting_ci"), "running");
-  assert.equal(mapPhaseToRunStatus("ci_fixing"), "ci_fixing");
+  assert.equal(mapPhaseToRunStatus("ci_fixing"), "running");
   assert.equal(mapPhaseToRunStatus("agent"), "running");
   assert.equal(mapPhaseToRunStatus("cloning"), "running");
 });
@@ -510,4 +510,243 @@ test("recoverInProgressRuns leaves kubernetes runs untouched for reconciliation"
   assert.equal(recovered.length, 0);
   assert.equal(unchanged?.status, "running");
   assert.equal(unchanged?.phase, "agent");
+});
+
+test("recoverInProgressRuns requeues ci_fixing local runs", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "recover ci fix",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  await store.updateRun(run.id, {
+    status: "ci_fixing",
+    phase: "ci_fixing",
+    startedAt: new Date().toISOString()
+  });
+
+  const recovered = await store.recoverInProgressRuns("Recovered after process restart. Auto-requeued.");
+
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0]?.id, run.id);
+  assert.equal(recovered[0]?.status, "queued");
+  assert.equal(recovered[0]?.phase, "queued");
+});
+
+test("recoverInProgressRuns does not requeue cancel_requested local runs", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "do not recover cancelled run",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  await store.updateRun(run.id, {
+    status: "cancel_requested",
+    phase: "cancel_requested",
+    startedAt: new Date().toISOString()
+  });
+
+  const recovered = await store.recoverInProgressRuns("Recovered after process restart. Auto-requeued.");
+  const unchanged = await store.getRun(run.id);
+
+  assert.equal(recovered.length, 0);
+  assert.equal(unchanged?.status, "cancel_requested");
+  assert.equal(unchanged?.phase, "cancel_requested");
+});
+
+test("recoverInProgressRuns does not requeue awaiting_ci local runs", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "do not recover ci polling run",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  await store.updateRun(run.id, {
+    status: "awaiting_ci",
+    phase: "awaiting_ci",
+    startedAt: new Date().toISOString()
+  });
+
+  const recovered = await store.recoverInProgressRuns("Recovered after process restart. Auto-requeued.");
+  const unchanged = await store.getRun(run.id);
+
+  assert.equal(recovered.length, 0);
+  assert.equal(unchanged?.status, "awaiting_ci");
+  assert.equal(unchanged?.phase, "awaiting_ci");
+});
+
+test("recoverInProgressRuns returns only rows it requeued", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const run = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "recover atomically",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  await store.updateRun(run.id, {
+    status: "completed",
+    phase: "completed",
+    finishedAt: new Date().toISOString()
+  });
+
+  const recovered = await store.recoverInProgressRuns("Recovered after process restart. Auto-requeued.");
+
+  assert.equal(recovered.length, 0);
+});
+
+test("failInProgressRuns fails ci_fixing but leaves cancel_requested active", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const ciFixingRun = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "fail ci fixing",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+  const cancelRequestedRun = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "leave cancel requested",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "2",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+  const awaitingCiRun = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "leave ci polling",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "3",
+      runtime: "local"
+    },
+    "gooseherd"
+  );
+
+  await store.updateRun(ciFixingRun.id, {
+    status: "ci_fixing",
+    phase: "ci_fixing",
+    startedAt: new Date().toISOString()
+  });
+  await store.updateRun(cancelRequestedRun.id, {
+    status: "cancel_requested",
+    phase: "cancel_requested",
+    startedAt: new Date().toISOString()
+  });
+  await store.updateRun(awaitingCiRun.id, {
+    status: "awaiting_ci",
+    phase: "awaiting_ci",
+    startedAt: new Date().toISOString()
+  });
+
+  const failedCount = await store.failInProgressRuns("Process stopped.");
+  const failed = await store.getRun(ciFixingRun.id);
+  const cancelRequested = await store.getRun(cancelRequestedRun.id);
+  const awaitingCi = await store.getRun(awaitingCiRun.id);
+
+  assert.equal(failedCount, 1);
+  assert.equal(failed?.status, "failed");
+  assert.equal(failed?.phase, "failed");
+  assert.equal(cancelRequested?.status, "cancel_requested");
+  assert.equal(cancelRequested?.phase, "cancel_requested");
+  assert.equal(awaitingCi?.status, "awaiting_ci");
+  assert.equal(awaitingCi?.phase, "awaiting_ci");
+});
+
+test("getInProgressRuns includes ci_fixing and awaiting_ci kubernetes runs for reconciliation", async (t) => {
+  const { store, cleanup } = await createStore();
+  t.after(cleanup);
+
+  const ciFixingRun = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "reconcile ci fix",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "kubernetes"
+    },
+    "gooseherd"
+  );
+  const awaitingCiRun = await store.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "reconcile ci polling",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "2",
+      runtime: "kubernetes"
+    },
+    "gooseherd"
+  );
+
+  await store.updateRun(ciFixingRun.id, {
+    status: "ci_fixing",
+    phase: "ci_fixing",
+    startedAt: new Date().toISOString()
+  });
+  await store.updateRun(awaitingCiRun.id, {
+    status: "awaiting_ci",
+    phase: "awaiting_ci",
+    startedAt: new Date().toISOString()
+  });
+
+  const inProgress = await store.getInProgressRuns();
+  const statusesById = new Map(inProgress.map((run) => [run.id, run.status]));
+
+  assert.equal(statusesById.get(ciFixingRun.id), "ci_fixing");
+  assert.equal(statusesById.get(awaitingCiRun.id), "awaiting_ci");
 });

@@ -12,6 +12,29 @@ type RunQueryRow = RunRow & {
   linkedPrNumber: number | null;
 };
 const runColumns = getTableColumns(runs);
+const RECONCILABLE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "awaiting_ci",
+  "ci_fixing",
+  "cancel_requested",
+];
+const FAILABLE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "ci_fixing",
+];
+const RECOVERABLE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "ci_fixing",
+];
 
 function rowToRecord(row: RunQueryRow): RunRecord {
   const prUrl = row.prUrl ?? row.linkedPrUrl ?? undefined;
@@ -439,7 +462,6 @@ export class RunStore {
   }
 
   async failInProgressRuns(reason: string): Promise<number> {
-    const inProgressStatuses = ["queued", "running", "validating", "pushing"];
     const affected = await this.db
       .update(runs)
       .set({
@@ -448,32 +470,20 @@ export class RunStore {
         finishedAt: new Date(),
         error: reason,
       })
-      .where(inArray(runs.status, inProgressStatuses))
+      .where(inArray(runs.status, FAILABLE_RUN_STATUSES))
       .returning({ id: runs.id });
 
     return affected.length;
   }
 
   async getInProgressRuns(): Promise<RunRecord[]> {
-    const inProgressStatuses = ["queued", "running", "validating", "pushing", "cancel_requested"];
     const rows = await this.selectRunRows()
-      .where(inArray(runs.status, inProgressStatuses));
+      .where(inArray(runs.status, RECONCILABLE_RUN_STATUSES));
     return rows.map(rowToRecord);
   }
 
   async recoverInProgressRuns(reason: string): Promise<RunRecord[]> {
-    const inProgressStatuses = ["queued", "running", "validating", "pushing"];
     const affected = await this.db
-      .select()
-      .from(runs)
-      .where(and(
-        inArray(runs.status, inProgressStatuses),
-        ne(runs.runtime, "kubernetes"),
-      ));
-
-    if (affected.length === 0) return [];
-
-    await this.db
       .update(runs)
       .set({
         status: "queued",
@@ -483,12 +493,14 @@ export class RunStore {
         error: reason,
       })
       .where(and(
-        inArray(runs.status, inProgressStatuses),
+        inArray(runs.status, RECOVERABLE_RUN_STATUSES),
         ne(runs.runtime, "kubernetes"),
-      ));
+      ))
+      .returning({ id: runs.id });
 
-    // Re-fetch after update
     const ids = affected.map((r) => r.id);
+    if (ids.length === 0) return [];
+
     const rows = await this.selectRunRows().where(inArray(runs.id, ids));
     return rows.map(rowToRecord);
   }
@@ -541,6 +553,6 @@ export function mapPhaseToRunStatus(phase: string): RunStatus {
   if (phase === "validating") return "validating";
   if (phase === "pushing") return "pushing";
   if (phase === "awaiting_ci") return "running";
-  if (phase === "ci_fixing") return "ci_fixing";
+  if (phase === "ci_fixing") return "running";
   return "running";
 }

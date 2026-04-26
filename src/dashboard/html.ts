@@ -2582,6 +2582,13 @@ export function dashboardHtml(config: AppConfig): string {
       return 'status-pill ' + status;
     }
 
+    function statusLabel(run) {
+      if (run && run.phase && run.phase !== run.status && run.status === 'running') {
+        return run.status + ' / ' + run.phase;
+      }
+      return run ? run.status : '';
+    }
+
     function formatDate(value) {
       if (!value) {
         return '—';
@@ -3185,7 +3192,7 @@ export function dashboardHtml(config: AppConfig): string {
 
         var statusNode = document.createElement('span');
         statusNode.className = statusClass(run.status);
-        statusNode.textContent = run.status;
+        statusNode.textContent = statusLabel(run);
 
         top.appendChild(taskNode);
         top.appendChild(statusNode);

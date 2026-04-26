@@ -534,6 +534,7 @@ test("hydrateContextNode: auto-review runs require structured review summary out
   assert.match(content, /ignoredFindings .* stale.*irrelevant/i, "Should define ignoredFindings as reviewed but discarded hints");
   assert.match(content, /if there are no issues, both arrays should be empty/i, "Should require empty arrays when no issues remain");
   assert.match(content, /do not use .* changelog|do not use .* summary of the pr/i, "Should forbid using the arrays as a changelog");
+  assert.match(content, /do not put .*environment.*validation.*selectedFindings/i, "Should keep environment validation limits out of selectedFindings");
 });
 
 test("hydrateContextNode: auto-review summary instructions are enabled by intent", async (t) => {

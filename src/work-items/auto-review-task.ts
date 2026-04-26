@@ -36,6 +36,7 @@ export function buildAutoReviewTask(input: AutoReviewTaskInput): string {
   lines.push("9. ignoredFindings must list only reviewed hints or comments you intentionally ignored because they are stale, irrelevant, already fixed, or out of scope.");
   lines.push("10. If there are no issues, both arrays should be empty.");
   lines.push("11. Do not use selectedFindings or ignoredFindings as a changelog, test summary, or positive summary of the PR. Put that in rationale instead.");
+  lines.push("12. Do not put environment or validation limitations in selectedFindings unless they reveal a concrete defect in the current diff. Mention blocked validation in rationale instead.");
 
   return lines.join("\n");
 }

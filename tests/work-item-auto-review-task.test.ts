@@ -34,6 +34,7 @@ test("auto review task renderer includes repo, PR metadata, Jira key, and title"
   assert.match(rendered, /ignoredFindings .* stale.*irrelevant/i);
   assert.match(rendered, /if there are no issues, both arrays should be empty/i);
   assert.match(rendered, /do not use .* selectedFindings .* changelog|do not use .* ignoredFindings .* changelog/i);
+  assert.match(rendered, /do not put .*environment.*validation.*selectedFindings/i);
 });
 
 test("ci fix task renderer includes repo, PR metadata, Jira key, and branch reuse constraints", async () => {

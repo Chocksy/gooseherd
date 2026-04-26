@@ -791,6 +791,7 @@ function getAutoReviewSummaryInstructions(run: RunRecord): string[] {
     "- ignoredFindings must contain only reviewed hints or comments you intentionally ignored because they are stale, irrelevant, already fixed, or out of scope.",
     "- If there are no issues, both arrays should be empty.",
     "- Do not use either array as a changelog, test summary, or positive summary of the PR. Put that in rationale instead.",
+    "- Do not put environment or validation limitations in selectedFindings unless they reveal a concrete defect in the current diff. Mention blocked validation in rationale instead.",
     "- Keep each finding short and concrete.",
   ];
 }

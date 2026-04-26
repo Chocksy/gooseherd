@@ -111,6 +111,19 @@ export function filterCheckRuns(checkRuns: CICheckRun[], filter: string[]): CICh
 }
 
 /**
+ * Exclude check runs by name against an ignore list.
+ * Empty list = exclude nothing.
+ */
+export function excludeCheckRuns(checkRuns: CICheckRun[], ignore: string[]): CICheckRun[] {
+  if (ignore.length === 0) {
+    return checkRuns;
+  }
+  return checkRuns.filter(cr =>
+    !ignore.some(pattern => cr.name.toLowerCase().includes(pattern.toLowerCase()))
+  );
+}
+
+/**
  * Convert GitHub check annotations to our CIAnnotation format.
  */
 export function mapAnnotations(ghAnnotations: CICheckAnnotation[]): CIAnnotation[] {

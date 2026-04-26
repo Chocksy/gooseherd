@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { Octokit } from "@octokit/rest";
 import { createAppAuth } from "@octokit/auth-app";
 import type { AppConfig } from "./config.js";
+import { excludeCheckRuns } from "./pipeline/ci/ci-monitor.js";
+import { parseRepoConfigYaml } from "./pipeline/repo-config.js";
 
 interface PullRequestParams {
   repoSlug: string;
@@ -129,6 +131,11 @@ export interface AccessibleRepository {
   private: boolean;
   defaultBranch?: string;
   htmlUrl?: string;
+}
+
+interface PullRequestCiSnapshotOptions {
+  repoConfigRef?: string;
+  prNumber?: number;
 }
 
 interface GraphQLReviewThreadCommentPage {
@@ -443,9 +450,13 @@ export class GitHubService {
     repoSlug: string,
     headSha: string,
     signal?: AbortSignal,
+    options?: PullRequestCiSnapshotOptions,
   ): Promise<PullRequestCiSnapshot> {
     const { owner, repo } = parseRepoSlug(repoSlug);
-    const checkRuns = await this.listCheckRuns(owner, repo, headSha, signal);
+    const checkRuns = excludeCheckRuns(
+      await this.listCheckRuns(owner, repo, headSha, signal),
+      await this.resolveRepoCiIgnoreChecks(repoSlug, options, signal),
+    );
     if (checkRuns.length === 0) {
       return { headSha, conclusion: "no_ci" };
     }
@@ -628,6 +639,42 @@ export class GitHubService {
       job_id: jobId
     });
     return typeof response.data === "string" ? response.data : String(response.data);
+  }
+
+  private async resolveRepoCiIgnoreChecks(
+    repoSlug: string,
+    options?: PullRequestCiSnapshotOptions,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const repoConfigRef = options?.repoConfigRef ?? await this.resolveRepoConfigRef(repoSlug, options?.prNumber, signal);
+    if (!repoConfigRef) {
+      return [];
+    }
+
+    try {
+      const content = await this.readFile(repoSlug, ".gooseherd.yml", repoConfigRef);
+      const repoConfig = parseRepoConfigYaml(content);
+      return repoConfig?.qualityGates?.ci?.ignore_checks ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async resolveRepoConfigRef(
+    repoSlug: string,
+    prNumber?: number,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (!prNumber) {
+      return undefined;
+    }
+
+    try {
+      const pullRequest = await this.getPullRequest(repoSlug, prNumber, signal);
+      return pullRequest.baseRef;
+    } catch {
+      return undefined;
+    }
   }
 
   private async graphql<T>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<T> {

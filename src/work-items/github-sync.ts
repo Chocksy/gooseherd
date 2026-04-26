@@ -497,7 +497,12 @@ export class GitHubWorkItemSync {
     }
 
     try {
-      const snapshot = await this.githubService.getPullRequestCiSnapshot(payload.repo, payload.headSha);
+      const snapshot = await this.githubService.getPullRequestCiSnapshot(
+        payload.repo,
+        payload.headSha,
+        undefined,
+        { prNumber: payload.prNumber },
+      );
       // getPullRequestCiSnapshot() normalizes failed check suites, including timed_out, to "failure".
       if (snapshot.conclusion === "failure") {
         return { substate: "ci_failed", flagsToAdd: [] };
@@ -862,7 +867,12 @@ export class GitHubWorkItemSync {
     const currentHeadSha = workItem.githubPrHeadSha ?? payload.headSha;
     if (payload.repo && currentHeadSha && this.githubService?.getPullRequestCiSnapshot) {
       try {
-        const snapshot = await this.githubService.getPullRequestCiSnapshot(payload.repo, currentHeadSha);
+        const snapshot = await this.githubService.getPullRequestCiSnapshot(
+          payload.repo,
+          currentHeadSha,
+          undefined,
+          { prNumber: payload.prNumber ?? payload.pullRequestNumbers?.[0] },
+        );
         return snapshot.conclusion;
       } catch (error) {
         logError("Failed to resolve aggregate CI snapshot for check_suite", {

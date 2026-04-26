@@ -1315,6 +1315,58 @@ test("GitHubService: CI snapshot caps failure snippets by line count while prese
   assert.equal(lines[2], "offense-52");
 });
 
+test("GitHubService: CI snapshot ignores repo-configured non-CI checks from the base ref", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            {
+              id: 40,
+              name: "build-and-test",
+              status: "completed",
+              conclusion: "success",
+              completed_at: "2026-04-20T15:17:08Z"
+            },
+            {
+              id: 41,
+              name: "PR Checker",
+              status: "completed",
+              conclusion: "failure",
+              completed_at: "2026-04-20T15:17:08Z"
+            }
+          ]
+        }
+      }),
+      listAnnotations: async () => ({ data: [] })
+    },
+    repos: {
+      getContent: async ({ path, ref }: { path: string; ref?: string }) => {
+        assert.equal(path, ".gooseherd.yml");
+        assert.equal(ref, "main");
+        return {
+          data: {
+            type: "file",
+            content: Buffer.from([
+              "quality_gates:",
+              "  ci:",
+              "    ignore_checks:",
+              "      - PR Checker"
+            ].join("\n")).toString("base64")
+          }
+        };
+      }
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123", undefined, { repoConfigRef: "main" });
+
+  assert.equal(snapshot.conclusion, "success");
+  assert.equal(snapshot.failedRuns?.length ?? 0, 0);
+  assert.equal(snapshot.primaryFailedRun, undefined);
+});
+
 test("JiraClient: comments paginate across pages", async () => {
   const calls: string[] = [];
   const originalFetch = globalThis.fetch;

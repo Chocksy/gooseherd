@@ -1,0 +1,4 @@
+quality_gates:
+  ci:
+    ignore_checks:
+      - PR Checker

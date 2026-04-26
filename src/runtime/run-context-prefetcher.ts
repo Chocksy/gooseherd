@@ -92,7 +92,7 @@ export class RunContextPrefetcher {
         github.listPullRequestDiscussionComments(run.repoSlug, prNumber, signal),
         github.listPullRequestReviews(run.repoSlug, prNumber, signal),
         github.listUnresolvedReviewComments(run.repoSlug, prNumber, signal),
-        github.getPullRequestCiSnapshot(run.repoSlug, headSha, signal),
+        github.getPullRequestCiSnapshot(run.repoSlug, headSha, signal, { repoConfigRef: pr.baseRef, prNumber }),
       ]);
 
       return {

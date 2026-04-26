@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   aggregateConclusions,
+  excludeCheckRuns,
   filterCheckRuns,
   mapAnnotations,
   truncateLog,
@@ -106,6 +107,16 @@ test("filterCheckRuns: filters by name (case-insensitive)", () => {
   assert.equal(filtered.length, 2);
   assert.ok(filtered.some(r => r.name === "RSpec Tests"));
   assert.ok(filtered.some(r => r.name === "Rubocop Lint"));
+});
+
+test("excludeCheckRuns: ignores matching runs by name (case-insensitive contains)", () => {
+  const runs: CICheckRun[] = [
+    { id: 1, name: "build-and-test", status: "completed", conclusion: "success" },
+    { id: 2, name: "PR Checker", status: "completed", conclusion: "failure" },
+    { id: 3, name: "commitlint", status: "completed", conclusion: "success" }
+  ];
+  const filtered = excludeCheckRuns(runs, ["pr checker"]);
+  assert.deepEqual(filtered.map(r => r.name), ["build-and-test", "commitlint"]);
 });
 
 // ── mapAnnotations ──

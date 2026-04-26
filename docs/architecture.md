@@ -269,6 +269,9 @@ Repos can include a `.gooseherd.yml` at their root to customize pipeline behavio
 # .gooseherd.yml — loaded from base branch (not PR branch, for security)
 pipeline: with-ci-feedback        # override which pipeline to use
 quality_gates:
+  ci:
+    ignore_checks:
+      - "PR Checker"              # ignore non-CI policy/status checks
   diff_size:
     profile: feature              # allow larger diffs
   forbidden_files:

@@ -5,6 +5,7 @@ import { appendLog, sleep } from "../shell.js";
 import { appendGateReport } from "../quality-gates/gate-report.js";
 import {
   aggregateConclusions,
+  excludeCheckRuns,
   filterCheckRuns,
   type CIAnnotation
 } from "./ci-monitor.js";
@@ -44,6 +45,7 @@ export async function waitCiNode(
   const { owner, repo } = parseRepoSlug(deps.run.repoSlug);
   const logFile = deps.logFile;
   const checkFilter = config.ciCheckFilter;
+  const repoCiIgnoreChecks = ctx.get<string[]>("repoCiIgnoreChecks") ?? [];
 
   await deps.onPhase("awaiting_ci");
   await deps.emitRunCheckpoint?.({
@@ -64,7 +66,7 @@ export async function waitCiNode(
 
   while (Date.now() < patienceEnd) {
     const checkRuns = await deps.githubService.listCheckRuns(owner, repo, commitSha);
-    const filtered = filterCheckRuns(checkRuns, checkFilter);
+    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), repoCiIgnoreChecks);
 
     if (filtered.length > 0) {
       await appendLog(logFile, `\n[ci:wait] ${String(filtered.length)} check run(s) found\n`);
@@ -82,7 +84,7 @@ export async function waitCiNode(
 
   while (Date.now() < maxWaitEnd) {
     const checkRuns = await deps.githubService.listCheckRuns(owner, repo, commitSha);
-    const filtered = filterCheckRuns(checkRuns, checkFilter);
+    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), repoCiIgnoreChecks);
 
     if (filtered.length === 0) {
       // No CI checks at all — treat as no_ci

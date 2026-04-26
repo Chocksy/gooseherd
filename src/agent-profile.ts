@@ -75,6 +75,13 @@ function uniqueStrings(values: unknown): string[] {
   return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
 }
 
+function normalizeProviderModel(provider: AgentProvider | undefined, model: string | undefined): string | undefined {
+  if (!model || provider !== "openrouter" || model.toLowerCase().startsWith("openrouter/")) {
+    return model;
+  }
+  return `openrouter/${model}`;
+}
+
 export function getAvailableProviders(config: AppConfig): ProviderOption[] {
   return [
     { id: "openai", label: "OpenAI", configured: Boolean(config.openaiApiKey), envVar: "OPENAI_API_KEY" },
@@ -88,12 +95,14 @@ export function isProviderConfigured(config: AppConfig, provider: AgentProvider)
 }
 
 export function sanitizeAgentProfileInput(input: AgentProfileInput): AgentProfileInput {
+  const provider = input.provider;
+  const model = trimOrUndefined(input.model);
   return {
     name: String(input.name ?? "").trim(),
     description: trimOrUndefined(input.description),
     runtime: input.runtime,
-    provider: input.provider,
-    model: trimOrUndefined(input.model),
+    provider,
+    model: normalizeProviderModel(provider, model),
     tools: uniqueStrings(input.tools),
     mode: trimOrUndefined(input.mode),
     extensions: uniqueStrings(input.extensions),

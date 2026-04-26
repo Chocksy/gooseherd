@@ -127,6 +127,17 @@ describe("agent profile helpers", () => {
     assert.ok(command.includes("--tools 'read,write'"));
   });
 
+  test("renders pi openrouter profiles with openrouter model prefix", () => {
+    const command = renderAgentProfileTemplate({
+      name: "Pi OpenRouter",
+      runtime: "pi",
+      provider: "openrouter",
+      model: "openai/gpt-4.1-mini",
+      tools: ["read", "write"],
+    });
+    assert.ok(command.includes("--model 'openrouter/openai/gpt-4.1-mini'"));
+  });
+
   test("renders custom command template unchanged", () => {
     const command = renderAgentProfileTemplate({
       name: "Custom",

@@ -26,6 +26,7 @@ export interface PullRequestDetails {
   title: string;
   body: string;
   state: string;
+  merged?: boolean;
   baseRef?: string;
   headRef?: string;
   headSha?: string;
@@ -271,6 +272,7 @@ export class GitHubService {
       title: response.data.title,
       body: response.data.body ?? "",
       state: response.data.state,
+      merged: response.data.merged ?? undefined,
       baseRef: response.data.base?.ref ?? undefined,
       headRef: response.data.head?.ref ?? undefined,
       headSha: response.data.head?.sha ?? undefined,

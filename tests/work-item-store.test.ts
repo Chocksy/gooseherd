@@ -240,6 +240,80 @@ test("work item store rejects duplicate product discovery Jira issue keys", asyn
   }));
 });
 
+test("work item store lists branch sync candidates without terminal work items", async (t) => {
+  const { cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
+  t.after(cleanup);
+
+  const active = await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "auto_review",
+    title: "Active delivery",
+    summary: "Should be returned",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.250",
+    createdByUserId: ownerUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 250,
+  });
+
+  await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "done",
+    title: "Done delivery",
+    summary: "Should not be returned",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.251",
+    createdByUserId: ownerUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 251,
+  });
+
+  const paused = await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "cancelled",
+    title: "Paused delivery",
+    summary: "Should be returned because ai:assist may be restored",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.252",
+    createdByUserId: ownerUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 252,
+    flags: ["ai_assist_disabled"],
+  });
+
+  await workItems.createWorkItem({
+    workflow: "feature_delivery",
+    state: "cancelled",
+    title: "Closed delivery",
+    summary: "Should not be returned",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.253",
+    createdByUserId: ownerUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 253,
+    flags: ["ai_assist_disabled", "pr_closed"],
+  });
+
+  await workItems.createWorkItem({
+    workflow: "product_discovery",
+    state: "in_progress",
+    title: "Discovery",
+    summary: "Should not be returned",
+    ownerTeamId,
+    homeChannelId: "C_TEAM_1",
+    homeThreadTs: "1740000000.254",
+    createdByUserId: ownerUserId,
+  });
+
+  const listed = await workItems.listBranchSyncCandidateWorkItems();
+
+  assert.deepEqual(listed.map((workItem) => workItem.id), [paused.id, active.id]);
+});
+
 test("work item store preserves repo on create and read", async (t) => {
   const { cleanup, workItems, ownerUserId, ownerTeamId } = await createStores();
   t.after(cleanup);

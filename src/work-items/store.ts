@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, arrayContains, desc, eq, isNotNull, not, or, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { workItems } from "../db/schema.js";
 import type { CreateWorkItemInput, UpdateWorkItemStateInput, WorkItemRecord } from "./types.js";
@@ -97,6 +97,27 @@ export class WorkItemStore {
 
   async listWorkItems(): Promise<WorkItemRecord[]> {
     const rows = await this.db.select().from(workItems).orderBy(desc(workItems.createdAt));
+    return rows.map(rowToRecord);
+  }
+
+  async listBranchSyncCandidateWorkItems(): Promise<WorkItemRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(workItems)
+      .where(and(
+        eq(workItems.workflow, "feature_delivery"),
+        isNotNull(workItems.repo),
+        isNotNull(workItems.githubPrNumber),
+        or(
+          not(sql`${workItems.state} in ('done', 'cancelled')`),
+          and(
+            eq(workItems.state, "cancelled"),
+            arrayContains(workItems.flags, ["ai_assist_disabled"]),
+            not(arrayContains(workItems.flags, ["pr_closed"])),
+          ),
+        ),
+      ))
+      .orderBy(desc(workItems.createdAt));
     return rows.map(rowToRecord);
   }
 

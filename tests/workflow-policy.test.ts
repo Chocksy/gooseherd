@@ -24,3 +24,9 @@ test("feature delivery active states may transition to terminal states", () => {
     });
   }
 });
+
+test("feature delivery cancelled automation pause may transition to done after merge polling", () => {
+  assert.doesNotThrow(() => {
+    assertStateTransitionAllowed({ workflow: "feature_delivery", state: "cancelled" }, "done");
+  });
+});

@@ -660,8 +660,13 @@ async function createDashboardWorkItemsBundle(
       maxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
       intervalMs: config.autoReviewBranchSyncIntervalMs,
       compareBranchRefs: githubService.compareBranchRefs.bind(githubService),
+      getPullRequest: githubService.getPullRequest.bind(githubService),
+      adoptionLabels: config.workItemGithubAdoptionLabels,
       queueBranchSyncRun: async (workItemId, reason) => {
         await workItemOrchestrator.queueBranchSyncRun(workItemId, reason);
+      },
+      reconcileWorkItem: async (workItemId, reason) => {
+        await workItemOrchestrator.reconcileWorkItem(workItemId, reason);
       },
     });
   }

@@ -36,6 +36,7 @@ export interface GitHubWorkItemWebhookPayload {
   prBody?: string;
   prUrl?: string;
   authorLogin?: string;
+  labelName?: string;
   baseBranch?: string;
   headBranch?: string;
   headSha?: string;
@@ -118,6 +119,7 @@ export function parseGitHubWorkItemWebhookPayload(
       prBody: pullRequest["body"] as string | undefined,
       prUrl: pullRequest["html_url"] as string | undefined,
       authorLogin: (pullRequest["user"] as Record<string, unknown> | undefined)?.["login"] as string | undefined,
+      labelName: typeof webhookLabel === "string" ? webhookLabel : undefined,
       baseBranch: (pullRequest["base"] as Record<string, unknown> | undefined)?.["ref"] as string | undefined,
       headBranch: (pullRequest["head"] as Record<string, unknown> | undefined)?.["ref"] as string | undefined,
       headSha: (pullRequest["head"] as Record<string, unknown> | undefined)?.["sha"] as string | undefined,
@@ -241,6 +243,8 @@ export class GitHubWorkItemSync {
           merged: payload.merged ?? false,
         },
       });
+      current = await this.syncAiAssistLifecycleFromPullRequestLabels(current, payload);
+
       if (payload.action === "closed" && payload.merged) {
         return this.markPullRequestMerged(current, payload);
       }
@@ -249,7 +253,12 @@ export class GitHubWorkItemSync {
         return this.handlePullRequestSynchronize(current, payload);
       }
 
-      if (!automationWasEnabled && this.isAiAssistAutomationEnabled(current) && current.state === "auto_review") {
+      if (
+        existing.state !== "cancelled" &&
+        !automationWasEnabled &&
+        this.isAiAssistAutomationEnabled(current) &&
+        current.state === "auto_review"
+      ) {
         await this.reconcileIfConfigured(current.id, "github.automation_enabled");
       }
 
@@ -640,6 +649,10 @@ export class GitHubWorkItemSync {
     return normalized.some((label) => this.adoptionLabels.includes(label));
   }
 
+  private isAdoptionLabel(label: string | undefined): boolean {
+    return typeof label === "string" && this.adoptionLabels.includes(label.trim().toLowerCase());
+  }
+
   private reviewFlagsFromLabels(labels: string[] | undefined): string[] {
     const normalized = new Set((labels ?? []).map((label) => label.trim().toLowerCase()));
     const flags: string[] = [];
@@ -675,6 +688,43 @@ export class GitHubWorkItemSync {
       flagsToAdd: hasAdoptionLabel ? [AI_ASSIST_ENABLED_FLAG] : [AI_ASSIST_DISABLED_FLAG],
       flagsToRemove: hasAdoptionLabel ? [AI_ASSIST_DISABLED_FLAG] : [AI_ASSIST_ENABLED_FLAG],
     });
+  }
+
+  private async syncAiAssistLifecycleFromPullRequestLabels(
+    workItem: WorkItemRecord,
+    payload: GitHubWorkItemWebhookPayload,
+  ): Promise<WorkItemRecord> {
+    if (workItem.workflow !== "feature_delivery") {
+      return workItem;
+    }
+
+    const hasAdoptionLabel = this.hasAdoptionLabel(payload.labels);
+
+    if (
+      payload.action === "unlabeled" &&
+      this.isAdoptionLabel(payload.labelName) &&
+      !hasAdoptionLabel &&
+      workItem.state !== "cancelled"
+    ) {
+      return this.workItems.updateState(workItem.id, {
+        state: "cancelled",
+        flagsToAdd: [AI_ASSIST_DISABLED_FLAG],
+        flagsToRemove: [AI_ASSIST_ENABLED_FLAG],
+      });
+    }
+
+    if (payload.action === "labeled" && hasAdoptionLabel && workItem.state === "cancelled") {
+      const revived = await this.workItems.updateState(workItem.id, {
+        state: "auto_review",
+        substate: "pr_adopted",
+        flagsToAdd: [AI_ASSIST_ENABLED_FLAG],
+        flagsToRemove: [AI_ASSIST_DISABLED_FLAG],
+      });
+      await this.reconcileIfConfigured(revived.id, "github.automation_restored");
+      return revived;
+    }
+
+    return workItem;
   }
 
   private async syncReviewFlagsFromPullRequestLabels(

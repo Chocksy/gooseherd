@@ -52,7 +52,7 @@ const ALLOWED_STATE_TRANSITIONS: Record<WorkItemWorkflow, Record<WorkItemState, 
     qa_review: new Set(["auto_review", "ready_for_merge", "cancelled"]),
     ready_for_merge: new Set(["auto_review", "done", "cancelled"]),
     done: new Set(),
-    cancelled: new Set(),
+    cancelled: new Set(["auto_review"]),
   },
 };
 

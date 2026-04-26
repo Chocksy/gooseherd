@@ -330,6 +330,7 @@ test("parseGitHubWorkItemWebhookPayload does not re-add the removed top-level la
   );
 
   assert.deepEqual(parsed?.labels, []);
+  assert.equal(parsed?.labelName, "ai:assist");
 });
 
 test("github sync adopts labeled PR into delivery work item", async (t) => {
@@ -453,6 +454,97 @@ test("github sync does not adopt a PR when ai:assist was removed", async (t) => 
   const adopted = await sync.handleWebhookPayload(parsed);
 
   assert.equal(adopted, undefined);
+});
+
+test("github sync cancels an existing delivery work item when ai:assist is removed", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Cancel removed assist label",
+    summary: "Existing PR automation should stop",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.565",
+    jiraIssueKey: "HBL-565",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 565,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/565",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "unlabeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 565,
+    prTitle: "Cancel removed assist label",
+    prBody: "Refs HBL-565",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/565",
+    labelName: "ai:assist",
+    labels: [],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "cancelled");
+  assert.equal(updated?.substate, undefined);
+  assert.ok(updated?.flags.includes("ai_assist_disabled"));
+  assert.ok(!updated?.flags.includes("ai_assist_enabled"));
+});
+
+test("github sync revives a cancelled delivery work item into auto review when ai:assist is restored", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Restore assist label",
+    summary: "Existing PR automation should restart",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.566",
+    jiraIssueKey: "HBL-566",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 566,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/566",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  const cancelled = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "unlabeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 566,
+    prTitle: "Restore assist label",
+    prBody: "Refs HBL-566",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/566",
+    labelName: "ai:assist",
+    labels: [],
+  });
+  assert.equal(cancelled?.state, "cancelled");
+
+  const revived = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 566,
+    prTitle: "Restore assist label",
+    prBody: "Refs HBL-566",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/566",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(revived?.id, delivery.id);
+  assert.equal(revived?.state, "auto_review");
+  assert.equal(revived?.substate, "pr_adopted");
+  assert.ok(revived?.flags.includes("ai_assist_enabled"));
+  assert.ok(!revived?.flags.includes("ai_assist_disabled"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.automation_restored" }]);
 });
 
 test("github sync creates a delivery for labeled PRs without a Jira issue key", async (t) => {

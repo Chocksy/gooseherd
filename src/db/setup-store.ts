@@ -151,23 +151,23 @@ export class SetupStore {
         github: {
           authMode: this.pickPrefillValue(resolveGitHubEnvAuthMode(), stringOrUndefined(github?.config.authMode)),
           defaultOwner: this.pickPrefillValue(process.env.GITHUB_DEFAULT_OWNER, stringOrUndefined(github?.config.defaultOwner)),
-          token: this.pickPrefillValue(process.env.GITHUB_TOKEN, stringOrUndefined(github?.secrets.token)),
+          token: this.pickSecretPrefillValue(process.env.GITHUB_TOKEN, stringOrUndefined(github?.secrets.token)),
           appId: this.pickPrefillValue(process.env.GITHUB_APP_ID, stringOrUndefined(github?.config.appId)),
           installationId: this.pickPrefillValue(process.env.GITHUB_APP_INSTALLATION_ID, stringOrUndefined(github?.config.installationId)),
-          privateKey: this.pickPrefillValue(process.env.GITHUB_APP_PRIVATE_KEY, stringOrUndefined(github?.secrets.privateKey)),
+          privateKey: this.pickSecretPrefillValue(process.env.GITHUB_APP_PRIVATE_KEY, stringOrUndefined(github?.secrets.privateKey)),
         },
         llm: {
           provider: this.pickPrefillValue(resolveLlmEnvProvider(), stringOrUndefined(llm?.config.provider)),
-          apiKey: this.pickPrefillValue(resolveLlmEnvApiKey(), stringOrUndefined(llm?.secrets.apiKey)),
+          apiKey: this.pickSecretPrefillValue(resolveLlmEnvApiKey(), stringOrUndefined(llm?.secrets.apiKey)),
           defaultModel: this.pickPrefillValue(process.env.DEFAULT_LLM_MODEL, stringOrUndefined(llm?.config.defaultModel)),
         },
         slack: {
-          botToken: this.pickPrefillValue(process.env.SLACK_BOT_TOKEN, stringOrUndefined(slack?.secrets.botToken)),
-          appToken: this.pickPrefillValue(process.env.SLACK_APP_TOKEN, stringOrUndefined(slack?.secrets.appToken)),
-          signingSecret: this.pickPrefillValue(process.env.SLACK_SIGNING_SECRET, stringOrUndefined(slack?.secrets.signingSecret)),
+          botToken: this.pickSecretPrefillValue(process.env.SLACK_BOT_TOKEN, stringOrUndefined(slack?.secrets.botToken)),
+          appToken: this.pickSecretPrefillValue(process.env.SLACK_APP_TOKEN, stringOrUndefined(slack?.secrets.appToken)),
+          signingSecret: this.pickSecretPrefillValue(process.env.SLACK_SIGNING_SECRET, stringOrUndefined(slack?.secrets.signingSecret)),
           commandName: this.pickPrefillValue(process.env.SLACK_COMMAND_NAME, stringOrUndefined(slack?.config.commandName)),
           clientId: this.pickPrefillValue(process.env.SLACK_CLIENT_ID, stringOrUndefined(slack?.config.clientId)),
-          clientSecret: this.pickPrefillValue(process.env.SLACK_CLIENT_SECRET, stringOrUndefined(slack?.secrets.clientSecret)),
+          clientSecret: this.pickSecretPrefillValue(process.env.SLACK_CLIENT_SECRET, stringOrUndefined(slack?.secrets.clientSecret)),
           authRedirectUri: this.pickPrefillValue(process.env.SLACK_AUTH_REDIRECT_URI, stringOrUndefined(slack?.config.authRedirectUri)),
         },
       },
@@ -387,6 +387,11 @@ export class SetupStore {
       return { value: normalizedWizard, source: "wizard" };
     }
     return { source: "none" };
+  }
+
+  private pickSecretPrefillValue(envValue?: string, wizardValue?: string): SetupPrefillValue {
+    const selected = this.pickPrefillValue(envValue, wizardValue);
+    return { source: selected.source };
   }
 
   // ── Encryption key management ──

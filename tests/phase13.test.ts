@@ -137,40 +137,100 @@ describe("setup wizard helpers", () => {
     }
   });
 
-  test("SetupStore.applyToEnv respects section env override flags without persisting DB override state", async () => {
+  test("SetupStore.applyToEnv preserves existing ENV credentials and only fills missing non-conflicting values", async () => {
     const keys = [
+      "GITHUB_TOKEN",
+      "GITHUB_APP_ID",
+      "GITHUB_APP_INSTALLATION_ID",
+      "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_DEFAULT_OWNER",
+      "REPO_ALLOWLIST",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "CODEX_API_KEY",
+      "DEFAULT_LLM_MODEL",
       "SLACK_BOT_TOKEN",
       "SLACK_APP_TOKEN",
       "SLACK_SIGNING_SECRET",
       "SLACK_COMMAND_NAME",
-      "SLACK_CONFIG_OVERRIDE_FROM_ENV",
+      "SLACK_CLIENT_ID",
+      "SLACK_CLIENT_SECRET",
+      "SLACK_AUTH_REDIRECT_URI",
     ] as const;
     const previous = new Map<string, string | undefined>(keys.map((key) => [key, process.env[key]]));
 
+    process.env.GITHUB_TOKEN = "ghp-env";
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_INSTALLATION_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    delete process.env.GITHUB_DEFAULT_OWNER;
+    delete process.env.REPO_ALLOWLIST;
+
+    process.env.OPENAI_API_KEY = "sk-openai-env";
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.DEFAULT_LLM_MODEL;
+
     process.env.SLACK_BOT_TOKEN = "xoxb-env";
-    process.env.SLACK_APP_TOKEN = "xapp-env";
-    process.env.SLACK_SIGNING_SECRET = "env-signing-secret";
-    process.env.SLACK_COMMAND_NAME = "env-goose";
-    process.env.SLACK_CONFIG_OVERRIDE_FROM_ENV = "true";
+    delete process.env.SLACK_APP_TOKEN;
+    delete process.env.SLACK_SIGNING_SECRET;
+    delete process.env.SLACK_COMMAND_NAME;
+    delete process.env.SLACK_CLIENT_ID;
+    delete process.env.SLACK_CLIENT_SECRET;
+    delete process.env.SLACK_AUTH_REDIRECT_URI;
 
     const testDb = await createTestDb();
     try {
       const store = new SetupStore(testDb.db);
       await store.setPassword("super-secret-password");
+      await store.saveGitHub({
+        authMode: "app",
+        defaultOwner: "wizard-org",
+        repos: ["owner/repo-a", "owner/repo-b"],
+        appId: "12345",
+        installationId: "67890",
+        privateKey: "wizard-private-key",
+      });
+      await store.saveLLM({
+        provider: "openrouter",
+        apiKey: "sk-or-wizard",
+        defaultModel: "openrouter/auto",
+      });
       await store.saveSlack({
         botToken: "xoxb-wizard",
         appToken: "xapp-wizard",
         signingSecret: "wizard-signing-secret",
         commandName: "wizard-goose",
+        clientId: "111.222",
+        clientSecret: "wizard-client-secret",
+        authRedirectUri: "/auth/slack/callback",
       });
       await store.markComplete();
 
       await store.applyToEnv();
 
+      assert.equal(process.env.GITHUB_TOKEN, "ghp-env");
+      assert.equal(process.env.GITHUB_APP_ID, undefined);
+      assert.equal(process.env.GITHUB_APP_INSTALLATION_ID, undefined);
+      assert.equal(process.env.GITHUB_APP_PRIVATE_KEY, undefined);
+      assert.equal(process.env.GITHUB_DEFAULT_OWNER, "wizard-org");
+      assert.equal(process.env.REPO_ALLOWLIST, "owner/repo-a,owner/repo-b");
+
+      assert.equal(process.env.OPENAI_API_KEY, "sk-openai-env");
+      assert.equal(process.env.OPENROUTER_API_KEY, undefined);
+      assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
+      assert.equal(process.env.CODEX_API_KEY, undefined);
+      assert.equal(process.env.DEFAULT_LLM_MODEL, undefined);
+
       assert.equal(process.env.SLACK_BOT_TOKEN, "xoxb-env");
-      assert.equal(process.env.SLACK_APP_TOKEN, "xapp-env");
-      assert.equal(process.env.SLACK_SIGNING_SECRET, "env-signing-secret");
-      assert.equal(process.env.SLACK_COMMAND_NAME, "env-goose");
+      assert.equal(process.env.SLACK_APP_TOKEN, "xapp-wizard");
+      assert.equal(process.env.SLACK_SIGNING_SECRET, "wizard-signing-secret");
+      assert.equal(process.env.SLACK_COMMAND_NAME, "wizard-goose");
+      assert.equal(process.env.SLACK_CLIENT_ID, "111.222");
+      assert.equal(process.env.SLACK_CLIENT_SECRET, "wizard-client-secret");
+      assert.equal(process.env.SLACK_AUTH_REDIRECT_URI, "/auth/slack/callback");
     } finally {
       for (const [key, value] of previous) {
         if (value === undefined) {

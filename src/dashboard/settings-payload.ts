@@ -7,11 +7,6 @@ export interface DashboardSettingsPayload {
   pipelineFile: string;
   slackConnected: boolean;
   githubAuthMode: "app" | "pat" | "none";
-  configOverrides: {
-    githubFromEnv: boolean;
-    slackFromEnv: boolean;
-    llmFromEnv: boolean;
-  };
   capabilities: DashboardCapabilities;
   runtime: {
     sandbox: {
@@ -43,7 +38,6 @@ export function buildDashboardSettingsPayload(
   config: AppConfig,
   capabilities: DashboardCapabilities,
   githubAuthMode: "app" | "pat" | "none",
-  configOverrides: DashboardSettingsPayload["configOverrides"],
   agentProfiles: Record<string, unknown>[],
 ): DashboardSettingsPayload {
   const sandboxRuntimeLabel = formatSandboxRuntimeLabel(config.sandboxRuntime);
@@ -54,7 +48,6 @@ export function buildDashboardSettingsPayload(
     pipelineFile: config.pipelineFile,
     slackConnected: Boolean(config.slackBotToken),
     githubAuthMode,
-    configOverrides,
     capabilities,
     runtime: {
       sandbox: {

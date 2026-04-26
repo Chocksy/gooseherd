@@ -282,7 +282,7 @@ export class SetupStore {
   }
 
   /**
-   * Apply wizard-stored secrets into process.env unless the section is pinned to env overrides.
+   * Apply wizard-stored configuration into process.env without overriding existing ENV values.
    * Called on startup (if setup complete) and after wizard completion.
    */
   async applyToEnv(): Promise<void> {
@@ -290,46 +290,45 @@ export class SetupStore {
     if (!row || !row.completedAt) return;
 
     const github = await this.readConfigSection("github");
-    if (github && !this.shouldUseEnvOverride("github")) {
+    if (github) {
       const authMode = String(github.config.authMode ?? "");
       const token = stringOrUndefined(github.secrets.token);
       const privateKey = stringOrUndefined(github.secrets.privateKey);
-      setEnvValue("GITHUB_DEFAULT_OWNER", stringOrUndefined(github.config.defaultOwner));
+      const hasGitHubAuthEnv = Boolean(resolveGitHubEnvAuthMode());
+      setEnvValueIfUnset("GITHUB_DEFAULT_OWNER", stringOrUndefined(github.config.defaultOwner));
       const repos = Array.isArray(github.config.repos) ? github.config.repos.filter((entry): entry is string => typeof entry === "string") : [];
-      setEnvValue("REPO_ALLOWLIST", repos.length > 0 ? repos.join(",") : undefined);
-      if (authMode === "app") {
-        setEnvValue("GITHUB_TOKEN", undefined);
-        setEnvValue("GITHUB_APP_ID", stringOrUndefined(github.config.appId));
-        setEnvValue("GITHUB_APP_INSTALLATION_ID", stringOrUndefined(github.config.installationId));
-        setEnvValue("GITHUB_APP_PRIVATE_KEY", privateKey);
-      } else {
-        setEnvValue("GITHUB_TOKEN", token);
-        setEnvValue("GITHUB_APP_ID", undefined);
-        setEnvValue("GITHUB_APP_INSTALLATION_ID", undefined);
-        setEnvValue("GITHUB_APP_PRIVATE_KEY", undefined);
+      setEnvValueIfUnset("REPO_ALLOWLIST", repos.length > 0 ? repos.join(",") : undefined);
+      if (!hasGitHubAuthEnv) {
+        if (authMode === "app") {
+          setEnvValueIfUnset("GITHUB_APP_ID", stringOrUndefined(github.config.appId));
+          setEnvValueIfUnset("GITHUB_APP_INSTALLATION_ID", stringOrUndefined(github.config.installationId));
+          setEnvValueIfUnset("GITHUB_APP_PRIVATE_KEY", privateKey);
+        } else {
+          setEnvValueIfUnset("GITHUB_TOKEN", token);
+        }
       }
     }
 
     const llm = await this.readConfigSection("llm");
-    if (llm && !this.shouldUseEnvOverride("llm")) {
+    if (llm && !resolveLlmEnvApiKey()) {
       const provider = stringOrUndefined(llm.config.provider) ?? "openrouter";
       const apiKey = stringOrUndefined(llm.secrets.apiKey);
-      setEnvValue("ANTHROPIC_API_KEY", provider === "anthropic" ? apiKey : undefined);
-      setEnvValue("OPENAI_API_KEY", provider === "openai" ? apiKey : undefined);
-      setEnvValue("CODEX_API_KEY", provider === "openai" ? apiKey : undefined);
-      setEnvValue("OPENROUTER_API_KEY", provider === "openrouter" ? apiKey : undefined);
-      setEnvValue("DEFAULT_LLM_MODEL", stringOrUndefined(llm.config.defaultModel));
+      setEnvValueIfUnset("ANTHROPIC_API_KEY", provider === "anthropic" ? apiKey : undefined);
+      setEnvValueIfUnset("OPENAI_API_KEY", provider === "openai" ? apiKey : undefined);
+      setEnvValueIfUnset("CODEX_API_KEY", provider === "openai" ? apiKey : undefined);
+      setEnvValueIfUnset("OPENROUTER_API_KEY", provider === "openrouter" ? apiKey : undefined);
+      setEnvValueIfUnset("DEFAULT_LLM_MODEL", stringOrUndefined(llm.config.defaultModel));
     }
 
     const slack = await this.readConfigSection("slack");
-    if (slack && !this.shouldUseEnvOverride("slack")) {
-      setEnvValue("SLACK_BOT_TOKEN", stringOrUndefined(slack.secrets.botToken));
-      setEnvValue("SLACK_APP_TOKEN", stringOrUndefined(slack.secrets.appToken));
-      setEnvValue("SLACK_SIGNING_SECRET", stringOrUndefined(slack.secrets.signingSecret));
-      setEnvValue("SLACK_COMMAND_NAME", stringOrUndefined(slack.config.commandName));
-      setEnvValue("SLACK_CLIENT_ID", stringOrUndefined(slack.config.clientId));
-      setEnvValue("SLACK_CLIENT_SECRET", stringOrUndefined(slack.secrets.clientSecret));
-      setEnvValue("SLACK_AUTH_REDIRECT_URI", stringOrUndefined(slack.config.authRedirectUri));
+    if (slack) {
+      setEnvValueIfUnset("SLACK_BOT_TOKEN", stringOrUndefined(slack.secrets.botToken));
+      setEnvValueIfUnset("SLACK_APP_TOKEN", stringOrUndefined(slack.secrets.appToken));
+      setEnvValueIfUnset("SLACK_SIGNING_SECRET", stringOrUndefined(slack.secrets.signingSecret));
+      setEnvValueIfUnset("SLACK_COMMAND_NAME", stringOrUndefined(slack.config.commandName));
+      setEnvValueIfUnset("SLACK_CLIENT_ID", stringOrUndefined(slack.config.clientId));
+      setEnvValueIfUnset("SLACK_CLIENT_SECRET", stringOrUndefined(slack.secrets.clientSecret));
+      setEnvValueIfUnset("SLACK_AUTH_REDIRECT_URI", stringOrUndefined(slack.config.authRedirectUri));
     }
   }
 
@@ -376,15 +375,6 @@ export class SetupStore {
       config: row.config ?? {},
       secrets,
     };
-  }
-
-  private shouldUseEnvOverride(section: ConfigSectionName): boolean {
-    const varName = section === "github"
-      ? "GITHUB_CONFIG_OVERRIDE_FROM_ENV"
-      : section === "slack"
-        ? "SLACK_CONFIG_OVERRIDE_FROM_ENV"
-        : "LLM_CONFIG_OVERRIDE_FROM_ENV";
-    return parseOverrideFlag(process.env[varName]);
   }
 
   private pickPrefillValue(envValue?: string, wizardValue?: string): SetupPrefillValue {
@@ -455,11 +445,9 @@ export class SetupStore {
   }
 }
 
-function setEnvValue(name: string, value: string | undefined): void {
-  if (value === undefined || value === "") {
-    delete process.env[name];
-    return;
-  }
+function setEnvValueIfUnset(name: string, value: string | undefined): void {
+  if (stringOrUndefined(process.env[name]) !== undefined) return;
+  if (value === undefined || value === "") return;
   process.env[name] = value;
 }
 
@@ -491,12 +479,6 @@ function resolveLlmEnvApiKey(): string | undefined {
     ?? stringOrUndefined(process.env.ANTHROPIC_API_KEY)
     ?? stringOrUndefined(process.env.OPENAI_API_KEY)
     ?? stringOrUndefined(process.env.CODEX_API_KEY);
-}
-
-function parseOverrideFlag(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 /** Password hashing using async scrypt (N=16384, r=8, p=1, keylen=64). */

@@ -94,16 +94,10 @@ export async function handleSettingsRoutes(
     const modelPriceSummary = modelPriceStore ? (await modelPriceStore.list()).stats : undefined;
     const profiles = agentProfileStore ? (await agentProfileStore.list()).map((profile) => decorateAgentProfile(profile)) : [];
     const capabilities = buildDashboardCapabilities(config, actorPrincipal);
-    const configOverrides = {
-      githubFromEnv: parseOverrideFlag(process.env.GITHUB_CONFIG_OVERRIDE_FROM_ENV),
-      slackFromEnv: parseOverrideFlag(process.env.SLACK_CONFIG_OVERRIDE_FROM_ENV),
-      llmFromEnv: parseOverrideFlag(process.env.LLM_CONFIG_OVERRIDE_FROM_ENV),
-    };
     const configPayload = buildDashboardSettingsPayload(
       config,
       capabilities,
       githubAuthMode,
-      configOverrides,
       profiles,
     );
 
@@ -550,10 +544,4 @@ function decorateAgentProfile(
     ...profile,
     commandTemplate: renderAgentProfileTemplate(profile),
   };
-}
-
-function parseOverrideFlag(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
 }

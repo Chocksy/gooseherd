@@ -2,7 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SetupStore, type SetupWizardState } from "../src/db/setup-store.js";
 
-test("wizard state keeps non-secret prefill values but never returns secret values", async () => {
+test("wizard state keeps non-secret prefill values but never returns secret values", async (t) => {
+  const envVars = [
+    "GITHUB_DEFAULT_OWNER",
+    "DEFAULT_LLM_MODEL",
+    "SLACK_COMMAND_NAME",
+    "SLACK_CLIENT_ID",
+    "SLACK_AUTH_REDIRECT_URI",
+  ];
+  const envBackup: Record<string, string | undefined> = {};
+  for (const key of envVars) {
+    envBackup[key] = process.env[key];
+    delete process.env[key];
+  }
+  t.after(() => {
+    for (const key of envVars) {
+      const value = envBackup[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
   const setupStore = new SetupStore({} as never);
 
   setupStore.getStatus = async () => ({

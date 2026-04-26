@@ -321,5 +321,50 @@ test("fixCiNode uses run id in commit message", async (t) => {
   assert.match(prompt, /Current Gooseherd run id: `445ad8a6-33c3-45c6-badf-429ec98c4a51`/);
 
   const subject = await runShellCapture("git log -1 --pretty=%s", { cwd: repoDir, logFile });
-  assert.equal(subject.stdout.trim(), "testherd: fix CI (run 445ad8a6-33c3-45c6-badf-429ec98c4a51)");
+  assert.equal(subject.stdout.trim(), "fix: Fix CI for run 445ad8a6-33c3-45c6-badf-429ec98c4a51");
+});
+
+test("fixCiNode treats agent-created history-only commits as success", async (t) => {
+  const repoDir = await mkdtemp(path.join(os.tmpdir(), "fix-ci-history-repo-"));
+  const runDir = await mkdtemp(path.join(os.tmpdir(), "fix-ci-history-run-"));
+  const logFile = path.join(runDir, "run.log");
+  const capturedPrompt = path.join(runDir, "captured-prompt.md");
+  await writeFile(logFile, "", "utf8");
+  await initRepo(repoDir, logFile);
+  const beforeHead = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
+  t.after(async () => {
+    await rm(repoDir, { recursive: true, force: true });
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  const ctx = new ContextBag({
+    repoDir,
+    runDir,
+    changedFiles: ["src.ts"],
+  });
+
+  const result = await fixCiNode({ id: "fix_ci", type: "agentic", action: "fix_ci" }, ctx, {
+    config: makeConfig({
+      agentCommandTemplate: `repo={{repo_dir}}; cat {{prompt_file}} > '${capturedPrompt}'; git -C "$repo" commit --amend -m 'fix: Normalize openrouter agent profile models'`,
+    }),
+    run: makeRun({
+      branchName: "",
+    }),
+    logFile,
+    workRoot: runDir,
+    onPhase: async () => undefined,
+  });
+
+  const afterHead = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
+
+  assert.equal(result.outcome, "success");
+  assert.notEqual(afterHead.stdout.trim(), beforeHead.stdout.trim());
+  assert.equal(result.outputs?.commitSha, afterHead.stdout.trim());
+  assert.deepEqual(result.outputs?.changedFiles, []);
+
+  const prompt = await readFile(capturedPrompt, "utf8");
+  assert.match(prompt, /Current Gooseherd run id: `test-run-001`/);
+
+  const status = await runShellCapture("git status --porcelain", { cwd: repoDir, logFile });
+  assert.equal(status.stdout.trim(), "");
 });

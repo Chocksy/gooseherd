@@ -6,7 +6,7 @@ import { runShell, runShellCapture, appendLog, shellEscape } from "../shell.js";
 import { buildAgentCommand } from "../agent-command.js";
 import { commitCaptureAndPush } from "../git-ops.js";
 import { buildCIFixPrompt, type CIAnnotation } from "./ci-monitor.js";
-import { buildGitAddPathspecs, mergeInternalArtifacts } from "../internal-generated-files.js";
+import { buildGitAddPathspecs, filterInternalGeneratedFiles, mergeInternalArtifacts } from "../internal-generated-files.js";
 
 /**
  * CI Fix node: "fat" agent node that fixes CI failures, commits, and pushes.
@@ -54,6 +54,7 @@ export async function fixCiNode(
   const runDir = ctx.getRequired<string>("runDir");
   const fixPromptFile = path.join(runDir, `ci-fix-round-${String(attempt)}.md`);
   await writeFile(fixPromptFile, fixPrompt, "utf8");
+  const beforeHead = await currentHead(repoDir, logFile);
 
   // Run the coding agent with the fix prompt
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
@@ -72,12 +73,29 @@ export async function fixCiNode(
     { cwd: repoDir, logFile },
   );
   if (diffCheck.code === 0 && diffCheck.stdout.trim() === "") {
+    const afterHead = await currentHead(repoDir, logFile);
+    if (afterHead !== beforeHead) {
+      await appendLog(logFile, "\n[ci:fix] agent changed HEAD without file changes; treating as history-only CI fix\n");
+      if (run.branchName) {
+        await runShell(`git push --force-with-lease origin HEAD:${shellEscape(run.branchName)}`, { cwd: repoDir, logFile });
+      }
+      const changedFiles = await changedFilesBetween(repoDir, logFile, beforeHead, afterHead);
+      return {
+        outcome: "success",
+        outputs: {
+          commitSha: afterHead,
+          changedFiles,
+          internalArtifacts: mergeInternalArtifacts(existingInternalArtifacts, [])
+        }
+      };
+    }
+
     await appendLog(logFile, "\n[ci:fix] agent made no user-committable changes\n");
     return { outcome: "failure", error: "CI fix agent made no changes" };
   }
 
   // Commit, capture SHA + changed files, and push
-  const commitMsg = `${config.appSlug}: fix CI (run ${run.id})`;
+  const commitMsg = `fix: Fix CI for run ${run.id}`;
   const { commitSha: newSha, changedFiles: newChangedFiles, internalArtifacts } = await commitCaptureAndPush(
     repoDir, commitMsg, logFile, run.branchName
   );
@@ -92,4 +110,27 @@ export async function fixCiNode(
       internalArtifacts: mergeInternalArtifacts(existingInternalArtifacts, internalArtifacts)
     }
   };
+}
+
+async function currentHead(repoDir: string, logFile: string): Promise<string> {
+  const result = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
+  return result.stdout.trim().split("\n").pop()?.trim() ?? "";
+}
+
+async function changedFilesBetween(
+  repoDir: string,
+  logFile: string,
+  beforeHead: string,
+  afterHead: string
+): Promise<string[]> {
+  const result = await runShellCapture(
+    `git diff --name-only ${shellEscape(beforeHead)} ${shellEscape(afterHead)}`,
+    { cwd: repoDir, logFile },
+  );
+  return filterInternalGeneratedFiles(
+    result.stdout
+      .split("\n")
+      .map(f => f.trim())
+      .filter(Boolean)
+  );
 }

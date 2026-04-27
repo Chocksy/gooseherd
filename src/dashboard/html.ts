@@ -2526,6 +2526,73 @@ export function dashboardHtml(config: AppConfig): string {
       return null;
     }
 
+    function workflowFromPathSegment(value) {
+      if (value === 'product-discovery') return 'product_discovery';
+      return 'feature_delivery';
+    }
+
+    function workflowToPathSegment(value) {
+      return value === 'product_discovery' ? 'product-discovery' : 'feature-delivery';
+    }
+
+    function repoPathParts(repo) {
+      if (!repo || repo === 'all') return null;
+      var parts = String(repo).split('/');
+      if (parts.length < 2 || !parts[0] || !parts[1]) return null;
+      return [parts[0], parts[1]];
+    }
+
+    function parseDashboardPath(pathname) {
+      var parts = (pathname || '/').split('/').filter(Boolean).map(decodeURIComponent);
+      var route = { selectedRepository: 'all', viewMode: 'runs', boardWorkflow: 'feature_delivery' };
+      if (parts.length === 0) return route;
+      if (parts[0] === 'runs') return route;
+      if (parts[0] === 'board' && parts[1]) {
+        route.viewMode = 'board';
+        route.boardWorkflow = workflowFromPathSegment(parts[1]);
+        return route;
+      }
+      if (parts[0] !== 'repo' || !parts[1] || !parts[2]) return route;
+      route.selectedRepository = parts[1] + '/' + parts[2];
+      if (parts[3] === 'board' && parts[4]) {
+        route.viewMode = 'board';
+        route.boardWorkflow = workflowFromPathSegment(parts[4]);
+        return route;
+      }
+      route.viewMode = 'runs';
+      return route;
+    }
+
+    function dashboardPath() {
+      var repoParts = repoPathParts(selectedRepository());
+      var suffix = state.viewMode === 'board'
+        ? '/board/' + workflowToPathSegment(state.boardWorkflow || 'feature_delivery')
+        : '/runs';
+      if (!repoParts) return suffix;
+      return '/repo/' + encodeURIComponent(repoParts[0]) + '/' + encodeURIComponent(repoParts[1]) + suffix;
+    }
+
+    function syncDashboardPath(replace) {
+      var nextPath = dashboardPath();
+      var nextUrl = nextPath + (window.location.hash || '');
+      var currentUrl = window.location.pathname + (window.location.hash || '');
+      if (nextUrl === currentUrl) return;
+      if (replace) {
+        window.history.replaceState(null, '', nextUrl);
+      } else {
+        window.history.pushState(null, '', nextUrl);
+      }
+    }
+
+    function applyDashboardPath() {
+      var route = parseDashboardPath(window.location.pathname);
+      state.selectedRepository = route.selectedRepository;
+      state.viewMode = route.viewMode;
+      state.boardWorkflow = route.boardWorkflow;
+      if (el.boardWorkflow) el.boardWorkflow.value = state.boardWorkflow;
+      if (el.repoFilter) el.repoFilter.value = state.selectedRepository;
+    }
+
     function branchRefForUrl(value) {
       return encodeURIComponent(value).replace(/%2F/g, '/');
     }
@@ -2580,8 +2647,29 @@ export function dashboardHtml(config: AppConfig): string {
       return selected ? '&repo=' + encodeURIComponent(selected) : '';
     }
 
+    function repositoryApiPrefix() {
+      var parts = repoPathParts(selectedRepository());
+      if (!parts) return '';
+      return '/api/repo/' + encodeURIComponent(parts[0]) + '/' + encodeURIComponent(parts[1]);
+    }
+
+    function runsListEndpoint() {
+      var prefix = repositoryApiPrefix();
+      return prefix ? prefix + '/runs?limit=200' : '/api/runs?limit=200';
+    }
+
+    function workItemsListEndpoint(workflow) {
+      var prefix = repositoryApiPrefix();
+      return prefix
+        ? prefix + '/work-items?workflow=' + encodeURIComponent(workflow)
+        : '/api/work-items?workflow=' + encodeURIComponent(workflow);
+    }
+
     function rememberRepositoryOptions(records) {
       var seen = {};
+      if (selectedRepository()) {
+        seen[selectedRepository()] = true;
+      }
       for (var i = 0; i < state.repositoryOptions.length; i++) {
         seen[state.repositoryOptions[i]] = true;
       }
@@ -3744,7 +3832,7 @@ export function dashboardHtml(config: AppConfig): string {
 
     async function loadRuns() {
       const [runsData, statsData] = await Promise.all([
-        fetchJson('/api/runs?limit=200' + repositoryFilterQueryParam()),
+        fetchJson(runsListEndpoint()),
         fetchJson('/api/stats').catch(function() { return {}; }),
       ]);
       state.runs = runsData.runs || [];
@@ -3779,7 +3867,7 @@ export function dashboardHtml(config: AppConfig): string {
       var workflow = state.boardWorkflow || 'feature_delivery';
       var data;
       try {
-        data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow) + repositoryFilterQueryParam());
+        data = await fetchJson(workItemsListEndpoint(workflow));
       } catch (error) {
         if (isWorkItemsUnavailableError(error)) {
           state.workItemsAvailable = false;
@@ -4768,6 +4856,7 @@ export function dashboardHtml(config: AppConfig): string {
         var button = e.target.closest('[data-view]');
         if (!button) return;
         state.viewMode = button.getAttribute('data-view') === 'board' ? 'board' : 'runs';
+        syncDashboardPath(false);
         updateDashboardChrome();
         refreshCurrentView().catch(console.error);
         scheduleRefresh(nextRefreshDelayMs());
@@ -4778,6 +4867,7 @@ export function dashboardHtml(config: AppConfig): string {
       el.boardWorkflow.onchange = function() {
         state.boardWorkflow = el.boardWorkflow.value || 'feature_delivery';
         setBoardStatusMessage('');
+        syncDashboardPath(false);
         loadWorkItems().catch(console.error);
         scheduleRefresh(nextRefreshDelayMs());
       };
@@ -4790,6 +4880,7 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedWorkItemId = null;
         state.selectedWorkItem = null;
         state.selectedWorkItemRuns = [];
+        syncDashboardPath(false);
         refreshCurrentView().catch(console.error);
         scheduleRefresh(nextRefreshDelayMs());
       };
@@ -5104,6 +5195,12 @@ export function dashboardHtml(config: AppConfig): string {
       }
     }
     window.addEventListener('hashchange', applyHashSelection);
+    window.addEventListener('popstate', function() {
+      applyDashboardPath();
+      updateDashboardChrome();
+      refreshCurrentView().catch(console.error);
+      scheduleRefresh(nextRefreshDelayMs());
+    });
 
     el.logoutBtn.onclick = async () => {
       try {
@@ -5755,9 +5852,11 @@ export function dashboardHtml(config: AppConfig): string {
     }
 
     initTheme();
+    applyDashboardPath();
     if (el.boardWorkflow) {
       el.boardWorkflow.value = state.boardWorkflow;
     }
+    syncDashboardPath(true);
     updateDashboardChrome();
     document.addEventListener('visibilitychange', function() {
       if (document.hidden) {

@@ -101,6 +101,30 @@ export async function handleRunRoutes(
   }
 
   const parts = pathname.split("/").filter(Boolean);
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "repo" && parts[2] && parts[3] && parts[4] === "runs") {
+    const repoSlug = `${decodeURIComponent(parts[2])}/${decodeURIComponent(parts[3])}`;
+    const limit = parseLimit(requestUrl.searchParams.get("limit"));
+    const teamId = requestUrl.searchParams.get("team") ?? undefined;
+    const statusFilter = requestUrl.searchParams.get("status") ?? undefined;
+    const search = requestUrl.searchParams.get("search") ?? undefined;
+    let runs = await store.listRuns({ limit: 500, teamId });
+    runs = runs.filter((run) => run.repoSlug === repoSlug);
+    if (statusFilter && statusFilter !== "all") {
+      runs = runs.filter((run) => run.status === statusFilter);
+    }
+    if (search) {
+      const query = search.toLowerCase();
+      runs = runs.filter((run) =>
+        (run.title?.toLowerCase().includes(query))
+        || run.task.toLowerCase().includes(query)
+        || run.repoSlug.toLowerCase().includes(query)
+        || run.id.toLowerCase().startsWith(query)
+      );
+    }
+    sendJson(res, 200, { runs: runs.slice(0, limit) });
+    return true;
+  }
+
   if (parts[0] !== "api" || parts[1] !== "runs" || !parts[2]) {
     return false;
   }

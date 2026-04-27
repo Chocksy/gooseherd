@@ -83,7 +83,7 @@ export async function handleSettingsRoutes(
     userDirectory,
   } = deps;
 
-  if (req.method === "GET" && pathname === "/") {
+  if (req.method === "GET" && isDashboardShellPath(pathname)) {
     sendText(res, 200, dashboardHtml(config), "text/html");
     return true;
   }
@@ -456,6 +456,22 @@ export async function handleSettingsRoutes(
   }
 
   return false;
+}
+
+function isDashboardShellPath(pathname: string): boolean {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 0) return true;
+  if (parts.length === 1 && parts[0] === "runs") return true;
+  if (parts.length === 2 && parts[0] === "board" && isDashboardWorkflowPathSegment(parts[1])) return true;
+  if (parts[0] !== "repo" || !parts[1] || !parts[2]) return false;
+  if (parts.length === 3) return true;
+  if (parts.length === 4 && parts[3] === "runs") return true;
+  if (parts.length === 5 && parts[3] === "board" && isDashboardWorkflowPathSegment(parts[4])) return true;
+  return false;
+}
+
+function isDashboardWorkflowPathSegment(value: string | undefined): boolean {
+  return value === "feature-delivery" || value === "product-discovery";
 }
 
 async function computeRunStats(store: RunStore) {

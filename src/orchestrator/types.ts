@@ -29,10 +29,12 @@ export interface HandleMessageDeps {
 export interface HandleMessageOptions {
   /** Called when the LLM invokes a tool — use for progress updates. */
   onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
-  /** Per-HTTP-call timeout in ms (default: 30_000). */
+  /** Per-HTTP-call timeout in ms (default: 180_000). */
   timeoutMs?: number;
-  /** Overall wall-clock timeout in ms (default: 120_000). */
+  /** Overall wall-clock timeout in ms (default: 1_800_000 = 30 min). Guards against hung tool calls, not against the model thinking too long. */
   wallClockTimeoutMs?: number;
+  /** Cumulative input-token budget for the whole tool-use loop. When exceeded the orchestrator returns the exhaustion fallback. Replaces the old hardcoded maxTurns cap as the cost guard. */
+  maxInputTokens?: number;
 }
 
 export interface HandleMessageResult {

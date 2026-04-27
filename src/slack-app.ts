@@ -819,7 +819,8 @@ export async function startSlackApp(
           }).catch(() => { /* ignore update failures */ });
         },
         timeoutMs: config.orchestratorTimeoutMs,
-        wallClockTimeoutMs: config.orchestratorWallClockTimeoutMs
+        wallClockTimeoutMs: config.orchestratorWallClockTimeoutMs,
+        ...(config.orchestratorMaxInputTokens !== undefined ? { maxInputTokens: config.orchestratorMaxInputTokens } : {})
       }
     );
 

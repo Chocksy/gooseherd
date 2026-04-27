@@ -43,6 +43,7 @@ type FeatureConfigSlice = Pick<
   | "orchestratorModel"
   | "orchestratorTimeoutMs"
   | "orchestratorWallClockTimeoutMs"
+  | "orchestratorMaxInputTokens"
   | "autonomousSchedulerEnabled"
   | "autonomousSchedulerMaxDeferred"
   | "autonomousSchedulerIntervalMs"
@@ -122,7 +123,10 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     scopeJudgeMinPassScore: parseInteger(parsed.SCOPE_JUDGE_MIN_PASS_SCORE, 60),
     orchestratorModel: parsed.ORCHESTRATOR_MODEL?.trim() || "openai/gpt-4.1-mini",
     orchestratorTimeoutMs: parseInteger(parsed.ORCHESTRATOR_TIMEOUT_MS, 180_000),
-    orchestratorWallClockTimeoutMs: parseInteger(parsed.ORCHESTRATOR_WALL_CLOCK_TIMEOUT_MS, 480_000),
+    orchestratorWallClockTimeoutMs: parseInteger(parsed.ORCHESTRATOR_WALL_CLOCK_TIMEOUT_MS, 1_800_000),
+    orchestratorMaxInputTokens: parsed.ORCHESTRATOR_MAX_INPUT_TOKENS?.trim()
+      ? parseInteger(parsed.ORCHESTRATOR_MAX_INPUT_TOKENS, 0) || undefined
+      : undefined,
     autonomousSchedulerEnabled: features.autonomousScheduler,
     autonomousSchedulerMaxDeferred: parseInteger(parsed.AUTONOMOUS_SCHEDULER_MAX_DEFERRED, 100),
     autonomousSchedulerIntervalMs: parseInteger(parsed.AUTONOMOUS_SCHEDULER_INTERVAL_MS, 300_000),

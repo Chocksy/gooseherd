@@ -586,6 +586,64 @@ describe("handleMessage integration", () => {
     assert.ok(!toolNames.includes("describe_repo"));
   });
 
+  test("handleMessage allows complex investigations beyond 8 LLM turns", async () => {
+    // Simulate an LLM doing a deep investigation: 10 search/read tool calls,
+    // then a final answer. Previously hardcoded maxTurns: 8 would cut this off
+    // and return "Sorry, I ran out of time...". After removing the cap, the
+    // orchestrator should ride the LLM caller's higher default (25 turns).
+    for (let i = 0; i < 10; i++) {
+      fetchResponses.push(toolCallResponse([{
+        name: "search_code",
+        arguments: { query: `pattern-${String(i)}`, repoSlug: "test/repo" }
+      }]));
+    }
+    fetchResponses.push(textResponse("Investigation complete after 10 searches."));
+
+    const deps = makeDeps({
+      searchCode: async () => "match: src/foo.ts:42"
+    });
+
+    const result = await handleMessage(llmConfig, model, systemContext, makeRequest({
+      message: "investigate why the daily summary email failed"
+    }), deps);
+
+    assert.equal(result.response, "Investigation complete after 10 searches.");
+    assert.equal(fetchCalls.length, 11);
+    assert.ok(!result.response.startsWith("Sorry, I ran out of time"));
+  });
+
+  test("handleMessage forwards options.maxInputTokens to the LLM caller", async () => {
+    // Token budget propagation: each mocked turn reports prompt_tokens=100 in usage.
+    // With maxInputTokens=150, the LLM caller must bail after the 2nd turn
+    // (cumulative 200 > 150) instead of running all 3 tool calls + final text.
+    for (let i = 0; i < 3; i++) {
+      fetchResponses.push(toolCallResponse([{
+        name: "search_code",
+        arguments: { query: `q${String(i)}`, repoSlug: "test/repo" }
+      }]));
+    }
+    fetchResponses.push(textResponse("Done"));
+
+    const deps = makeDeps({ searchCode: async () => "match" });
+
+    const result = await handleMessage(
+      llmConfig,
+      model,
+      systemContext,
+      makeRequest(),
+      deps,
+      { maxInputTokens: 150 }
+    );
+
+    // Budget should kick in before all queued responses are consumed.
+    assert.ok(fetchCalls.length < 4, `expected <4 fetches, got ${String(fetchCalls.length)}`);
+    // Exhaustion path returns the conversational fallback.
+    assert.ok(
+      result.response.startsWith("Sorry, I ran out of time"),
+      `expected exhaustion fallback, got: ${result.response}`
+    );
+  });
+
   test("exhaustion fallback returns conversational message instead of JSON", async () => {
     // Simulate: LLM makes a tool call, then wall-clock timeout hits
     // callLLMWithTools returns its JSON fallback

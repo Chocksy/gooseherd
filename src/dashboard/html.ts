@@ -4197,6 +4197,7 @@ export function dashboardHtml(config: AppConfig): string {
       state.viewMode = 'runs';
       state.selectedId = runId;
       window.location.hash = '#run/' + runId.slice(0, 8);
+      syncDashboardPath(true);
       updateDashboardChrome();
       renderRuns();
       refreshSelected().catch(console.error);

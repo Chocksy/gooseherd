@@ -156,3 +156,14 @@ test("dashboard HTML toggles selected work item cards off and clears permalink o
   assert.match(html, /window\.location\.hash = '';/);
   assert.match(html, /refreshSelectedWorkItem\(\);/);
 });
+
+test("dashboard work item detail links to GitHub PR when a PR URL is present", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /item\.githubPrUrl/);
+  assert.match(html, /document\.createElement\('a'\)/);
+  assert.match(html, /prLink\.href = item\.githubPrUrl;/);
+  assert.match(html, /prLink\.target = '_blank';/);
+  assert.match(html, /prLink\.rel = 'noreferrer noopener';/);
+  assert.match(html, /PR #'\s*\+ item\.githubPrNumber/);
+});

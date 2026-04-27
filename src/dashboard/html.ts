@@ -564,6 +564,14 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 11px;
       color: var(--muted);
     }
+    a.board-chip {
+      color: var(--ring);
+      text-decoration: none;
+    }
+    a.board-chip:hover {
+      border-color: color-mix(in srgb, var(--ring) 45%, var(--border));
+      background: color-mix(in srgb, var(--ring) 12%, var(--panel-2));
+    }
     .board-flags {
       display: flex;
       gap: 6px;
@@ -3960,7 +3968,6 @@ export function dashboardHtml(config: AppConfig): string {
         titleCaseWorkItemState(item.state),
         item.substate ? titleCaseWorkItemState(item.substate) : null,
         item.jiraIssueKey ? 'Jira ' + item.jiraIssueKey : null,
-        item.githubPrNumber ? 'PR #' + item.githubPrNumber : null,
         'Updated ' + timeAgo(item.updatedAt),
       ].filter(Boolean).forEach(function(value) {
         var chip = document.createElement('span');
@@ -3968,6 +3975,20 @@ export function dashboardHtml(config: AppConfig): string {
         chip.textContent = value;
         el.boardDetailMeta.appendChild(chip);
       });
+      if (item.githubPrUrl) {
+        var prLink = document.createElement('a');
+        prLink.className = 'board-chip';
+        prLink.href = item.githubPrUrl;
+        prLink.target = '_blank';
+        prLink.rel = 'noreferrer noopener';
+        prLink.textContent = item.githubPrNumber ? 'PR #' + item.githubPrNumber : 'GitHub PR';
+        el.boardDetailMeta.appendChild(prLink);
+      } else if (item.githubPrNumber) {
+        var prChip = document.createElement('span');
+        prChip.className = 'board-chip';
+        prChip.textContent = 'PR #' + item.githubPrNumber;
+        el.boardDetailMeta.appendChild(prChip);
+      }
 
       el.boardDetailFlags.innerHTML = '';
       if (Array.isArray(item.flags) && item.flags.length > 0) {

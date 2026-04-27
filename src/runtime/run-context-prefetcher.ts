@@ -67,8 +67,10 @@ export class RunContextPrefetcher {
     }
 
     if (hasJiraSource) {
-      prefetch.jira = await this.fetchJiraContext(workItem.id, workItem.jiraIssueKey!, signal);
-      prefetch.meta.sources.push("jira");
+      if (this.deps.jira) {
+        prefetch.jira = await this.fetchJiraContext(workItem.id, workItem.jiraIssueKey!, signal);
+        prefetch.meta.sources.push("jira");
+      }
     }
 
     return prefetch;

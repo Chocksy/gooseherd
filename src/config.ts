@@ -133,6 +133,8 @@ export interface AppConfig {
   orchestratorModel: string;
   orchestratorTimeoutMs: number;
   orchestratorWallClockTimeoutMs: number;
+  /** Optional cumulative input-token budget for the orchestrator's tool-use loop. Undefined = no token cap (rely on wall-clock timeout only). */
+  orchestratorMaxInputTokens?: number;
 
   autonomousSchedulerEnabled: boolean;
   autonomousSchedulerMaxDeferred: number;

@@ -219,7 +219,8 @@ export async function handleMessage(
   options?: HandleMessageOptions
 ): Promise<HandleMessageResult> {
   const effectiveTimeoutMs = options?.timeoutMs ?? 180_000;
-  const effectiveWallClockTimeoutMs = options?.wallClockTimeoutMs ?? 480_000;
+  const effectiveWallClockTimeoutMs = options?.wallClockTimeoutMs ?? 1_800_000;
+  const effectiveMaxInputTokens = options?.maxInputTokens;
   const runsQueued: HandleMessageResult["runsQueued"] = [];
   const tools = buildTools(deps);
 
@@ -284,9 +285,9 @@ export async function handleMessage(
       },
       model,
       maxTokens: 2048,
-      maxTurns: 8,
       wallClockTimeoutMs: effectiveWallClockTimeoutMs,
-      timeoutMs: effectiveTimeoutMs
+      timeoutMs: effectiveTimeoutMs,
+      ...(effectiveMaxInputTokens !== undefined ? { maxInputTokens: effectiveMaxInputTokens } : {})
     });
 
     logInfo("Orchestrator: handleMessage completed", {

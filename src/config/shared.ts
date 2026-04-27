@@ -102,6 +102,7 @@ export const envSchema = z.object({
   ORCHESTRATOR_MODEL: z.string().optional(),
   ORCHESTRATOR_TIMEOUT_MS: z.string().optional(),
   ORCHESTRATOR_WALL_CLOCK_TIMEOUT_MS: z.string().optional(),
+  ORCHESTRATOR_MAX_INPUT_TOKENS: z.string().optional(),
 
   AUTONOMOUS_SCHEDULER_ENABLED: z.string().optional(),
   AUTONOMOUS_SCHEDULER_MAX_DEFERRED: z.string().optional(),

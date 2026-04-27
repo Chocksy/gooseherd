@@ -542,7 +542,7 @@ describe("GitHub Webhook Adapter", () => {
     );
   });
 
-  test("parseGitHubWebhook: parses PR review with changes_requested", () => {
+  test("parseGitHubWebhook: ignores PR review changes_requested", () => {
     const payload = {
       action: "submitted",
       review: {
@@ -558,13 +558,13 @@ describe("GitHub Webhook Adapter", () => {
       },
       repository: { full_name: "org/repo" }
     };
-    const event = parseGitHubWebhook(
-      { "x-github-event": "pull_request_review", "x-github-delivery": "delivery-2" },
-      payload
+    assert.equal(
+      parseGitHubWebhook(
+        { "x-github-event": "pull_request_review", "x-github-delivery": "delivery-2" },
+        payload
+      ),
+      null
     );
-    assert.ok(event);
-    assert.equal(event.source, "github_webhook");
-    assert.match(event.suggestedTask ?? "", /review feedback/);
   });
 
   test("parseGitHubWebhook: ignores approved PR review", () => {

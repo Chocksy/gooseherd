@@ -1,5 +1,5 @@
 import type { NodeHandler } from "../pipeline/types.js";
-import type { WebhookAdapter } from "../observer/sources/adapter-registry.js";
+import type { WebhookAdapter } from "../webhook-adapter-registry.js";
 
 /**
  * A Gooseherd plugin can contribute:

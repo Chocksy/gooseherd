@@ -33,7 +33,6 @@ import {
 } from "./browser-verify.js";
 import type { AppConfig } from "../../config.js";
 import type { LLMCallerConfig } from "../../llm/caller.js";
-import { runStagehandVerification } from "./stagehand-verify.js";
 import {
   classifyBrowserVerifyFailure,
   deriveAuthSignals,
@@ -243,6 +242,7 @@ export async function browserVerifyNode(
       }
 
       try {
+        const { runStagehandVerification } = await import("./stagehand-verify.js");
         const result = await runStagehandVerification(
           reviewAppUrl,
           deps.run.task,

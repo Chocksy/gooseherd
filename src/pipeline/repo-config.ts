@@ -17,6 +17,9 @@ export interface RepoQualityGateOverrides {
   diff_size?: {
     profile?: string;
   };
+  ci?: {
+    ignore_checks?: string[];
+  };
   forbidden_files?: {
     guarded_additions?: string[];
   };
@@ -60,17 +63,21 @@ export async function loadRepoConfig(
   }
 
   try {
-    const parsed = parseYaml(result.stdout);
-    if (!parsed || typeof parsed !== "object") {
-      return null;
-    }
-
-    return validateRepoConfig(parsed as Record<string, unknown>);
+    return parseRepoConfigYaml(result.stdout);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown";
     logError("Failed to parse .gooseherd.yml", { error: msg });
     return null;
   }
+}
+
+export function parseRepoConfigYaml(content: string): RepoConfig | null {
+  const parsed = parseYaml(content);
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  return validateRepoConfig(parsed as Record<string, unknown>);
 }
 
 /**
@@ -100,6 +107,20 @@ function validateRepoConfig(raw: Record<string, unknown>): RepoConfig {
       const validProfiles = ["bugfix", "feature", "refactor", "chore"];
       if (typeof ds["profile"] === "string" && validProfiles.includes(ds["profile"])) {
         config.qualityGates.diff_size = { profile: ds["profile"] };
+      }
+    }
+
+    // CI check policy
+    if (gates["ci"] && typeof gates["ci"] === "object") {
+      const ci = gates["ci"] as Record<string, unknown>;
+      if (Array.isArray(ci["ignore_checks"])) {
+        const ignoreChecks = (ci["ignore_checks"] as unknown[])
+          .filter((v): v is string => typeof v === "string")
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0);
+        if (ignoreChecks.length > 0) {
+          config.qualityGates.ci = { ignore_checks: ignoreChecks };
+        }
       }
     }
 
@@ -149,6 +170,10 @@ export function applyRepoConfig(
 ): void {
   if (repoConfig.qualityGates?.diff_size?.profile) {
     ctx.set("repoConfigDiffProfile", repoConfig.qualityGates.diff_size.profile);
+  }
+
+  if (repoConfig.qualityGates?.ci?.ignore_checks) {
+    ctx.set("repoCiIgnoreChecks", repoConfig.qualityGates.ci.ignore_checks);
   }
 
   if (repoConfig.qualityGates?.forbidden_files?.guarded_additions) {

@@ -87,12 +87,13 @@ describe("dashboard auth", () => {
     assert.equal(res.statusCode, 401);
   });
 
-  test("API route with valid Bearer token passes", async () => {
+  test("API route with valid Bearer token still requires a session", async () => {
     const req = makeMockReq({
       headers: { authorization: "Bearer secret123" }
     });
     const res = makeMockRes();
-    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs"), true);
+    assert.equal(await checkAuth(req, res, { setupComplete: true, dashboardToken: "secret123" }, "/api/runs"), false);
+    assert.equal(res.statusCode, 401);
   });
 
   test("API route with wrong Bearer token returns 401", async () => {

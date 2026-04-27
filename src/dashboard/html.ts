@@ -564,10 +564,34 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 11px;
       color: var(--muted);
     }
+    a.board-chip {
+      color: var(--ring);
+      text-decoration: none;
+    }
+    a.board-chip:hover {
+      border-color: color-mix(in srgb, var(--ring) 45%, var(--border));
+      background: color-mix(in srgb, var(--ring) 12%, var(--panel-2));
+    }
     .board-flags {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
+    }
+    .board-run-badge {
+      min-width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 6px;
+      border: 1px solid color-mix(in srgb, var(--running) 42%, var(--border));
+      background: color-mix(in srgb, var(--running) 18%, transparent);
+      color: color-mix(in srgb, var(--running) 82%, var(--text));
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      animation: pulse-dot 1.4s ease-in-out infinite;
     }
     .board-empty {
       border: 1px dashed var(--border);
@@ -626,6 +650,7 @@ export function dashboardHtml(config: AppConfig): string {
       background: color-mix(in srgb, var(--panel-3) 88%, transparent);
     }
     .board-review-item,
+    .board-run-item,
     .board-event-item {
       border: 1px solid var(--border);
       background: var(--panel-3);
@@ -634,7 +659,11 @@ export function dashboardHtml(config: AppConfig): string {
       display: grid;
       gap: 8px;
     }
+    .board-run-item {
+      gap: 6px;
+    }
     .board-review-head,
+    .board-run-head,
     .board-event-head {
       display: flex;
       align-items: center;
@@ -646,6 +675,11 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 13px;
       font-weight: 700;
       line-height: 1.35;
+    }
+    .board-run-meta {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
     }
     .board-review-message,
     .board-event-payload {
@@ -2011,6 +2045,10 @@ export function dashboardHtml(config: AppConfig): string {
                 <div id="board-detail-reviews" class="board-detail-empty">No review requests loaded.</div>
               </div>
               <div class="board-detail-section">
+                <div class="board-detail-section-title">Runs</div>
+                <div id="board-detail-runs" class="board-detail-empty">No runs loaded.</div>
+              </div>
+              <div class="board-detail-section">
                 <div class="board-detail-section-title">Guarded Override</div>
                 <div class="board-detail-form">
                   <label for="board-override-state">State</label>
@@ -2165,19 +2203,28 @@ export function dashboardHtml(config: AppConfig): string {
     const state = {
       runs: [],
       workItems: [],
+      workItemsAvailable: true,
       selectedWorkItemId: null,
       selectedWorkItem: null,
       selectedWorkItemReviewRequests: [],
       selectedWorkItemReviewComments: {},
+      selectedWorkItemRuns: [],
       selectedWorkItemEvents: [],
       selectedId: null,
       interval: null,
       themePreference: 'system',
       viewMode: 'runs',
-      boardWorkflow: 'product_discovery',
+      boardWorkflow: 'feature_delivery',
     };
 
     var logStreamState = { runId: null, offset: 0 };
+    var RUNS_POLL_INTERVAL_MS = 5000;
+    var BOARD_POLL_INTERVAL_MS = 15000;
+    var OBSERVER_POLL_INTERVAL_MS = 30000;
+    var observerRulesCache = [];
+    var observerRulesLoaded = false;
+    var observerLastRefreshAt = 0;
+    var refreshInFlight = false;
 
     // ── Lazy loading constants ──
     var MAX_VISIBLE_EVENTS = 150;
@@ -2204,6 +2251,7 @@ export function dashboardHtml(config: AppConfig): string {
       boardDetailFlags: document.getElementById('board-detail-flags'),
       boardDetailSummary: document.getElementById('board-detail-summary'),
       boardDetailReviews: document.getElementById('board-detail-reviews'),
+      boardDetailRuns: document.getElementById('board-detail-runs'),
       boardDetailEvents: document.getElementById('board-detail-events'),
       boardStopProcessing: document.getElementById('board-stop-processing'),
       boardConfirmApprove: document.getElementById('board-confirm-approve'),
@@ -2329,7 +2377,9 @@ export function dashboardHtml(config: AppConfig): string {
         const text = await response.text();
         var msg = 'Request failed';
         try { msg = JSON.parse(text).error || msg; } catch (_) { msg = text || msg; }
-        throw new Error(msg);
+        var error = new Error(msg);
+        error.status = response.status;
+        throw error;
       }
       return response.json();
     }
@@ -2398,6 +2448,10 @@ export function dashboardHtml(config: AppConfig): string {
     }
 
     function updateDashboardChrome() {
+      if (state.viewMode === 'board' && state.workItemsAvailable === false) {
+        state.viewMode = 'runs';
+      }
+
       var boardMode = state.viewMode === 'board';
       el.appRoot.classList.toggle('board-mode', boardMode);
       el.runsView.style.display = boardMode ? 'none' : '';
@@ -2407,10 +2461,23 @@ export function dashboardHtml(config: AppConfig): string {
       }
       if (el.viewSwitch) {
         el.viewSwitch.querySelectorAll('[data-view]').forEach(function(button) {
+          if (button.getAttribute('data-view') === 'board') {
+            button.style.display = state.workItemsAvailable === false ? 'none' : '';
+          }
           var isActive = button.getAttribute('data-view') === state.viewMode;
           button.classList.toggle('active', isActive);
         });
       }
+    }
+
+    function isWorkItemsUnavailableError(error) {
+      return Boolean(
+        error &&
+        (
+          error.status === 501 ||
+          error.message === 'Work item APIs are unavailable'
+        )
+      );
     }
 
     function shortId(id) {
@@ -2523,6 +2590,13 @@ export function dashboardHtml(config: AppConfig): string {
       return 'status-pill ' + status;
     }
 
+    function statusLabel(run) {
+      if (run && run.phase && run.phase !== run.status && run.status === 'running') {
+        return run.status + ' / ' + run.phase;
+      }
+      return run ? run.status : '';
+    }
+
     function formatDate(value) {
       if (!value) {
         return '—';
@@ -2568,6 +2642,132 @@ export function dashboardHtml(config: AppConfig): string {
       if (!task || !task.trim()) return '(no description)';
       if (task.length <= maxLen) return task;
       return task.slice(0, maxLen).trimEnd() + '\u2026';
+    }
+
+    function normalizeArtifactPath(value) {
+      var normalized = String(value || '').split(String.fromCharCode(92)).join('/');
+      while (normalized.startsWith('./')) {
+        normalized = normalized.slice(2);
+      }
+      return normalized;
+    }
+
+    function hasInternalArtifact(run, artifactPath) {
+      if (!run || !Array.isArray(run.internalArtifacts)) return false;
+      var normalizedTarget = normalizeArtifactPath(artifactPath);
+      return run.internalArtifacts.some(function(entry) {
+        return normalizeArtifactPath(entry) === normalizedTarget;
+      });
+    }
+
+    async function renderAutoReviewSummary(run, mountNode) {
+      if (!run || !mountNode || !hasInternalArtifact(run, 'auto-review-summary.json')) {
+        if (mountNode) {
+          mountNode.style.display = 'none';
+          mountNode.innerHTML = '';
+        }
+        return;
+      }
+
+      mountNode.style.display = '';
+      mountNode.innerHTML = '';
+      mountNode.style.marginTop = '12px';
+      mountNode.style.padding = '12px';
+      mountNode.style.border = '1px solid var(--border)';
+      mountNode.style.borderRadius = '12px';
+      mountNode.style.background = 'var(--panel)';
+
+      var header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.justifyContent = 'space-between';
+      header.style.gap = '12px';
+
+      var title = document.createElement('div');
+      title.style.fontWeight = '600';
+      title.textContent = 'Auto-review summary';
+      header.appendChild(title);
+
+      var rawLink = document.createElement('a');
+      rawLink.href = '/api/runs/' + encodeURIComponent(run.id) + '/artifacts/auto-review-summary.json';
+      rawLink.target = '_blank';
+      rawLink.rel = 'noreferrer noopener';
+      rawLink.textContent = 'Open JSON';
+      rawLink.style.color = 'var(--ring)';
+      rawLink.style.textDecoration = 'none';
+      header.appendChild(rawLink);
+
+      mountNode.appendChild(header);
+
+      var body = document.createElement('div');
+      body.style.marginTop = '10px';
+      body.style.color = 'var(--text-muted)';
+      body.textContent = 'Loading auto-review summary…';
+      mountNode.appendChild(body);
+
+      try {
+        var summary = await fetchJson('/api/runs/' + encodeURIComponent(run.id) + '/artifacts/auto-review-summary.json');
+        if (state.selectedId !== run.id) {
+          return;
+        }
+
+        var selectedFindings = Array.isArray(summary.selectedFindings) ? summary.selectedFindings : [];
+        var ignoredFindings = Array.isArray(summary.ignoredFindings) ? summary.ignoredFindings : [];
+        var rationale = typeof summary.rationale === 'string' ? summary.rationale : '';
+
+        body.innerHTML = '';
+
+        if (rationale) {
+          var rationaleNode = document.createElement('div');
+          rationaleNode.style.marginBottom = '10px';
+          rationaleNode.style.color = 'var(--text)';
+          rationaleNode.textContent = rationale;
+          body.appendChild(rationaleNode);
+        }
+
+        function appendFindingGroup(label, items) {
+          var group = document.createElement('div');
+          group.style.marginTop = body.childNodes.length > 0 ? '10px' : '0';
+
+          var labelNode = document.createElement('div');
+          labelNode.style.fontSize = '12px';
+          labelNode.style.fontWeight = '600';
+          labelNode.style.letterSpacing = '0.04em';
+          labelNode.style.textTransform = 'uppercase';
+          labelNode.style.color = 'var(--text-dim)';
+          labelNode.textContent = label;
+          group.appendChild(labelNode);
+
+          if (!items || items.length === 0) {
+            var emptyNode = document.createElement('div');
+            emptyNode.style.marginTop = '4px';
+            emptyNode.textContent = 'None';
+            group.appendChild(emptyNode);
+            body.appendChild(group);
+            return;
+          }
+
+          var list = document.createElement('ul');
+          list.style.margin = '6px 0 0 18px';
+          list.style.padding = '0';
+          for (var i = 0; i < items.length; i++) {
+            var item = document.createElement('li');
+            item.style.marginBottom = '4px';
+            item.textContent = String(items[i]);
+            list.appendChild(item);
+          }
+          group.appendChild(list);
+          body.appendChild(group);
+        }
+
+        appendFindingGroup('Selected findings', selectedFindings);
+        appendFindingGroup('Ignored findings', ignoredFindings);
+      } catch (_error) {
+        if (state.selectedId !== run.id) {
+          return;
+        }
+        body.textContent = 'Auto-review summary artifact is unavailable.';
+      }
     }
 
     function renderSummary(run) {
@@ -2716,6 +2916,11 @@ export function dashboardHtml(config: AppConfig): string {
         error.textContent = run.error;
         el.summary.appendChild(error);
       }
+
+      var autoReviewSummaryMount = document.createElement('div');
+      autoReviewSummaryMount.style.display = 'none';
+      el.summary.appendChild(autoReviewSummaryMount);
+      renderAutoReviewSummary(run, autoReviewSummaryMount);
     }
 
     var consoleFilter = 'all';
@@ -2995,7 +3200,7 @@ export function dashboardHtml(config: AppConfig): string {
 
         var statusNode = document.createElement('span');
         statusNode.className = statusClass(run.status);
-        statusNode.textContent = run.status;
+        statusNode.textContent = statusLabel(run);
 
         top.appendChild(taskNode);
         top.appendChild(statusNode);
@@ -3486,8 +3691,32 @@ export function dashboardHtml(config: AppConfig): string {
     }
 
     async function loadWorkItems() {
-      var workflow = state.boardWorkflow || 'product_discovery';
-      var data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow));
+      var workflow = state.boardWorkflow || 'feature_delivery';
+      var data;
+      try {
+        data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow));
+      } catch (error) {
+        if (isWorkItemsUnavailableError(error)) {
+          state.workItemsAvailable = false;
+          state.workItems = [];
+          state.selectedWorkItemId = null;
+          state.selectedWorkItem = null;
+          state.selectedWorkItemReviewRequests = [];
+          state.selectedWorkItemReviewComments = {};
+          state.selectedWorkItemRuns = [];
+          state.selectedWorkItemEvents = [];
+          if (el.boardMeta) {
+            el.boardMeta.textContent = 'Work items unavailable';
+          }
+          updateDashboardChrome();
+          renderBoard();
+          renderBoardDetail();
+          return;
+        }
+        throw error;
+      }
+
+      state.workItemsAvailable = true;
       state.workItems = Array.isArray(data.workItems) ? data.workItems : [];
       var hashTarget = currentHashTarget();
       if (hashTarget && hashTarget.type === 'workItem') {
@@ -3505,6 +3734,7 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedWorkItem = null;
         state.selectedWorkItemReviewRequests = [];
         state.selectedWorkItemEvents = [];
+        state.selectedWorkItemRuns = [];
       }
       if (el.boardMeta) {
         el.boardMeta.textContent = state.workItems.length + ' work items';
@@ -3528,7 +3758,7 @@ export function dashboardHtml(config: AppConfig): string {
       if (!el.boardColumns) return;
       el.boardColumns.innerHTML = '';
 
-      var workflow = state.boardWorkflow || 'product_discovery';
+      var workflow = state.boardWorkflow || 'feature_delivery';
       var columns = BOARD_COLUMNS[workflow] || [];
 
       for (var i = 0; i < columns.length; i++) {
@@ -3571,6 +3801,13 @@ export function dashboardHtml(config: AppConfig): string {
           card.className = 'board-card' + (state.selectedWorkItemId === item.id ? ' selected' : '');
           card.onclick = (function(workItemId) {
             return function() {
+              if (state.selectedWorkItemId === workItemId) {
+                state.selectedWorkItemId = null;
+                window.location.hash = '';
+                renderBoard();
+                refreshSelectedWorkItem();
+                return;
+              }
               state.selectedWorkItemId = workItemId;
               window.location.hash = '#work-item/' + encodeURIComponent(workItemId.slice(0, 8));
               renderBoard();
@@ -3593,6 +3830,14 @@ export function dashboardHtml(config: AppConfig): string {
             substate.className = 'board-chip';
             substate.textContent = titleCaseWorkItemState(item.substate);
             top.appendChild(substate);
+          }
+
+          if ((item.activeRunCount || 0) > 0) {
+            var runBadge = document.createElement('span');
+            runBadge.className = 'board-run-badge';
+            runBadge.textContent = String(item.activeRunCount);
+            runBadge.title = String(item.activeRunCount) + ' active runs';
+            top.appendChild(runBadge);
           }
 
           var titleNode = document.createElement('div');
@@ -3643,6 +3888,7 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedWorkItem = null;
         state.selectedWorkItemReviewRequests = [];
         state.selectedWorkItemReviewComments = {};
+        state.selectedWorkItemRuns = [];
         state.selectedWorkItemEvents = [];
         renderBoardDetail();
         return;
@@ -3651,13 +3897,15 @@ export function dashboardHtml(config: AppConfig): string {
       var encodedId = encodeURIComponent(state.selectedWorkItemId);
       var results = await Promise.all([
         fetchJson('/api/work-items/' + encodedId),
+        fetchJson('/api/work-items/' + encodedId + '/runs').catch(function() { return { runs: [] }; }),
         fetchJson('/api/work-items/' + encodedId + '/review-requests').catch(function() { return { reviewRequests: [] }; }),
         fetchJson('/api/work-items/' + encodedId + '/events').catch(function() { return { events: [] }; }),
       ]);
 
       state.selectedWorkItem = results[0].workItem || null;
-      state.selectedWorkItemReviewRequests = Array.isArray(results[1].reviewRequests) ? results[1].reviewRequests : [];
-      state.selectedWorkItemEvents = Array.isArray(results[2].events) ? results[2].events : [];
+      state.selectedWorkItemRuns = Array.isArray(results[1].runs) ? results[1].runs : [];
+      state.selectedWorkItemReviewRequests = Array.isArray(results[2].reviewRequests) ? results[2].reviewRequests : [];
+      state.selectedWorkItemEvents = Array.isArray(results[3].events) ? results[3].events : [];
       state.selectedWorkItemReviewComments = {};
       if (state.selectedWorkItemReviewRequests.length > 0) {
         var commentResults = await Promise.all(state.selectedWorkItemReviewRequests.map(function(request) {
@@ -3696,6 +3944,8 @@ export function dashboardHtml(config: AppConfig): string {
         el.boardDetailSummary.textContent = 'Choose a work item from the board to see details.';
         el.boardDetailReviews.className = 'board-detail-empty';
         el.boardDetailReviews.textContent = 'No review requests loaded.';
+        el.boardDetailRuns.className = 'board-detail-empty';
+        el.boardDetailRuns.textContent = 'No runs loaded.';
         el.boardDetailEvents.className = 'board-detail-empty';
         el.boardDetailEvents.textContent = 'No events loaded.';
         el.boardStopProcessing.disabled = true;
@@ -3704,7 +3954,7 @@ export function dashboardHtml(config: AppConfig): string {
         el.boardOverrideSubmit.disabled = true;
         if (el.boardOverrideSubstate) el.boardOverrideSubstate.value = '';
         if (el.boardOverrideReason) el.boardOverrideReason.value = '';
-        populateOverrideStateOptions(state.boardWorkflow || 'product_discovery');
+        populateOverrideStateOptions(state.boardWorkflow || 'feature_delivery');
         return;
       }
 
@@ -3718,7 +3968,6 @@ export function dashboardHtml(config: AppConfig): string {
         titleCaseWorkItemState(item.state),
         item.substate ? titleCaseWorkItemState(item.substate) : null,
         item.jiraIssueKey ? 'Jira ' + item.jiraIssueKey : null,
-        item.githubPrNumber ? 'PR #' + item.githubPrNumber : null,
         'Updated ' + timeAgo(item.updatedAt),
       ].filter(Boolean).forEach(function(value) {
         var chip = document.createElement('span');
@@ -3726,6 +3975,20 @@ export function dashboardHtml(config: AppConfig): string {
         chip.textContent = value;
         el.boardDetailMeta.appendChild(chip);
       });
+      if (item.githubPrUrl) {
+        var prLink = document.createElement('a');
+        prLink.className = 'board-chip';
+        prLink.href = item.githubPrUrl;
+        prLink.target = '_blank';
+        prLink.rel = 'noreferrer noopener';
+        prLink.textContent = item.githubPrNumber ? 'PR #' + item.githubPrNumber : 'GitHub PR';
+        el.boardDetailMeta.appendChild(prLink);
+      } else if (item.githubPrNumber) {
+        var prChip = document.createElement('span');
+        prChip.className = 'board-chip';
+        prChip.textContent = 'PR #' + item.githubPrNumber;
+        el.boardDetailMeta.appendChild(prChip);
+      }
 
       el.boardDetailFlags.innerHTML = '';
       if (Array.isArray(item.flags) && item.flags.length > 0) {
@@ -3749,7 +4012,18 @@ export function dashboardHtml(config: AppConfig): string {
       el.boardConfirmRework.disabled = !canConfirmDiscovery;
 
       renderBoardReviewRequests(item);
+      renderBoardRuns();
       renderBoardEvents();
+    }
+
+    function openWorkItemRun(runId) {
+      if (!runId) return;
+      state.viewMode = 'runs';
+      state.selectedId = runId;
+      window.location.hash = '#run/' + runId.slice(0, 8);
+      updateDashboardChrome();
+      renderRuns();
+      refreshSelected().catch(console.error);
     }
 
     function renderBoardReviewRequests(item) {
@@ -3869,6 +4143,64 @@ export function dashboardHtml(config: AppConfig): string {
       el.boardDetailReviews.className = '';
       el.boardDetailReviews.innerHTML = '';
       el.boardDetailReviews.appendChild(container);
+    }
+
+    function renderBoardRuns() {
+      var runs = state.selectedWorkItemRuns || [];
+      if (!runs.length) {
+        el.boardDetailRuns.className = 'board-detail-empty';
+        el.boardDetailRuns.textContent = 'No runs linked to this work item yet.';
+        return;
+      }
+
+      var container = document.createElement('div');
+      container.className = 'board-detail-section';
+
+      runs.forEach(function(run) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'board-run-item';
+
+        var head = document.createElement('div');
+        head.className = 'board-run-head';
+
+        var title = document.createElement('div');
+        title.className = 'board-review-title';
+        title.textContent = run.title || ('Run ' + shortId(run.id));
+
+        var status = document.createElement('span');
+        status.className = statusClass(run.status);
+        status.textContent = run.status;
+
+        head.appendChild(title);
+        head.appendChild(status);
+        wrapper.appendChild(head);
+
+        var meta = document.createElement('div');
+        meta.className = 'board-run-meta';
+        meta.textContent = run.repoSlug + ' · Created ' + timeAgo(run.createdAt);
+        wrapper.appendChild(meta);
+
+        var actions = document.createElement('div');
+        actions.className = 'board-inline-actions';
+
+        var openLink = document.createElement('a');
+        openLink.className = 'top-btn';
+        openLink.href = '#run/' + shortId(run.id);
+        openLink.textContent = 'Open run';
+        openLink.onclick = function(event) {
+          event.preventDefault();
+          openWorkItemRun(run.id);
+        };
+
+        actions.appendChild(openLink);
+        wrapper.appendChild(actions);
+
+        container.appendChild(wrapper);
+      });
+
+      el.boardDetailRuns.className = '';
+      el.boardDetailRuns.innerHTML = '';
+      el.boardDetailRuns.appendChild(container);
     }
 
     function renderBoardEvents() {
@@ -4270,10 +4602,20 @@ export function dashboardHtml(config: AppConfig): string {
         var data = await fetchJson('/api/settings');
         var c = data.config || {};
         var s = data.stats || {};
-        var sandboxRuntimeLabel = c.sandboxRuntimeLabel || c.sandboxRuntime || '';
-        var sandboxStatus = c.sandboxStatus && c.sandboxStatus.enabled === false
+        var canManageUsers = Boolean(c.permissions && c.permissions.manageUsers);
+        var sandboxRuntime = c.runtime && c.runtime.sandbox ? c.runtime.sandbox : null;
+        var sandboxRuntimeLabel = (sandboxRuntime && sandboxRuntime.label) || c.sandboxRuntimeLabel || c.sandboxRuntime || '';
+        var priceSummary = c.modelPrices || {};
+        var missingPrices = priceSummary.missingPrices || 0;
+        var priceBadge = missingPrices > 0
+          ? '<span class="settings-badge off">' + missingPrices + ' missing</span>'
+          : '<span class="settings-badge on">Ready</span>';
+        var sandboxStatus = sandboxRuntime && sandboxRuntime.enabled === false
           ? ' <span class="settings-badge off">Disabled</span>'
-          : ' ' + settingsBadge(Boolean(c.sandboxStatus && c.sandboxStatus.enabled));
+          : ' ' + settingsBadge(Boolean(sandboxRuntime && sandboxRuntime.enabled));
+        var usersLink = canManageUsers
+          ? '<a href="/users" class="top-btn" style="padding:6px 12px;">Users</a>'
+          : '';
         el.settingsBody.innerHTML =
           '<div class="settings-section"><h3>Configuration</h3>' +
           '<div class="settings-row"><span class="label">App Name</span><span class="value compact">' + esc(c.appName || '') + '</span></div>' +
@@ -4283,23 +4625,27 @@ export function dashboardHtml(config: AppConfig): string {
           '<div class="settings-row stacked">' +
           '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">' +
           '<span class="label">Agent Command</span>' +
+          '<div style="display:flex; gap:8px; align-items:center;">' +
+          usersLink +
           '<a href="/agent-profiles" class="top-btn" style="padding:6px 12px;">Edit</a>' +
+          '</div>' +
           '</div>' +
           '<span class="value settings-code" title="' + esc(c.agentCommandTemplate || '') + '">' + esc(c.agentCommandTemplate || '') + '</span></div>' +
           '</div>' +
           '<div class="settings-section"><h3>Features</h3>' +
-          '<div class="settings-row"><span class="label">Observer</span>' + settingsBadge(c.features?.observer) + '</div>' +
+          '<div class="settings-row"><span class="label">Observer</span>' + settingsBadge(c.capabilities?.observer) + '</div>' +
           '<div class="settings-row"><span class="label">Sandbox Runtime</span><span class="value compact">' + esc(sandboxRuntimeLabel) + sandboxStatus + '</span></div>' +
-          '<div class="settings-row"><span class="label">Browser Verify</span>' + settingsBadge(c.features?.browserVerify) + '</div>' +
-          '<div class="settings-row"><span class="label">Scope Judge</span>' + settingsBadge(c.features?.scopeJudge) + '</div>' +
-          '<div class="settings-row"><span class="label">CI Wait</span>' + settingsBadge(c.features?.ciWait) + '</div>' +
-          '<div class="settings-row"><span class="label">Dry Run</span>' + settingsBadge(c.features?.dryRun) + '</div>' +
+          '<div class="settings-row"><span class="label">Browser Verify</span>' + settingsBadge(c.capabilities?.browserVerify) + '</div>' +
+          '<div class="settings-row"><span class="label">Scope Judge</span>' + settingsBadge(c.capabilities?.scopeJudge) + '</div>' +
+          '<div class="settings-row"><span class="label">CI Wait</span>' + settingsBadge(c.capabilities?.ciWait) + '</div>' +
+          '<div class="settings-row"><span class="label">Dry Run</span>' + settingsBadge(c.capabilities?.dryRun) + '</div>' +
           '</div>' +
           '<div class="settings-section"><h3>Models</h3>' +
           '<div class="settings-row"><span class="label">Default</span><span class="value compact">' + esc(c.models?.default || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Plan Task</span><span class="value compact">' + esc(c.models?.planTask || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Orchestrator</span><span class="value compact">' + esc(c.models?.orchestrator || '') + '</span></div>' +
           '<div class="settings-row"><span class="label">Browser Verify</span><span class="value compact">' + esc(c.models?.browserVerify || '') + '</span></div>' +
+          '<div class="settings-row"><span class="label">Prices</span><span class="value compact">' + priceBadge + ' <a href="/model-prices" class="top-btn" style="padding:6px 12px; margin-left:8px;">Manage</a></span></div>' +
           '</div>' +
           '<div class="settings-section"><h3>Aggregate Stats</h3>' +
           '<div class="stat-grid">' +
@@ -4335,19 +4681,17 @@ export function dashboardHtml(config: AppConfig): string {
         if (!button) return;
         state.viewMode = button.getAttribute('data-view') === 'board' ? 'board' : 'runs';
         updateDashboardChrome();
-        if (state.viewMode === 'board') {
-          loadWorkItems().catch(console.error);
-        } else if (el.topMeta) {
-          el.topMeta.textContent = state.runs.length + ' runs';
-        }
+        refreshCurrentView().catch(console.error);
+        scheduleRefresh(nextRefreshDelayMs());
       };
     }
 
     if (el.boardWorkflow) {
       el.boardWorkflow.onchange = function() {
-        state.boardWorkflow = el.boardWorkflow.value || 'product_discovery';
+        state.boardWorkflow = el.boardWorkflow.value || 'feature_delivery';
         setBoardStatusMessage('');
         loadWorkItems().catch(console.error);
+        scheduleRefresh(nextRefreshDelayMs());
       };
     }
 
@@ -4899,30 +5243,48 @@ export function dashboardHtml(config: AppConfig): string {
       }
     }
 
-    async function refreshObserver() {
+    async function refreshObserver(forceRules) {
       try {
-        var [stateData, eventsData, rulesData] = await Promise.all([
+        var shouldLoadRules = !!forceRules || !observerRulesLoaded;
+        var requests = [
           fetchJson('/api/observer/state'),
           fetchJson('/api/observer/events?limit=50'),
-          fetchJson('/api/observer/rules'),
-        ]);
+        ];
+        if (shouldLoadRules) {
+          requests.push(fetchJson('/api/observer/rules'));
+        }
+
+        var results = await Promise.all(requests);
+        var stateData = results[0];
+        var eventsData = results[1];
+        var rulesData = shouldLoadRules ? results[2] : { rules: observerRulesCache };
 
         if (!stateData.enabled) {
           observerEl.card.style.display = 'none';
           return;
         }
 
+        if (shouldLoadRules) {
+          observerRulesCache = Array.isArray(rulesData.rules) ? rulesData.rules : [];
+          observerRulesLoaded = true;
+        }
+        observerLastRefreshAt = Date.now();
+
         observerEl.card.style.display = '';
-        observerEl.subtitle.textContent = 'Day: ' + stateData.counterDay + ' \\u00b7 ' + (rulesData.rules || []).length + ' rules loaded';
+        observerEl.subtitle.textContent = 'Day: ' + stateData.counterDay + ' \\u00b7 ' + observerRulesCache.length + ' rules loaded';
         observerEl.budget.textContent = stateData.dailyCount + ' runs today';
 
-        renderObserverRules(rulesData.rules || [], stateData.ruleOutcomes || {});
+        renderObserverRules(observerRulesCache, stateData.ruleOutcomes || {});
         renderObserverStats(stateData);
         renderObserverEvents(eventsData.events || []);
       } catch (e) {
         // Observer not available — hide panel
         observerEl.card.style.display = 'none';
       }
+    }
+
+    function observerRefreshDue() {
+      return observerLastRefreshAt === 0 || (Date.now() - observerLastRefreshAt) >= OBSERVER_POLL_INTERVAL_MS;
     }
 
     // ── Pipeline Manager ──
@@ -5240,7 +5602,56 @@ export function dashboardHtml(config: AppConfig): string {
       await loadRuns();
       await loadWorkItems();
       await refreshSelected();
-      await refreshObserver();
+      await refreshObserver(true);
+    }
+
+    async function refreshCurrentView() {
+      if (state.viewMode === 'board') {
+        await loadWorkItems();
+        if (observerRefreshDue()) {
+          await refreshObserver(false);
+        }
+        return;
+      }
+
+      await loadRuns();
+      await refreshSelected();
+      if (observerRefreshDue()) {
+        await refreshObserver(false);
+      }
+    }
+
+    function nextRefreshDelayMs() {
+      return state.viewMode === 'board' ? BOARD_POLL_INTERVAL_MS : RUNS_POLL_INTERVAL_MS;
+    }
+
+    function clearRefreshTimer() {
+      if (state.interval) {
+        clearTimeout(state.interval);
+        state.interval = null;
+      }
+    }
+
+    function scheduleRefresh(delayMs) {
+      clearRefreshTimer();
+      state.interval = setTimeout(runScheduledRefresh, delayMs);
+    }
+
+    async function runScheduledRefresh() {
+      if (document.hidden) return;
+      if (refreshInFlight) {
+        scheduleRefresh(nextRefreshDelayMs());
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        await refreshCurrentView();
+      } catch (error) {
+        console.error(error);
+      } finally {
+        refreshInFlight = false;
+        scheduleRefresh(nextRefreshDelayMs());
+      }
     }
 
     initTheme();
@@ -5248,10 +5659,19 @@ export function dashboardHtml(config: AppConfig): string {
       el.boardWorkflow.value = state.boardWorkflow;
     }
     updateDashboardChrome();
-    refreshAll().catch(console.error);
-    state.interval = setInterval(() => {
-      refreshAll().catch(console.error);
-    }, 5000);
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        clearRefreshTimer();
+        return;
+      }
+      refreshCurrentView().catch(console.error);
+      scheduleRefresh(nextRefreshDelayMs());
+    });
+    refreshAll()
+      .catch(console.error)
+      .finally(function() {
+        scheduleRefresh(nextRefreshDelayMs());
+      });
   </script>
 </body>
 </html>`;

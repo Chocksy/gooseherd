@@ -5,6 +5,7 @@ import type { ContextBag } from "../context-bag.js";
 import { runShell, runShellCapture, runShellWithProgress, shellEscape, appendLog, mapToContainerPath } from "../shell.js";
 import { buildAuthenticatedGitUrl } from "../../github.js";
 import { loadRepoConfig, applyRepoConfig } from "../repo-config.js";
+import { hasReusableBranch, isFollowUpRun } from "../branch-reuse.js";
 
 /**
  * Clone node: clone repo, checkout branch (or create new), set git config.
@@ -65,14 +66,16 @@ export async function cloneNode(
     }
   );
 
-  const isFollowUp = !!run.parentRunId && !!run.parentBranchName;
+  const isFollowUp = isFollowUpRun(run);
+  const reusesExistingBranch = hasReusableBranch(run);
   ctx.set("isFollowUp", isFollowUp);
+  ctx.set("reusesExistingBranch", reusesExistingBranch);
 
   let resolvedBaseBranch = run.baseBranch;
 
-  if (isFollowUp && run.parentBranchName) {
-    // Follow-up: checkout the existing parent branch
-    await appendLog(logFile, `\n[info] follow-up run: checking out existing branch '${run.parentBranchName}'\n`);
+  if (reusesExistingBranch && run.parentBranchName) {
+    const reuseReason = isFollowUp ? "follow-up run" : "branch reuse run";
+    await appendLog(logFile, `\n[info] ${reuseReason}: checking out existing branch '${run.parentBranchName}'\n`);
     const fetchResult = await runShellCapture(
       `git fetch origin ${shellEscape(run.parentBranchName)}`,
       { cwd: repoDir, logFile }
@@ -142,6 +145,6 @@ export async function cloneNode(
 
   return {
     outcome: "success",
-    outputs: { repoDir, runDir, promptFile, resolvedBaseBranch, isFollowUp }
+    outputs: { repoDir, runDir, promptFile, resolvedBaseBranch, isFollowUp, reusesExistingBranch }
   };
 }

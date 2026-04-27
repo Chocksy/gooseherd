@@ -7,7 +7,8 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import type { AppConfig } from "../src/config.js";
 import { DashboardAuthSessionStore } from "../src/dashboard/auth-session-store.js";
-import { startDashboardServer, type DashboardWorkItemsSource } from "../src/dashboard-server.js";
+import type { DashboardWorkItemsSource } from "../src/dashboard/contracts.js";
+import { startDashboardServer } from "../src/dashboard-server.js";
 import { createTestDb } from "./helpers/test-db.js";
 import { users } from "../src/db/schema.js";
 import type { WorkItemEventRecord, WorkItemRecord } from "../src/work-items/types.js";
@@ -248,6 +249,7 @@ function makeDashboardWorkItemsSource(overrides: Partial<DashboardWorkItemsSourc
   return {
     listWorkItems: async () => [],
     getWorkItem: async () => undefined,
+    listRunsForWorkItem: async () => [],
     listReviewRequestsForWorkItem: async () => [],
     listReviewRequestComments: async () => [],
     listEventsForWorkItem: async (): Promise<WorkItemEventRecord[]> => [],
@@ -381,6 +383,57 @@ describe("dashboard auth routes", () => {
     assert.equal(logoutRes.headers.location, "/login");
   });
 
+  test("slack sign up creates user and session even when no mapped team exists", async (t) => {
+    const testDb = await createTestDb();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
+    const port = getPort();
+    const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
+    t.after(async () => {
+      server.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await testDb.cleanup();
+    });
+    await waitForServer(port);
+
+    const signupRes = await request(port, "GET", "/auth/slack/signup");
+    assert.equal(signupRes.status, 302);
+    const location = signupRes.headers.location ?? "";
+    const state = new URL(location).searchParams.get("state");
+    const nonce = new URL(location).searchParams.get("nonce");
+    assert.ok(state);
+    assert.ok(nonce);
+
+    mock.method(globalThis, "fetch", async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("openid.connect.token")) {
+        const payload = {
+          nonce,
+          "https://slack.com/user_id": "U_TEAMLESS",
+          name: "Teamless User",
+        };
+        const token = `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;
+        return new Response(JSON.stringify({ ok: true, access_token: "xoxp-teamless", id_token: token }), { status: 200 });
+      }
+      if (url.includes("openid.connect.userInfo")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          "https://slack.com/user_id": "U_TEAMLESS",
+          name: "Teamless User",
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const callbackRes = await request(port, "GET", `/auth/slack/callback?code=test-code&state=${state}`);
+    assert.equal(callbackRes.status, 302);
+    assert.equal(callbackRes.headers.location, "/");
+    assert.match(callbackRes.headers["set-cookie"]?.[0] ?? "", /gooseherd-session=/);
+
+    const createdUsers = await testDb.db.select().from(users).where((await import("drizzle-orm")).eq(users.slackUserId, "U_TEAMLESS"));
+    assert.equal(createdUsers.length, 1);
+    assert.equal(createdUsers[0]?.displayName, "Teamless User");
+  });
+
   test("slack sign up creates user and session when mapped team exists", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
@@ -445,6 +498,59 @@ describe("dashboard auth routes", () => {
       }
       if (url.includes("usergroups.users.list") && url.includes("S_DEVOPS")) {
         return new Response(JSON.stringify({ ok: true, users: ["U_NEW"] }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const callbackRes = await request(port, "GET", `/auth/slack/callback?code=test-code&state=${state}`);
+    assert.equal(callbackRes.status, 302);
+    assert.equal(callbackRes.headers.location, "/");
+    assert.match(callbackRes.headers["set-cookie"]?.[0] ?? "", /gooseherd-session=/);
+    assert.match(callbackRes.headers["set-cookie"]?.[0] ?? "", /SameSite=Lax/);
+  });
+
+  test("slack sign in succeeds for an existing user without team memberships", async (t) => {
+    const testDb = await createTestDb();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
+    const port = getPort();
+    await testDb.db.insert(users).values({
+      id: "22222222-2222-4222-8222-222222222222",
+      displayName: "Existing Teamless User",
+      slackUserId: "U_EXISTING_TEAMLESS",
+      isActive: true,
+    });
+    const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
+    t.after(async () => {
+      server.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await testDb.cleanup();
+    });
+    await waitForServer(port);
+
+    const signinRes = await request(port, "GET", "/auth/slack/signin");
+    const location = signinRes.headers.location ?? "";
+    const state = new URL(location).searchParams.get("state");
+    const nonce = new URL(location).searchParams.get("nonce");
+    assert.ok(state);
+    assert.ok(nonce);
+
+    mock.method(globalThis, "fetch", async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("openid.connect.token")) {
+        const payload = {
+          nonce,
+          "https://slack.com/user_id": "U_EXISTING_TEAMLESS",
+          name: "Existing Teamless User",
+        };
+        const token = `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;
+        return new Response(JSON.stringify({ ok: true, access_token: "xoxp-existing-teamless", id_token: token }), { status: 200 });
+      }
+      if (url.includes("openid.connect.userInfo")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          "https://slack.com/user_id": "U_EXISTING_TEAMLESS",
+          name: "Existing Teamless User",
+        }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -585,6 +691,115 @@ describe("dashboard auth routes", () => {
 
     assert.equal(res.status, 403);
     assert.equal(respondToReviewRequest.mock.callCount(), 0);
+  });
+
+  test("users page redirects anonymous requests to login and renders for admin password session", async (t) => {
+    const testDb = await createTestDb();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
+    const port = getPort();
+    const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
+    t.after(async () => {
+      server.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await testDb.cleanup();
+    });
+    await waitForServer(port);
+
+    const anonymousRes = await request(port, "GET", "/users");
+    assert.equal(anonymousRes.status, 302);
+    assert.equal(anonymousRes.headers.location, "/login");
+
+    const loginRes = await request(port, "POST", "/login", "token=admin-secret");
+    const cookie = (loginRes.headers["set-cookie"]?.[0] ?? "").split(";")[0] ?? "";
+    const adminRes = await request(port, "GET", "/users", undefined, { cookie });
+
+    assert.equal(adminRes.status, 200);
+    assert.match(adminRes.text, /Users/);
+    assert.match(adminRes.text, /New User/);
+  });
+
+  test("user session cannot access admin-only users endpoints", async (t) => {
+    const testDb = await createTestDb();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
+    const port = getPort();
+    const userId = "33333333-3333-4333-8333-333333333333";
+    await testDb.db.insert(users).values({
+      id: "44444444-4444-4444-8444-444444444444",
+      displayName: "Existing Person",
+      slackUserId: "U_EXISTING",
+    });
+    const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
+    t.after(async () => {
+      server.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await testDb.cleanup();
+    });
+    await waitForServer(port);
+
+    const cookie = await createUserSessionCookie(testDb.db, userId);
+    const listRes = await requestJson(port, "GET", "/api/users", undefined, { cookie });
+    const createRes = await requestJson(port, "POST", "/api/users", {
+      displayName: "Should Fail",
+    }, { cookie });
+    const patchRes = await requestJson(port, "PATCH", "/api/users/44444444-4444-4444-8444-444444444444", {
+      displayName: "Still Fails",
+    }, { cookie });
+
+    assert.equal(listRes.status, 403);
+    assert.equal(createRes.status, 403);
+    assert.equal(patchRes.status, 403);
+  });
+
+  test("admin password session can list, create, and update users through admin-only endpoints", async (t) => {
+    const testDb = await createTestDb();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
+    const port = getPort();
+    await testDb.db.insert(users).values({
+      id: "55555555-5555-4555-8555-555555555555",
+      displayName: "Alpha User",
+      slackUserId: "U_ALPHA",
+      githubLogin: "alpha-gh",
+    });
+    const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
+    t.after(async () => {
+      server.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await testDb.cleanup();
+    });
+    await waitForServer(port);
+
+    const loginRes = await request(port, "POST", "/login", "token=admin-secret");
+    const cookie = (loginRes.headers["set-cookie"]?.[0] ?? "").split(";")[0] ?? "";
+
+    const listRes = await requestJson(port, "GET", "/api/users", undefined, { cookie });
+    assert.equal(listRes.status, 200);
+    assert.equal(JSON.parse(listRes.text).users[0].displayName, "Alpha User");
+
+    const createRes = await requestJson(port, "POST", "/api/users", {
+      displayName: "Beta User",
+      slackUserId: "U_BETA",
+      githubLogin: "beta-gh",
+      jiraAccountId: "JIRA_BETA",
+      isActive: true,
+    }, { cookie });
+    assert.equal(createRes.status, 201);
+    const createdUser = JSON.parse(createRes.text).user;
+    assert.equal(createdUser.githubLogin, "beta-gh");
+
+    const patchRes = await requestJson(port, "PATCH", `/api/users/${createdUser.id}`, {
+      displayName: "Beta User Updated",
+      slackUserId: "",
+      githubLogin: "beta-gh-updated",
+      jiraAccountId: "",
+      isActive: false,
+    }, { cookie });
+    assert.equal(patchRes.status, 200);
+    const updatedUser = JSON.parse(patchRes.text).user;
+    assert.equal(updatedUser.displayName, "Beta User Updated");
+    assert.equal(updatedUser.slackUserId, null);
+    assert.equal(updatedUser.githubLogin, "beta-gh-updated");
+    assert.equal(updatedUser.jiraAccountId, null);
+    assert.equal(updatedUser.isActive, false);
   });
 
   test("user session may create discovery items through the session-derived identity", async (t) => {

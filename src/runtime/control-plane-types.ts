@@ -1,4 +1,4 @@
-import type { TokenUsage } from "../types.js";
+import type { TokenUsage, TokenUsageIncrement } from "../types.js";
 
 export type RunStatus =
   | "queued"
@@ -16,6 +16,22 @@ export interface CreateRunEnvelopeInput {
   payloadRef: string;
   payloadJson: Record<string, unknown>;
   runtime: "local" | "docker" | "kubernetes";
+}
+
+export interface ActiveAgentProfileSnapshot {
+  id: string;
+  name: string;
+  runtime: string;
+  provider?: string;
+  model?: string;
+  commandTemplate: string;
+  source: "profile" | "env";
+}
+
+export interface RunnerConfigPayload {
+  agentCommandTemplate?: string;
+  agentFollowUpTemplate?: string;
+  activeAgentProfile?: ActiveAgentProfileSnapshot;
 }
 
 export interface RunEnvelope {
@@ -38,10 +54,14 @@ export interface RunnerCompletionPayload {
   artifactState: ArtifactState;
   commitSha?: string;
   changedFiles?: string[];
+  internalArtifacts?: string[];
   prUrl?: string;
+  prNumber?: number;
   tokenUsage?: TokenUsage;
   title?: string;
 }
+
+export type RunnerTokenUsagePayload = TokenUsageIncrement;
 
 export interface RunCompletionRecord {
   id: number;
@@ -55,6 +75,7 @@ export type RunnerEventType =
   | "run.started"
   | "run.progress"
   | "run.phase_changed"
+  | "run.checkpoint"
   | "run.warning"
   | "run.artifact_status"
   | "run.cancellation_observed"
@@ -66,4 +87,9 @@ export interface RunnerEventPayload {
   timestamp: string;
   sequence: number;
   payload?: Record<string, unknown>;
+}
+
+export interface RunEventRecord extends RunnerEventPayload {
+  runId: string;
+  payload: Record<string, unknown>;
 }

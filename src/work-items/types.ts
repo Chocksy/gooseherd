@@ -1,5 +1,9 @@
 export type WorkItemWorkflow = "product_discovery" | "feature_delivery";
 
+export const GITHUB_PR_ADOPTED_FLAG = "github_pr_adopted";
+export const AI_ASSIST_ENABLED_FLAG = "ai_assist_enabled";
+export const AI_ASSIST_DISABLED_FLAG = "ai_assist_disabled";
+
 export type ProductDiscoveryState =
   | "backlog"
   | "in_progress"
@@ -22,6 +26,19 @@ export type FeatureDeliveryState =
 
 export type WorkItemState = ProductDiscoveryState | FeatureDeliveryState;
 
+export const FEATURE_DELIVERY_AUTO_REVIEW_SUBSTATES = [
+  "pr_adopted",
+  "collecting_context",
+  "waiting_ci",
+  "ci_green_pending_self_review",
+  "applying_review_feedback",
+  "ci_failed",
+  "revalidating_after_rebase",
+] as const;
+
+export type FeatureDeliveryAutoReviewSubstate =
+  typeof FEATURE_DELIVERY_AUTO_REVIEW_SUBSTATES[number];
+
 export type ReviewRequestType = "review" | "approval";
 export type ReviewRequestTargetType = "user" | "team" | "team_role" | "org_role";
 export type ReviewRequestStatus = "pending" | "completed" | "cancelled" | "superseded";
@@ -33,6 +50,7 @@ export interface WorkItemRecord {
   workflow: WorkItemWorkflow;
   state: WorkItemState;
   substate?: string;
+  activeRunCount?: number;
   flags: string[];
   title: string;
   summary: string;
@@ -44,11 +62,26 @@ export interface WorkItemRecord {
   jiraIssueKey?: string;
   githubPrNumber?: number;
   githubPrUrl?: string;
+  githubPrBaseBranch?: string;
+  githubPrHeadBranch?: string;
+  githubPrHeadSha?: string;
   sourceWorkItemId?: string;
+  repo?: string;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+}
+
+export interface WorkItemLinkedRunRecord {
+  id: string;
+  status: string;
+  phase?: string;
+  title?: string;
+  repoSlug: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface CreateWorkItemInput {
@@ -66,7 +99,11 @@ export interface CreateWorkItemInput {
   jiraIssueKey?: string;
   githubPrNumber?: number;
   githubPrUrl?: string;
+  githubPrBaseBranch?: string;
+  githubPrHeadBranch?: string;
+  githubPrHeadSha?: string;
   sourceWorkItemId?: string;
+  repo?: string;
   createdByUserId: string;
 }
 

@@ -107,8 +107,10 @@ test("dashboard HTML includes work item board controls and data fetch hooks", ()
   assert.match(html, /\/api\/work-items\?workflow=/);
   assert.match(html, /id="board-detail"/);
   assert.match(html, /id="board-detail-reviews"/);
+  assert.match(html, /id="board-detail-runs"/);
   assert.match(html, /id="board-detail-events"/);
   assert.match(html, /review-requests\/' \+ encodeURIComponent\(request\.id\) \+ '\/comments/);
+  assert.match(html, /\/api\/work-items\/' \+ encodedId \+ '\/runs/);
   assert.match(html, /id="board-stop-processing"/);
   assert.match(html, /id="board-override-state"/);
   assert.match(html, /id="board-confirm-approve"/);
@@ -119,4 +121,49 @@ test("dashboard HTML includes work item board controls and data fetch hooks", ()
   assert.match(html, /No review requests loaded\./);
   assert.match(html, /stop-processing/);
   assert.match(html, /override-state/);
+  assert.match(html, /boardWorkflow: 'feature_delivery'/);
+});
+
+test("dashboard HTML uses view-aware polling with reduced board and observer cadence", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /var RUNS_POLL_INTERVAL_MS = 5000;/);
+  assert.match(html, /var BOARD_POLL_INTERVAL_MS = 15000;/);
+  assert.match(html, /var OBSERVER_POLL_INTERVAL_MS = 30000;/);
+  assert.match(html, /if \(document\.hidden\) return;/);
+  assert.match(html, /if \(state\.viewMode === 'board'\) \{/);
+  assert.match(html, /await loadWorkItems\(\);/);
+  assert.match(html, /await refreshObserver\(false\);/);
+  assert.match(html, /await loadRuns\(\);/);
+  assert.match(html, /await refreshSelected\(\);/);
+});
+
+test("dashboard HTML falls back to runs mode when work item APIs are unavailable", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /workItemsAvailable:/);
+  assert.match(html, /error\.status === 501/);
+  assert.match(html, /Work item APIs are unavailable/);
+  assert.match(html, /state\.workItemsAvailable = false;/);
+  assert.match(html, /state\.viewMode = 'runs';/);
+});
+
+test("dashboard HTML toggles selected work item cards off and clears permalink on repeat click", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /if \(state\.selectedWorkItemId === workItemId\) \{/);
+  assert.match(html, /state\.selectedWorkItemId = null;/);
+  assert.match(html, /window\.location\.hash = '';/);
+  assert.match(html, /refreshSelectedWorkItem\(\);/);
+});
+
+test("dashboard work item detail links to GitHub PR when a PR URL is present", () => {
+  const html = dashboardHtml(makeConfig());
+
+  assert.match(html, /item\.githubPrUrl/);
+  assert.match(html, /document\.createElement\('a'\)/);
+  assert.match(html, /prLink\.href = item\.githubPrUrl;/);
+  assert.match(html, /prLink\.target = '_blank';/);
+  assert.match(html, /prLink\.rel = 'noreferrer noopener';/);
+  assert.match(html, /PR #'\s*\+ item\.githubPrNumber/);
 });

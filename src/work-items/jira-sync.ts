@@ -65,7 +65,85 @@ function readJiraDescription(description: unknown): string | undefined {
   if (typeof description === "string" && description.trim()) {
     return description.trim();
   }
-  return undefined;
+
+  const rendered = renderJiraAdfNode(description).replace(/\n{3,}/g, "\n\n").trim();
+  return rendered || undefined;
+}
+
+const JIRA_ADF_BLOCK_NODES = new Set([
+  "bulletList",
+  "blockquote",
+  "codeBlock",
+  "doc",
+  "expand",
+  "heading",
+  "listItem",
+  "mediaSingle",
+  "nestedExpand",
+  "orderedList",
+  "panel",
+  "paragraph",
+  "rule",
+  "table",
+  "tableCell",
+  "tableHeader",
+  "tableRow",
+]);
+
+function renderJiraAdfNode(node: unknown): string {
+  if (typeof node === "string") {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map(renderJiraAdfNode).join("");
+  }
+  if (!isRecord(node)) {
+    return "";
+  }
+
+  const type = typeof node.type === "string" ? node.type : undefined;
+  if (type === "text") {
+    return typeof node.text === "string" ? node.text : "";
+  }
+  if (type === "hardBreak") {
+    return "\n";
+  }
+  if (type === "mention" || type === "status") {
+    return readJiraAdfAttrText(node, "text");
+  }
+  if (type === "emoji") {
+    return readJiraAdfAttrText(node, "text", "shortName");
+  }
+
+  const content = Array.isArray(node.content) ? node.content.map(renderJiraAdfNode).join("") : "";
+  if (content) {
+    if (type && JIRA_ADF_BLOCK_NODES.has(type)) {
+      return `${content.trim()}\n`;
+    }
+    return content;
+  }
+
+  return readJiraAdfAttrText(node, "text");
+}
+
+function readJiraAdfAttrText(node: Record<string, unknown>, ...keys: string[]): string {
+  const attrs = isRecord(node.attrs) ? node.attrs : undefined;
+  if (!attrs) {
+    return "";
+  }
+
+  for (const key of keys) {
+    const value = attrs[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export class JiraWorkItemSync {
@@ -89,12 +167,12 @@ export class JiraWorkItemSync {
 
   async handleWebhookPayload(payload: JiraWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
     const labels = payload.labels.map((label) => label.toLowerCase());
-    const existing = await this.workItems.findByJiraIssueKey(payload.issueKey);
-    if (existing) {
-      return existing;
-    }
-
     if (labels.some((label) => this.deliveryLabels.includes(label))) {
+      const existingDeliveries = await this.workItems.listFeatureDeliveriesByJiraIssueKey(payload.issueKey);
+      if (existingDeliveries[0]) {
+        return existingDeliveries[0];
+      }
+
       const context = await this.resolveDeliveryContext({
         actorJiraAccountId: payload.actorJiraAccountId,
         ownerTeamId: payload.ownerTeamId,
@@ -123,6 +201,11 @@ export class JiraWorkItemSync {
     }
 
     if (labels.some((label) => this.discoveryLabels.includes(label))) {
+      const existingDiscovery = await this.workItems.findProductDiscoveryByJiraIssueKey(payload.issueKey);
+      if (existingDiscovery) {
+        return existingDiscovery;
+      }
+
       const context = await this.resolveDiscoveryContext({
         actorJiraAccountId: payload.actorJiraAccountId,
         ownerTeamId: payload.ownerTeamId,

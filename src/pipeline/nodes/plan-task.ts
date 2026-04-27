@@ -87,6 +87,12 @@ export async function planTaskNode(
       output: response.outputTokens,
       model: response.model
     });
+    await deps.recordTokenUsage?.({
+      model: response.model,
+      input: response.inputTokens,
+      output: response.outputTokens,
+      source: "quality_gate"
+    }).catch(() => {});
 
     return {
       outcome: "success",

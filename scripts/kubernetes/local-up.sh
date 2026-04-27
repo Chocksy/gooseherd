@@ -55,6 +55,7 @@ bash "${ROOT_DIR}/scripts/kubernetes/build-runner-image.sh" "${RUNNER_IMAGE}"
 
 kubectl apply -f "${ROOT_DIR}/kubernetes/local/namespace.yaml"
 kubectl apply -f "${ROOT_DIR}/kubernetes/local/postgres.yaml"
+kubectl apply -f "${ROOT_DIR}/kubernetes/local/gooseherd-work-pvc.yaml"
 kubectl apply -f "${ROOT_DIR}/kubernetes/local/gooseherd-rbac.yaml"
 kubectl apply -f "${ROOT_DIR}/kubernetes/local/gooseherd-service.yaml"
 
@@ -91,8 +92,10 @@ kubectl -n "${NAMESPACE}" create secret generic gooseherd-env \
 
 kubectl apply -f "${ROOT_DIR}/kubernetes/local/gooseherd-deployment.yaml"
 kubectl -n "${NAMESPACE}" set image deployment/gooseherd gooseherd="${APP_IMAGE}"
+kubectl -n "${NAMESPACE}" rollout restart deployment/gooseherd
 
 kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/postgres --timeout=180s
+kubectl -n "${NAMESPACE}" rollout status deployment/gooseherd --timeout=300s
 kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/gooseherd --timeout=300s
 
 bootstrap_setup_via_port_forward() {

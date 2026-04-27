@@ -94,6 +94,13 @@ Relevant `.env` variables:
 - `SLACK_CLIENT_SECRET`: required for browser login via Sign in with Slack
 - `SLACK_AUTH_REDIRECT_URI`: optional override for the browser auth callback; defaults to `<DASHBOARD_PUBLIC_URL>/auth/slack/callback`
 
+Default team bootstrap:
+
+- `DEFAULT_TEAM_NAME`: optional, defaults to `default`
+- `DEFAULT_TEAM_SLACK_CHANNEL_ID`: required; startup fails fast if it is missing
+
+On startup, Gooseherd bootstraps or updates the default team record from `DEFAULT_TEAM_NAME` and `DEFAULT_TEAM_SLACK_CHANNEL_ID`.
+
 If you add new scopes after the app is already installed, reinstall the Slack app in the workspace so the new permissions take effect.
 
 ## GitHub Setup
@@ -108,10 +115,13 @@ Optional controls:
 
 Optional Jira read-access envs:
 
-- `JIRA_BASE_URL` — Jira base URL, for example `https://your-company.atlassian.net`
+- `JIRA_BASE_URL` — Jira site base URL, for example `https://your-company.atlassian.net`. Gooseherd uses it for issue browse links and `cloudId` discovery.
+- `JIRA_CLOUD_ID` — optional Atlassian Cloud ID override. If unset, Gooseherd auto-discovers it from `JIRA_BASE_URL/_edge/tenant_info`.
 - `JIRA_USER` — Jira service-account identity; use the account email for Jira Cloud
-- `JIRA_API_TOKEN` — API token / password equivalent for the service account
+- `JIRA_API_TOKEN` — Atlassian scoped API token for the Jira service account
 - `JIRA_REQUEST_TIMEOUT_MS` — optional timeout override for Jira reads; defaults to `10000`
+
+Gooseherd's Jira reader expects a scoped token and talks to Jira through `https://api.atlassian.com/ex/jira/{cloudId}/...`. Classic site-scoped tokens are not supported by this integration path.
 
 These envs are the canonical Jira read-access contract for future product discovery / work-items flows. The intended usage is to resolve Jira issue details after Gooseherd already has context from the Slack thread and discovery flow. This keeps Jira as a read-only source of task content, not a source of routing metadata.
 
@@ -148,10 +158,13 @@ AGENT_COMMAND_TEMPLATE='cd {{repo_dir}} && claude -p "$(cat {{prompt_file}})" --
 AGENT_COMMAND_TEMPLATE='cd {{repo_dir}} && cursor-agent "$(cat {{prompt_file}})" --no-interactive'
 ```
 
+For auto-review forensic logging, set `AUTO_REVIEW_DEBUG_LOG_MODE=off|failures|always`. The default is `failures`, which adds compact diagnostics to the persisted runner log only when an auto-review run fails.
+
 ## Dashboard
 
 Built-in run inspector at `http://localhost:8787`:
 - Live run status and phase tracking
+- CI waits are shown as `status=running` with `phase=awaiting_ci`; WorkItem automation advances from persisted run checkpoints rather than transient statuses
 - Tail logs, changed files view
 - Run feedback (`+1/-1` + notes)
 - One-click retry for failed runs
@@ -204,7 +217,7 @@ Important distinction:
 
 ### Full Local Kubernetes Deployment
 
-The repo now includes a minimal local deployment bundle in [kubernetes/local/README.md](/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/kubernetes/local/README.md) plus helper scripts:
+The repo now includes a minimal local deployment bundle in [kubernetes/local/README.md](kubernetes/local/README.md) plus helper scripts:
 
 ```bash
 minikube start --driver=docker
@@ -230,7 +243,7 @@ What `k8s:local-up` does:
 - configures runner callbacks to use cluster DNS instead of `host.minikube.internal`
 - bootstraps the setup wizard through a temporary local port-forward so the dashboard is ready immediately
 
-The local app image is built from `kubernetes/app.Dockerfile`, not the heavier top-level `Dockerfile`.
+The local app image is built from `.docker/Dockerfile`, not the heavier top-level `Dockerfile`.
 The top-level image remains the right one for `docker compose` and `local|docker` runtime flows.
 
 This is the right local path when you want a normal dashboard-triggered run to execute fully inside Kubernetes.
@@ -287,9 +300,11 @@ The target local architecture is:
 - Gooseherd service reachable from runner jobs through cluster DNS
 - local browser access through `kubectl port-forward` or `minikube service`
 
-The implementation plan for this local deployment path lives in [docs/plans/2026-04-10-local-minikube-deployment-plan.md](/home/vsevolod/work/hubstaff/gooseherd/.worktrees/kubernetes-runtime/docs/plans/2026-04-10-local-minikube-deployment-plan.md).
+The implementation plan for this local deployment path lives in [docs/plans/2026-04-10-local-minikube-deployment-plan.md](docs/plans/2026-04-10-local-minikube-deployment-plan.md).
 
 For the deployment contract and operational caveats, see [docs/installation-kubernetes.md](docs/installation-kubernetes.md).
+
+Kubernetes runner images must be built from the same code revision as the app image, or at least include support for the current control-plane event protocol. In particular, runner jobs now emit `run.checkpoint` events so the app can persist lifecycle milestones such as `run.waiting_external_ci`.
 
 ## Testing
 

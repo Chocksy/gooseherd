@@ -236,6 +236,16 @@ describe("stagehand-verify module", () => {
     assert.equal(typeof mod.buildInstruction, "function");
   });
 
+  test("lazy-loads Stagehand runtime dependency", async () => {
+    const source = await readFile(
+      new URL("../src/pipeline/quality-gates/stagehand-verify.ts", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(!source.includes('from "@browserbasehq/stagehand"'));
+    assert.ok(source.includes('import(STAGEHAND_PACKAGE)'));
+  });
+
   test("StagehandVerifyResult shape matches expected interface", () => {
     // Type-level test: ensure the result interface has the expected fields
     // This is enforced by TypeScript, but we verify at runtime too

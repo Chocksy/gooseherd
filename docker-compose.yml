@@ -27,7 +27,10 @@ services:
 
   gooseherd:
     image: ghcr.io/chocksy/gooseherd:latest
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_BROWSER_VERIFY: ${INSTALL_BROWSER_VERIFY:-false}
     depends_on:
       postgres:
         condition: service_healthy

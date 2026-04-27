@@ -1,6 +1,6 @@
 version: 1
 name: "pipeline"
-description: "Unified pipeline — all nodes, orchestrator controls via skipNodes/enableNodes"
+description: "Generic/manual implementation pipeline. Feature-delivery WorkItem automation uses explicit intent-specific pipelines."
 
 context:
   max_validation_rounds: 2
@@ -28,6 +28,10 @@ nodes:
     type: agentic
     action: plan_task
     enabled: false
+
+  - id: sync_base_branch
+    type: deterministic
+    action: sync_base_branch
 
   - id: hydrate
     type: deterministic
@@ -61,6 +65,14 @@ nodes:
       agent_node: fix_validation
       max_rounds: 2
       until: "local_test.exit_code == 0"
+
+  - id: lightweight_checks
+    type: deterministic
+    action: lightweight_checks
+    on_failure:
+      action: loop
+      agent_node: fix_validation
+      max_rounds: 2
 
   # Quality gates — run after validation, before commit
   - id: diff_gate
@@ -102,15 +114,16 @@ nodes:
     enabled: false
     on_soft_fail: warn
 
-  # Deploy and screenshot the preview
-  # Configure REVIEW_APP_URL_PATTERN env var for url_pattern strategy.
+  # Deploy and screenshot the preview.
+  # Hubstaff review apps publish their URL through GitHub Deployment statuses.
   - id: deploy_preview
     type: deterministic
     action: deploy_preview
     enabled: false
     on_soft_fail: warn
     config:
-      strategy: url_pattern
+      strategy: github_deployment_api
+      github_environment_pattern: "^review$"
       readiness_timeout_seconds: 300
       max_timeout_seconds: 1800
       readiness_poll_interval_seconds: 5

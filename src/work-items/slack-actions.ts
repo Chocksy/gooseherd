@@ -1,17 +1,12 @@
 import type { WebClient } from "@slack/web-api";
 import type { Block, KnownBlock } from "@slack/types";
 import type { AppConfig } from "../config.js";
+import {
+  buildWorkItemSlackActionValue,
+  type WorkItemSlackActionPayload,
+} from "../slack-review-actions.js";
 import type { ReviewRequestRecord, WorkItemRecord } from "./types.js";
 import { WorkItemIdentityStore } from "./identity-store.js";
-
-export interface WorkItemSlackActionPayload {
-  reviewRequestId: string;
-  workItemId: string;
-  homeChannelId: string;
-  homeThreadTs: string;
-  requestTitle: string;
-  detailUrl?: string;
-}
 
 export interface BuildWorkItemReviewBlocksInput {
   appName: string;
@@ -40,31 +35,11 @@ export function buildWorkItemDetailUrl(baseUrl: string | undefined, workItemId: 
   return `${normalized}/#work-item/${encodeURIComponent(workItemId)}`;
 }
 
-export function buildWorkItemSlackActionValue(payload: WorkItemSlackActionPayload): string {
-  return JSON.stringify(payload);
-}
-
-export function parseWorkItemSlackActionValue(value: string | undefined): WorkItemSlackActionPayload | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(value) as Partial<WorkItemSlackActionPayload>;
-    if (!parsed.reviewRequestId || !parsed.workItemId || !parsed.homeChannelId || !parsed.homeThreadTs || !parsed.requestTitle) {
-      return undefined;
-    }
-    return {
-      reviewRequestId: parsed.reviewRequestId,
-      workItemId: parsed.workItemId,
-      homeChannelId: parsed.homeChannelId,
-      homeThreadTs: parsed.homeThreadTs,
-      requestTitle: parsed.requestTitle,
-      detailUrl: parsed.detailUrl,
-    };
-  } catch {
-    return undefined;
-  }
-}
+export {
+  buildWorkItemSlackActionValue,
+  parseWorkItemSlackActionValue,
+  type WorkItemSlackActionPayload,
+} from "../slack-review-actions.js";
 
 export function buildWorkItemReviewBlocks(input: BuildWorkItemReviewBlocksInput): Array<KnownBlock | Block> {
   const secondaryLines = [

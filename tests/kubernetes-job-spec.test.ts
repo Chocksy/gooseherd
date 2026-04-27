@@ -106,4 +106,11 @@ test("buildRunJobSpec uses one Job per run with emptyDir workspace and runner en
       value: "false",
     },
   );
+  assert.deepEqual(
+    env.find((entry) => entry.name === "CI_WAIT_ENABLED"),
+    {
+      name: "CI_WAIT_ENABLED",
+      value: "false",
+    },
+  );
 });

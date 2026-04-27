@@ -1,0 +1,33 @@
+# .kodiak.toml
+version = 1
+
+[merge]
+automerge_label = "automerge"
+require_automerge_label = true
+blocking_title_regex = ""
+blocking_labels = ["Do NOT merge"]
+method = "rebase"
+delete_branch_on_merge = true
+notify_on_conflict = true
+optimistic_updates = false
+dont_wait_on_status_checks = []
+prioritize_ready_to_merge = true
+do_not_merge = false
+
+[merge.message]
+title = "pull_request_title"
+body = "pull_request_body"
+include_pull_request_author = true
+include_pull_request_url = true
+include_pr_number = true
+body_type = "markdown"
+strip_html_comments = true
+cut_body_before = "<!-- commit body -->"
+
+[update]
+always = false
+require_automerge_label = true
+
+[approve]
+auto_approve_usernames = []
+auto_approve_labels = []

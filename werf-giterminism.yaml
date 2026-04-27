@@ -1,0 +1,9 @@
+giterminismConfigVersion: 1
+
+cli:
+  allowCustomTags: false
+
+config:
+  goTemplateRendering:
+    allowEnvVariables:
+      - SANDBOX_BASE_IMAGE

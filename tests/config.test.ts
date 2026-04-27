@@ -156,10 +156,12 @@ test("work item review reset flags default to false", () => {
       ...originalEnv,
       FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: undefined,
       FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: undefined,
+      FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW: undefined,
     };
     const config = loadConfig();
     assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, false);
     assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, false);
+    assert.equal(config.featureDeliverySkipProductReview, false);
   } finally {
     process.env = originalEnv;
   }
@@ -172,10 +174,46 @@ test("work item review reset flags respect env overrides", () => {
       ...originalEnv,
       FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: "true",
       FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: "yes",
+      FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW: "true",
     };
     const config = loadConfig();
     assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, true);
     assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, true);
+    assert.equal(config.featureDeliverySkipProductReview, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("loadConfig does not expose removed QA preparation skip flag", () => {
+  const config = loadConfig();
+  const removedKey = "featureDelivery" + "SkipQaPreparation";
+  assert.equal(removedKey in config, false);
+});
+
+test("branch sync max behind commits accepts zero", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: "0",
+    };
+    const config = loadConfig();
+    assert.equal(config.autoReviewBranchSyncMaxBehindCommits, 0);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("branch sync max behind commits rejects trailing garbage", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: "0abc",
+    };
+    const config = loadConfig();
+    assert.equal(config.autoReviewBranchSyncMaxBehindCommits, 5);
   } finally {
     process.env = originalEnv;
   }
@@ -190,6 +228,34 @@ test("work item GitHub adoption labels default to ai:assist", () => {
     };
     const config = loadConfig();
     assert.deepEqual(config.workItemGithubAdoptionLabels, ["ai:assist"]);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("default team config defaults and env overrides", () => {
+  const originalEnv = process.env;
+  const removedSlackChannelLabelKey = ["defaultTeam", "SlackChannel", "Name"].join("");
+  try {
+    process.env = {
+      ...originalEnv,
+      DEFAULT_TEAM_NAME: undefined,
+      DEFAULT_TEAM_SLACK_CHANNEL_ID: undefined,
+    };
+    const defaults = loadConfig();
+    assert.equal(defaults.defaultTeamName, "default");
+    assert.equal(defaults.defaultTeamSlackChannelId, undefined);
+    assert.equal(removedSlackChannelLabelKey in defaults, false);
+
+    process.env = {
+      ...originalEnv,
+      DEFAULT_TEAM_NAME: "growth",
+      DEFAULT_TEAM_SLACK_CHANNEL_ID: "C_GROWTH",
+    };
+    const overridden = loadConfig();
+    assert.equal(overridden.defaultTeamName, "growth");
+    assert.equal(overridden.defaultTeamSlackChannelId, "C_GROWTH");
+    assert.equal(removedSlackChannelLabelKey in overridden, false);
   } finally {
     process.env = originalEnv;
   }
@@ -215,15 +281,91 @@ test("Jira read access envs are exposed through config", () => {
     process.env = {
       ...originalEnv,
       JIRA_BASE_URL: " https://example.atlassian.net ",
+      JIRA_CLOUD_ID: " cloud-123 ",
       JIRA_USER: " jira-service-account@example.com ",
       JIRA_API_TOKEN: " jira-token ",
       JIRA_REQUEST_TIMEOUT_MS: "25000",
     };
     const config = loadConfig();
     assert.equal(config.jiraBaseUrl, "https://example.atlassian.net");
+    assert.equal(config.jiraCloudId, "cloud-123");
     assert.equal(config.jiraUser, "jira-service-account@example.com");
     assert.equal(config.jiraApiToken, "jira-token");
     assert.equal(config.jiraRequestTimeoutMs, 25000);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("feature flags are normalized under config.features with defaults and env overrides", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      OBSERVER_ENABLED: undefined,
+      WORK_ITEMS_ENABLED: undefined,
+      BROWSER_VERIFY_ENABLED: "true",
+      CI_WAIT_ENABLED: undefined,
+      SUPERVISOR_ENABLED: undefined,
+      SESSIONS_ENABLED: "yes",
+      EVAL_ENABLED: undefined,
+      AUTONOMOUS_SCHEDULER_ENABLED: "1",
+    };
+
+    const config = loadConfig();
+    assert.deepEqual(config.features, {
+      observer: false,
+      workItems: false,
+      browserVerify: true,
+      ciWait: false,
+      supervisor: true,
+      sessions: true,
+      eval: false,
+      autonomousScheduler: true,
+    });
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("AUTO_REVIEW_DEBUG_LOG_MODE defaults to failures and respects env override", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      AUTO_REVIEW_DEBUG_LOG_MODE: undefined,
+    };
+    const defaults = loadConfig();
+    assert.equal(defaults.autoReviewDebugLogMode, "failures");
+
+    process.env = {
+      ...originalEnv,
+      AUTO_REVIEW_DEBUG_LOG_MODE: "always",
+    };
+    const overridden = loadConfig();
+    assert.equal(overridden.autoReviewDebugLogMode, "always");
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("Jira read access defaults stay unset without env vars", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      JIRA_BASE_URL: undefined,
+      JIRA_CLOUD_ID: undefined,
+      JIRA_USER: undefined,
+      JIRA_API_TOKEN: undefined,
+      JIRA_REQUEST_TIMEOUT_MS: undefined,
+    };
+    const config = loadConfig();
+    assert.equal(config.jiraBaseUrl, undefined);
+    assert.equal(config.jiraCloudId, undefined);
+    assert.equal(config.jiraUser, undefined);
+    assert.equal(config.jiraApiToken, undefined);
+    assert.equal(config.jiraRequestTimeoutMs, 10_000);
   } finally {
     process.env = originalEnv;
   }

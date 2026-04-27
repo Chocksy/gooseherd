@@ -62,19 +62,7 @@ trigger_rules:
     cooldownMinutes: 15
     maxRunsPerHour: 3
 
-  # ── GitHub: PR review with changes requested → require approval ──
-  - id: github-review-changes
-    source: github_webhook
-    conditions:
-      - field: rawPayload.eventType
-        operator: equals
-        value: pull_request_review
-      - field: rawPayload.state
-        operator: equals
-        value: changes_requested
-    requiresApproval: true
-    cooldownMinutes: 30
-    maxRunsPerHour: 5
+  # PR review callbacks are handled by work-item sync only.
 
   # ── Slack: alert from any recognized bot → require approval ──
   - id: slack-alert-bot

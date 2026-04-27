@@ -1,0 +1,26 @@
+version: 1
+name: "ready-for-merge"
+description: "Squash an existing PR branch into one commit, push with force-with-lease, and wait for CI."
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: squash_ready_for_merge
+    type: deterministic
+    action: squash_ready_for_merge
+
+  - id: push
+    type: deterministic
+    action: push
+    if: "ctx.squashPerformed"
+
+  - id: wait_ci
+    type: async
+    action: wait_ci
+    if: "ctx.squashPerformed"
+
+  - id: notify
+    type: deterministic
+    action: notify

@@ -1,0 +1,8 @@
+{{ $cmp := "gooseherd" }}
+{{ include "chart.configmap" (merge (dict "cmp" $cmp) . ) }}
+{{ include "chart.extsecret" (merge (dict "cmp" $cmp) . ) }}
+{{ include "chart.pvc" (merge (dict "cmp" $cmp) . ) }}
+{{ include "chart.serviceAccount" (merge (dict "cmp" $cmp) . ) }}
+{{ include "chart.deployment" (merge (dict "cmp" $cmp) . ) }}
+{{ include "chart.service" (merge (dict "cmp" $cmp) . ) }}
+{{ include "chart.ingress" (merge (dict "cmp" $cmp) . ) }}

@@ -104,6 +104,16 @@ export class WorkItemContextResolver {
       return accessibleTeams[0]!;
     }
 
+    const primaryTeam = await this.identity.getPrimaryTeamForUser(userId);
+    if (primaryTeam && accessibleTeams.some((team) => team.id === primaryTeam.id)) {
+      return primaryTeam;
+    }
+
+    const defaultTeam = await this.identity.getDefaultTeam();
+    if (defaultTeam && accessibleTeams.some((team) => team.id === defaultTeam.id)) {
+      return defaultTeam;
+    }
+
     throw new Error("owner team must be selected when the actor can access multiple teams");
   }
 

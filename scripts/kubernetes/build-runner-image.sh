@@ -18,7 +18,7 @@ node_image_id() {
 }
 
 echo "[image] building ${IMAGE_TAG} on the host docker daemon"
-docker build -f "${ROOT_DIR}/kubernetes/runner.Dockerfile" -t "${IMAGE_TAG}" "${ROOT_DIR}"
+docker build -f "${ROOT_DIR}/.docker/Dockerfile" --target runner -t "${IMAGE_TAG}" "${ROOT_DIR}"
 
 HOST_IMAGE_ID="$(host_image_id)"
 NODE_IMAGE_ID="$(node_image_id)"

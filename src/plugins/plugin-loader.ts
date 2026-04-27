@@ -3,7 +3,7 @@ import path from "node:path";
 import { logInfo, logWarn, logError } from "../logger.js";
 import type { GooseherdPlugin } from "./plugin-types.js";
 import type { NodeHandler } from "../pipeline/types.js";
-import { registerAdapter } from "../observer/sources/adapter-registry.js";
+import { registerAdapter } from "../webhook-adapter-registry.js";
 
 export interface PluginLoadResult {
   loaded: string[];

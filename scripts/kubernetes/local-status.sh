@@ -9,7 +9,7 @@ if ! kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
 fi
 
 echo "[local-status] resources in namespace ${NAMESPACE}"
-kubectl -n "${NAMESPACE}" get deployments,svc,pods,jobs,secrets
+kubectl -n "${NAMESPACE}" get deployments,svc,pods,jobs,secrets,pvc
 
 echo
 echo "[local-status] gooseherd logs"

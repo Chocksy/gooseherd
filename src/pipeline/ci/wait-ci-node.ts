@@ -5,9 +5,8 @@ import { appendLog, sleep } from "../shell.js";
 import { appendGateReport } from "../quality-gates/gate-report.js";
 import {
   aggregateConclusions,
+  excludeCheckRuns,
   filterCheckRuns,
-  mapAnnotations,
-  truncateLog,
   type CIAnnotation
 } from "./ci-monitor.js";
 
@@ -46,8 +45,19 @@ export async function waitCiNode(
   const { owner, repo } = parseRepoSlug(deps.run.repoSlug);
   const logFile = deps.logFile;
   const checkFilter = config.ciCheckFilter;
+  const repoCiIgnoreChecks = ctx.get<string[]>("repoCiIgnoreChecks") ?? [];
 
   await deps.onPhase("awaiting_ci");
+  await deps.emitRunCheckpoint?.({
+    checkpointKey: "external_ci_wait_started",
+    checkpointType: "run.waiting_external_ci",
+    payload: {
+      nodeId: "wait_ci",
+      commitSha,
+      repo: deps.run.repoSlug,
+      prNumber: ctx.get<number>("prNumber") ?? deps.run.prNumber,
+    },
+  });
   await appendLog(logFile, `\n[ci:wait] polling checks for ${commitSha.slice(0, 8)}...\n`);
 
   // Phase 1: Patience window — wait for check suites to appear
@@ -56,7 +66,7 @@ export async function waitCiNode(
 
   while (Date.now() < patienceEnd) {
     const checkRuns = await deps.githubService.listCheckRuns(owner, repo, commitSha);
-    const filtered = filterCheckRuns(checkRuns, checkFilter);
+    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), repoCiIgnoreChecks);
 
     if (filtered.length > 0) {
       await appendLog(logFile, `\n[ci:wait] ${String(filtered.length)} check run(s) found\n`);
@@ -74,7 +84,7 @@ export async function waitCiNode(
 
   while (Date.now() < maxWaitEnd) {
     const checkRuns = await deps.githubService.listCheckRuns(owner, repo, commitSha);
-    const filtered = filterCheckRuns(checkRuns, checkFilter);
+    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), repoCiIgnoreChecks);
 
     if (filtered.length === 0) {
       // No CI checks at all — treat as no_ci
@@ -150,28 +160,25 @@ async function evaluateConclusion(
   let logTail = "";
 
   if (deps.githubService) {
-    // Fetch annotations from failed runs
-    for (const run of failedRuns) {
-      const ghAnnotations = await deps.githubService.getCheckAnnotations(owner, repo, run.id);
-      const mapped = mapAnnotations(ghAnnotations);
-      allAnnotations.push(...mapped);
+    const failureContext = await deps.githubService.collectCiFailureContext(owner, repo, checkRuns);
+    for (const annotation of failureContext.failedAnnotations ?? []) {
+      allAnnotations.push({
+        file: annotation.path,
+        line: annotation.line,
+        message: annotation.message,
+        level: annotation.level,
+      });
     }
-
-    // Try to get job logs for the first failed run
-    if (failedRuns.length > 0) {
-      try {
-        const rawLog = await deps.githubService.downloadJobLog(owner, repo, failedRuns[0]!.id);
-        logTail = truncateLog(rawLog);
-      } catch {
-        // Log download may fail (permissions, expired)
-        await appendLog(logFile, "[ci:wait] could not download job log\n");
-      }
+    logTail = failureContext.failedLogTail ?? "";
+    if (!logTail && failureContext.primaryFailedRun) {
+      await appendLog(logFile, "[ci:wait] could not download job log\n");
     }
   }
 
   const failedCheckCount = failedRuns.length;
   ctx.set("ciConclusion", "failure");
   ctx.set("ciAnnotations", allAnnotations);
+  ctx.set("ciFailedRunNames", failedRuns.map((run) => run.name));
   ctx.set("ciLogTail", logTail);
   ctx.set("ciFailedCheckCount", failedCheckCount);
 

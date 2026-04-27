@@ -3,7 +3,9 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import type { RunRecord } from "../../types.js";
-import { runShellCapture } from "../shell.js";
+import type { RunPrefetchContext } from "../../runtime/run-context-types.js";
+import { appendLog, runShellCapture, shellEscape } from "../shell.js";
+import { isFeatureDeliveryAutoReviewRun } from "../../runs/run-intent.js";
 
 /**
  * Hydrate context node: build prompt file with run context and instructions.
@@ -17,6 +19,7 @@ export async function hydrateContextNode(
   const repoDir = ctx.getRequired<string>("repoDir");
   const promptFile = ctx.getRequired<string>("promptFile");
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
+  const prefetchContext = getPrefetchContext(run, ctx);
 
   // Enrich prompt with org memories via lifecycle hooks
   const hookSections = deps.hooks ? await deps.hooks.onPromptEnrich(run) : [];
@@ -82,9 +85,24 @@ export async function hydrateContextNode(
     sections.push("## Repository Context", "", repoSummary, "");
   }
 
+  const prefetchSections = prefetchContext ? buildPrefetchedContextSections(prefetchContext) : [];
+  if (prefetchSections.length > 0) {
+    sections.push(...prefetchSections, "");
+  }
+  const currentBranchDiff = await getCurrentBranchDiff(
+    repoDir,
+    deps.logFile,
+    ctx.get<string>("resolvedBaseBranch") ?? run.baseBranch
+  );
+  if (currentBranchDiff) {
+    sections.push("### Current Branch Diff", "", "```diff", currentBranchDiff, "```", "");
+  }
+
   const implementationPlan = ctx.get<string>("implementationPlan");
 
   const executionMode = ctx.get<string>("executionMode") ?? "standard";
+  const externalContextInstructions = getExternalContextInstructions(prefetchContext);
+  const autoReviewSummaryInstructions = getAutoReviewSummaryInstructions(run);
 
   sections.push(
     "## Instructions",
@@ -95,6 +113,10 @@ export async function hydrateContextNode(
     "",
     `Task type: ${taskType}`,
     "",
+    ...externalContextInstructions,
+    ...(externalContextInstructions.length > 0 ? [""] : []),
+    ...autoReviewSummaryInstructions,
+    ...(autoReviewSummaryInstructions.length > 0 ? [""] : []),
     "Task:",
     parentContext?.feedbackNote ?? run.task,
     "",
@@ -106,6 +128,7 @@ export async function hydrateContextNode(
   }
 
   await writeFile(promptFile, sections.join("\n"), "utf8");
+  await appendContextSummaryLog(deps.logFile, promptFile, prefetchContext);
 
   // Write dynamic AGENTS.md into the cloned repo for pi-agent auto-discovery.
   // Pi-agent automatically finds and injects AGENTS.md into its system prompt.
@@ -261,6 +284,317 @@ export function getModeInstructions(mode: string): string[] {
   return MODE_INSTRUCTIONS[mode] ?? MODE_INSTRUCTIONS["standard"]!;
 }
 
+// ── Prefetched context rendering ──
+
+function getPrefetchContext(run: RunRecord, ctx: ContextBag): RunPrefetchContext | undefined {
+  return ctx.get<RunPrefetchContext>("prefetchContext") ?? run.prefetchContext;
+}
+
+async function appendContextSummaryLog(
+  logFile: string,
+  promptFile: string,
+  prefetchContext: RunPrefetchContext | undefined
+): Promise<void> {
+  const lines = [`[context] prompt file: ${promptFile}`];
+
+  if (!prefetchContext) {
+    lines.push("[context] prefetch: none");
+    await appendLog(logFile, `\n${lines.join("\n")}\n`);
+    return;
+  }
+
+  const githubPrNumber = prefetchContext.github?.pr.number ?? prefetchContext.workItem.githubPrNumber;
+  lines.push(
+    [
+      `[context] prefetch: sources=${prefetchContext.meta.sources.join(",") || "none"}`,
+      "work_item=yes",
+      githubPrNumber !== undefined ? `pr=#${String(githubPrNumber)}` : "pr=none",
+      `ci=${prefetchContext.github?.ci.conclusion ?? "none"}`,
+    ].join(" ")
+  );
+
+  const ci = prefetchContext.github?.ci;
+  if (ci) {
+    const failedRuns = ci.failedRuns?.map((run) => run.name).filter(Boolean) ?? [];
+    const annotationCount = ci.failedAnnotations?.length ?? 0;
+    const annotationCountLabel = ci.failedAnnotationsTotalCount !== undefined
+      ? `${String(annotationCount)}/${String(ci.failedAnnotationsTotalCount)}`
+      : String(annotationCount);
+    lines.push(
+      [
+        `[context] ci: failed_runs=${failedRuns.length > 0 ? failedRuns.join(", ") : "none"}`,
+        `annotations=${annotationCountLabel}`,
+        `log_tail=${ci.failedLogTail?.trim() ? "yes" : "no"}`,
+      ].join(" ")
+    );
+
+    const firstAnnotation = ci.failedAnnotations?.[0];
+    if (firstAnnotation) {
+      lines.push(
+        `[context] first ci annotation: ${firstAnnotation.checkRunName}: ${firstAnnotation.path}:${String(firstAnnotation.line)} — ${truncateSingleLine(firstAnnotation.message, 240)}`
+      );
+    }
+  }
+
+  await appendLog(logFile, `\n${lines.join("\n")}\n`);
+}
+
+function buildPrefetchedContextSections(prefetchContext: RunPrefetchContext): string[] {
+  const parts: string[] = ["## Prefetched Context"];
+
+  appendPrefetchedSection(parts, "Work Item Context", formatWorkItemContext(prefetchContext));
+  appendPrefetchedSection(parts, "PR Description", formatBodySection(prefetchContext.github?.pr.body));
+  appendPrefetchedSection(
+    parts,
+    "PR Discussion Comments",
+    formatDiscussionComments(
+      prefetchContext.github?.discussionComments,
+      prefetchContext.github?.discussionCommentsTotalCount
+    )
+  );
+  appendPrefetchedSection(
+    parts,
+    "PR Review Summaries",
+    formatReviewSummaries(prefetchContext.github?.reviews, prefetchContext.github?.reviewsTotalCount)
+  );
+  appendPrefetchedSection(
+    parts,
+    "PR Unresolved Inline Review Comments",
+    formatInlineReviewComments(
+      prefetchContext.github?.reviewComments,
+      prefetchContext.github?.reviewCommentsTotalCount
+    )
+  );
+  appendPrefetchedSection(parts, "CI Snapshot", formatCiSnapshot(prefetchContext.github?.ci));
+  appendPrefetchedSection(parts, "Jira Description", formatBodySection(prefetchContext.jira?.issue.description));
+  appendPrefetchedSection(
+    parts,
+    "Jira Comments",
+    formatJiraComments(prefetchContext.jira?.comments, prefetchContext.jira?.commentsTotalCount)
+  );
+
+  return parts;
+}
+
+function appendPrefetchedSection(parts: string[], title: string, lines: string[]): void {
+  if (lines.length === 0) {
+    return;
+  }
+  parts.push(`### ${title}`, "", ...lines, "");
+}
+
+function formatWorkItemContext(prefetchContext: RunPrefetchContext): string[] {
+  const lines = [
+    `- Work Item ID: ${prefetchContext.workItem.id}`,
+    `- Title: ${prefetchContext.workItem.title}`,
+    `- Workflow: ${prefetchContext.workItem.workflow}`,
+  ];
+
+  if (prefetchContext.workItem.state) {
+    lines.push(`- State: ${prefetchContext.workItem.state}`);
+  }
+  if (prefetchContext.workItem.jiraIssueKey) {
+    lines.push(`- Jira Issue: ${prefetchContext.workItem.jiraIssueKey}`);
+  }
+  if (prefetchContext.workItem.githubPrUrl) {
+    lines.push(`- PR URL: ${prefetchContext.workItem.githubPrUrl}`);
+  }
+  if (prefetchContext.workItem.githubPrNumber !== undefined) {
+    lines.push(`- PR Number: ${String(prefetchContext.workItem.githubPrNumber)}`);
+  }
+
+  lines.push(`- Fetched at: ${prefetchContext.meta.fetchedAt}`);
+  if (prefetchContext.meta.sources.length > 0) {
+    lines.push(`- Sources: ${prefetchContext.meta.sources.join(", ")}`);
+  }
+
+  return lines;
+}
+
+function formatBodySection(body: string | undefined): string[] {
+  if (!body?.trim()) {
+    return [];
+  }
+  return body.split("\n");
+}
+
+function formatDiscussionComments(
+  comments: NonNullable<RunPrefetchContext["github"]>["discussionComments"] | undefined,
+  totalCount?: number
+): string[] {
+  if (!comments || comments.length === 0) {
+    return [];
+  }
+  return withTruncationNotice(
+    formatEntryList(
+      comments.map((comment) => ({
+        header: formatCommentHeader(comment.authorLogin ? `@${comment.authorLogin}` : undefined, comment.createdAt),
+        body: comment.body,
+      }))
+    ),
+    comments.length,
+    totalCount,
+    "discussion comments"
+  );
+}
+
+function formatReviewSummaries(
+  reviews: NonNullable<RunPrefetchContext["github"]>["reviews"] | undefined,
+  totalCount?: number
+): string[] {
+  if (!reviews || reviews.length === 0) {
+    return [];
+  }
+  return withTruncationNotice(
+    formatEntryList(
+      reviews.map((review) => ({
+        header: formatCommentHeader(
+          review.state?.toUpperCase(),
+          review.authorLogin ? `@${review.authorLogin}` : undefined,
+          review.createdAt
+        ),
+        body: review.body,
+      }))
+    ),
+    reviews.length,
+    totalCount,
+    "review summaries"
+  );
+}
+
+function formatInlineReviewComments(
+  comments: NonNullable<RunPrefetchContext["github"]>["reviewComments"] | undefined,
+  totalCount?: number
+): string[] {
+  if (!comments || comments.length === 0) {
+    return [];
+  }
+  return withTruncationNotice(
+    formatEntryList(
+      comments.map((comment) => {
+        const locationParts = [comment.path];
+        if (comment.line !== undefined) {
+          locationParts.push(String(comment.line));
+        }
+        if (comment.side) {
+          locationParts.push(`(${comment.side})`);
+        }
+        return {
+          header: formatCommentHeader(
+            comment.authorLogin ? `@${comment.authorLogin}` : undefined,
+            comment.createdAt,
+            locationParts.join(":")
+          ),
+          body: comment.body,
+        };
+      })
+    ),
+    comments.length,
+    totalCount,
+    "inline review comments"
+  );
+}
+
+function formatCiSnapshot(ci: NonNullable<RunPrefetchContext["github"]>["ci"] | undefined): string[] {
+  if (!ci) {
+    return [];
+  }
+
+  const lines = [
+    `- Head SHA: ${ci.headSha ?? "unknown"}`,
+    `- Conclusion: ${ci.conclusion}`,
+  ];
+
+  if (ci.failedRuns && ci.failedRuns.length > 0) {
+    lines.push("- Failed runs:");
+    for (const failedRun of ci.failedRuns) {
+      lines.push(`  - ${failedRun.name} (#${String(failedRun.id)}): ${failedRun.conclusion ?? failedRun.status}`);
+      if (failedRun.detailsUrl) {
+        lines.push(`    Details: ${failedRun.detailsUrl}`);
+      }
+      if (failedRun.startedAt) {
+        lines.push(`    Started: ${failedRun.startedAt}`);
+      }
+      if (failedRun.completedAt) {
+        lines.push(`    Completed: ${failedRun.completedAt}`);
+      }
+    }
+  }
+
+  if (ci.failedAnnotations && ci.failedAnnotations.length > 0) {
+    lines.push(...withTruncationNotice([], ci.failedAnnotations.length, ci.failedAnnotationsTotalCount, "failed annotations"));
+    lines.push("- Failed annotations:");
+    for (const annotation of ci.failedAnnotations) {
+      lines.push(
+        `  - ${annotation.checkRunName}: ${annotation.path}:${String(annotation.line)} [${annotation.level}] ${annotation.message}`
+      );
+    }
+  }
+
+  return lines;
+}
+
+function formatJiraComments(
+  comments: NonNullable<RunPrefetchContext["jira"]>["comments"] | undefined,
+  totalCount?: number
+): string[] {
+  if (!comments || comments.length === 0) {
+    return [];
+  }
+  return withTruncationNotice(
+    formatEntryList(
+      comments.map((comment) => ({
+        header: formatCommentHeader(comment.authorDisplayName, comment.createdAt),
+        body: comment.body,
+      }))
+    ),
+    comments.length,
+    totalCount,
+    "Jira comments"
+  );
+}
+
+function formatEntryList(entries: Array<{ header: string; body: string }>): string[] {
+  const lines: string[] = [];
+  entries.forEach((entry, index) => {
+    if (index > 0) {
+      lines.push("");
+    }
+    lines.push(entry.header, ...indentLines(entry.body));
+  });
+  return lines;
+}
+
+function withTruncationNotice(lines: string[], visibleCount: number, totalCount: number | undefined, noun: string): string[] {
+  if (!totalCount || totalCount <= visibleCount) {
+    return lines;
+  }
+
+  return [
+    `Showing ${String(visibleCount)} of ${String(totalCount)} ${noun}.`,
+    "",
+    ...lines,
+  ];
+}
+
+function formatCommentHeader(primary?: string, secondary?: string, tertiary?: string): string {
+  const parts: string[] = [];
+  if (primary) {
+    parts.push(primary);
+  }
+  if (secondary) {
+    parts.push(secondary);
+  }
+  if (tertiary) {
+    parts.push(tertiary);
+  }
+  return `- ${parts.length > 0 ? parts.join(" • ") : "Comment"}`;
+}
+
+function indentLines(body: string): string[] {
+  return body.split("\n").map(line => `  ${line}`);
+}
+
 // ── Dynamic AGENTS.md builder ──
 
 /**
@@ -373,6 +707,7 @@ export function buildAgentsMd(
 // ── Parent diff extraction for follow-up runs ──
 
 const MAX_DIFF_CHARS = 3000;
+const MAX_CURRENT_BRANCH_DIFF_CHARS = 4000;
 
 async function getParentDiff(repoDir: string, logFile: string): Promise<string | undefined> {
   try {
@@ -393,6 +728,72 @@ async function getParentDiff(repoDir: string, logFile: string): Promise<string |
   } catch {
     return undefined;
   }
+}
+
+async function getCurrentBranchDiff(repoDir: string, logFile: string, baseBranch?: string): Promise<string | undefined> {
+  if (!baseBranch?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const remoteBaseRef = shellEscape(`origin/${baseBranch}`);
+    const localBaseRef = shellEscape(baseBranch);
+    let diffResult = await runShellCapture(
+      `git diff ${remoteBaseRef}...HEAD --unified=3`,
+      { cwd: repoDir, logFile }
+    );
+    if (diffResult.code !== 0 || !diffResult.stdout.trim()) {
+      diffResult = await runShellCapture(
+        `git diff ${localBaseRef}...HEAD --unified=3`,
+        { cwd: repoDir, logFile }
+      );
+    }
+    if (diffResult.code !== 0 || !diffResult.stdout.trim()) {
+      return undefined;
+    }
+
+    const diff = diffResult.stdout;
+    if (diff.length <= MAX_CURRENT_BRANCH_DIFF_CHARS) {
+      return diff;
+    }
+    return diff.slice(0, MAX_CURRENT_BRANCH_DIFF_CHARS) + "\n... (truncated)";
+  } catch {
+    return undefined;
+  }
+}
+
+function getExternalContextInstructions(prefetchContext: RunPrefetchContext | undefined): string[] {
+  if (!prefetchContext?.github && !prefetchContext?.jira) {
+    return [];
+  }
+
+  return [
+    "- Use the current branch state and diff as the source of truth for code changes.",
+    "- Treat PR body, Jira, discussion comments, and review comments as hints that may be stale or contradictory.",
+    "- Comments may be stale, speculative, or already addressed elsewhere in the branch.",
+    "- Do not treat comments as mandatory tasks.",
+    "- Only act on a comment if the current diff and branch state show the problem still exists.",
+    "- Ignore comments that would require expanding scope beyond the current PR or changing unrelated code.",
+    "- If the hints cannot be reconciled with the current diff without guessing intent or expanding scope, make no code changes and print `GOOSEHERD_CONTEXT_CONFLICT: <reason>` before exiting.",
+  ];
+}
+
+function getAutoReviewSummaryInstructions(run: RunRecord): string[] {
+  if (!isFeatureDeliveryAutoReviewRun(run)) {
+    return [];
+  }
+
+  return [
+    "Auto-review reporting requirements:",
+    '- Before exiting, print exactly one line that starts with `GOOSEHERD_REVIEW_SUMMARY:` followed by compact JSON.',
+    '- Use this exact JSON shape: `{"selectedFindings":["..."],"ignoredFindings":["..."],"rationale":"..."}`.',
+    "- selectedFindings must contain only actionable remaining problems, risks, or review findings that still apply to the current diff.",
+    "- ignoredFindings must contain only reviewed hints or comments you intentionally ignored because they are stale, irrelevant, already fixed, or out of scope.",
+    "- If there are no issues, both arrays should be empty.",
+    "- Do not use either array as a changelog, test summary, or positive summary of the PR. Put that in rationale instead.",
+    "- Do not put environment or validation limitations in selectedFindings unless they reveal a concrete defect in the current diff. Mention blocked validation in rationale instead.",
+    "- Keep each finding short and concrete.",
+  ];
 }
 
 function isUiHeavyTask(task: string): boolean {

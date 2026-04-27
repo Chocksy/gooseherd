@@ -8,10 +8,15 @@ import type { AppConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
 import type { RunLifecycleHooks } from "./hooks/run-lifecycle.js";
 import { RunStore, mapPhaseToRunStatus } from "./store.js";
-import type { ExecutionResult, NewRunInput, RunRecord } from "./types.js";
+import type { ExecutionResult, NewRunInput, RunRecord, TokenUsage } from "./types.js";
 import type { PipelineStore } from "./pipeline/pipeline-store.js";
 import type { LearningStore } from "./observer/learning-store.js";
 import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
+import type { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
+import type { RunPrefetchContext } from "./runtime/run-context-types.js";
+import { isFeatureDeliveryAutoReviewOrRepairCiRun, selectPipelineIdForIntent } from "./runs/run-intent.js";
+import type { EmitRunCheckpointInput, RunCheckpointStore } from "./runs/run-checkpoint-store.js";
+import type { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -52,6 +57,10 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
   },
 ];
 
+const NOOP_RUN_CONTEXT_PREFETCHER: Pick<RunContextPrefetcher, "prefetch"> = {
+  prefetch: async (): Promise<RunPrefetchContext | undefined> => undefined,
+};
+
 
 export function classifyError(message: string): ClassifiedError {
   for (const { test, result } of ERROR_PATTERNS) {
@@ -67,6 +76,9 @@ function shortRunId(id: string): string {
 function formatPhase(phase: string): string {
   if (phase === "cloning") {
     return "cloning repo";
+  }
+  if (phase === "rebasing") {
+    return "rebasing branch";
   }
   if (phase === "agent") {
     return "agent coding";
@@ -145,18 +157,45 @@ function formatDuration(startedAt: string, finishedAt: string): string | undefin
   return `${String(minutes)}m ${String(seconds)}s`;
 }
 
+function totalRecordedTokens(tokenUsage: TokenUsage | undefined): number {
+  if (!tokenUsage) return 0;
+  return (tokenUsage.qualityGateInputTokens ?? 0)
+    + (tokenUsage.qualityGateOutputTokens ?? 0)
+    + (tokenUsage.agentInputTokens ?? 0)
+    + (tokenUsage.agentOutputTokens ?? 0);
+}
+
+function chooseTokenUsage(persisted: TokenUsage | undefined, result: TokenUsage | undefined): TokenUsage | undefined {
+  if (!persisted) return result;
+  if (!result) return persisted;
+  return totalRecordedTokens(persisted) >= totalRecordedTokens(result) ? persisted : result;
+}
+
 function isRetryableStatus(status: RunRecord["status"]): boolean {
   return status === "failed" || status === "completed";
 }
 
+function deriveTerminalProgressReason(result: ExecutionResult, run: RunRecord): string {
+  if (!result.commitSha) {
+    return "completed_without_commit_sha";
+  }
+  if (!result.prUrl && !run.prUrl) {
+    return "completed_without_external_pr";
+  }
+  return "completed_without_external_ci_wait";
+}
+
 export type RunTerminalCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
+export type RunStatusChangeCallback = (runId: string, status: string, runtime: RunRecord["runtime"]) => void;
 type EnqueueRunInput = Omit<NewRunInput, "runtime"> & { runtime?: NewRunInput["runtime"] };
 
 export class RunManager {
   private readonly queue: PQueue;
   private readonly terminalCallbacks: RunTerminalCallback[] = [];
+  private readonly statusChangeCallbacks: RunStatusChangeCallback[] = [];
   /** AbortControllers for in-progress runs — enables cancellation. */
   private readonly runAbortControllers = new Map<string, AbortController>();
+  private readonly runContextPrefetcher: Pick<RunContextPrefetcher, "prefetch">;
 
   constructor(
     private readonly config: AppConfig,
@@ -165,8 +204,12 @@ export class RunManager {
     private readonly slackClient: WebClient | undefined,
     private readonly hooks?: RunLifecycleHooks,
     private readonly pipelineStore?: PipelineStore,
-    private readonly learningStore?: LearningStore
+    private readonly learningStore?: LearningStore,
+    runContextPrefetcher?: Pick<RunContextPrefetcher, "prefetch">,
+    private readonly checkpointStore?: RunCheckpointStore,
+    private readonly checkpointProcessor?: RunCheckpointProcessor,
   ) {
+    this.runContextPrefetcher = runContextPrefetcher ?? NOOP_RUN_CONTEXT_PREFETCHER;
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
 
     if (learningStore) {
@@ -208,7 +251,7 @@ export class RunManager {
       durationMs,
       costUsd: run.tokenUsage?.costUsd ?? 0,
       changedFiles: run.changedFiles?.length ?? 0,
-      pipelineId: run.pipelineHint,
+      pipelineId: selectPipelineIdForIntent(run.intent, run.pipelineHint),
       timestamp: new Date().toISOString()
     });
   }
@@ -220,6 +263,64 @@ export class RunManager {
     if (run.channelId === "api") return "api";
     // Observer runs get enriched with ruleId by ObserverDaemon's terminal callback
     return "slack";
+  }
+
+  private async raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) {
+      throw new Error("Run cancelled");
+    }
+
+    let abortHandler: (() => void) | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          abortHandler = () => reject(new Error("Run cancelled"));
+          signal.addEventListener("abort", abortHandler!, { once: true });
+        }),
+      ]);
+    } finally {
+      if (abortHandler) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+    }
+  }
+
+  private async refreshRunForDispatch(
+    runId: string,
+    run: RunRecord,
+    signal: AbortSignal,
+  ): Promise<RunRecord> {
+    const latest = await this.store.getRun(runId) ?? run;
+    const hasMatchingPrefetchContext =
+      latest.prefetchContext?.workItem.id === latest.workItemId;
+    const hasStaleLaunchContext =
+      latest.prefetchContext !== undefined ||
+      latest.autoReviewSourceSubstate !== undefined;
+
+    if (!latest.workItemId) {
+      if (!hasStaleLaunchContext) {
+        return latest;
+      }
+      return await this.store.updateRun(runId, {
+        prefetchContext: undefined,
+        autoReviewSourceSubstate: undefined,
+      });
+    }
+
+    if (hasMatchingPrefetchContext) {
+      return latest;
+    }
+
+    const prefetchContext = await this.raceWithAbort(this.runContextPrefetcher.prefetch(latest, signal), signal);
+    if (!prefetchContext) {
+      if (latest.prefetchContext === undefined) {
+        return latest;
+      }
+      return await this.store.updateRun(runId, { prefetchContext: undefined });
+    }
+
+    return await this.store.updateRun(runId, { prefetchContext });
   }
 
   /**
@@ -273,18 +374,17 @@ export class RunManager {
       }
       return false;
     }
-    if (run.runtime === "kubernetes") {
-      await this.store.updateRun(runId, {
-        status: "cancel_requested",
-        phase: "cancel_requested",
-      });
-      return true;
-    }
     await this.store.updateRun(runId, {
       status: "cancel_requested",
       phase: "cancel_requested",
     });
-    controller.abort();
+    const shouldAbortLocally =
+      run.runtime !== "kubernetes" ||
+      run.phase === "queued" ||
+      run.phase === "cloning";
+    if (shouldAbortLocally) {
+      controller.abort();
+    }
     return true;
   }
 
@@ -293,8 +393,23 @@ export class RunManager {
     this.terminalCallbacks.push(cb);
   }
 
+  /** Register a callback that fires when any run status changes, including non-terminal states. */
+  onRunStatusChange(cb: RunStatusChangeCallback): void {
+    this.statusChangeCallbacks.push(cb);
+  }
+
   private fireTerminalCallbacks(runId: string, status: string, runtime: RunRecord["runtime"]): void {
     for (const cb of this.terminalCallbacks) {
+      try {
+        cb(runId, status, runtime);
+      } catch {
+        // Swallow errors from callbacks to avoid disrupting the run manager
+      }
+    }
+  }
+
+  private fireStatusChangeCallbacks(runId: string, status: string, runtime: RunRecord["runtime"]): void {
+    for (const cb of this.statusChangeCallbacks) {
       try {
         cb(runId, status, runtime);
       } catch {
@@ -544,6 +659,8 @@ export class RunManager {
         logsPath: path.resolve(this.config.workRoot, stableRunId, "run.log"),
         error: undefined
       });
+      const abortController = new AbortController();
+      this.runAbortControllers.set(stableRunId, abortController);
 
       // Throttled detail callback for progress updates (max once per 5s)
       let lastDetailTime = 0;
@@ -564,27 +681,42 @@ export class RunManager {
       }, Math.max(5, this.config.slackProgressHeartbeatSeconds) * 1000);
       heartbeat.unref?.();
 
+      run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
+
       const phaseCallback = async (phase: string): Promise<void> => {
         currentPhase = phase;
         const nextStatus = mapPhaseToRunStatus(phase);
         const runPhase = phase as import("./types.js").RunPhase;
         const updated = await this.store.updateRun(stableRunId, { status: nextStatus, phase: runPhase });
         run = updated;
+        this.fireStatusChangeCallbacks(run.id, run.status, run.runtime);
         await upsertRunCard();
       };
+      const checkpointCallback = async (checkpoint: Omit<EmitRunCheckpointInput, "runId">): Promise<void> => {
+        await this.emitAndProcessCheckpoint({
+          runId: stableRunId,
+          ...checkpoint,
+        });
+      };
 
-      const pipelineFile = await this.resolvePipeline(run.pipelineHint, run.id);
-      const abortController = new AbortController();
-      this.runAbortControllers.set(stableRunId, abortController);
+      const pipelineFile = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
+      run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
       const backend = this.getBackend(run.runtime);
       const result = await backend.execute(run, {
         onPhase: phaseCallback,
+        onCheckpoint: checkpointCallback,
         onDetail,
+        recordTokenUsage: async (entry) => {
+          run = await this.store.addTokenUsage(stableRunId, entry);
+        },
         abortSignal: abortController.signal,
         pipelineFile
       });
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);
+      const persistedRun = await this.store.getRun(stableRunId);
+
+      await this.maybeEmitTerminalProgressCheckpoint(run, result);
 
       run = await this.store.updateRun(stableRunId, {
         status: "completed",
@@ -593,8 +725,10 @@ export class RunManager {
         logsPath: result.logsPath,
         commitSha: result.commitSha,
         changedFiles: result.changedFiles,
+        internalArtifacts: result.internalArtifacts,
         prUrl: result.prUrl,
-        tokenUsage: result.tokenUsage,
+        prNumber: result.prNumber,
+        tokenUsage: chooseTokenUsage(persistedRun?.tokenUsage, result.tokenUsage),
         title: result.title,
         error: undefined
       });
@@ -616,6 +750,7 @@ export class RunManager {
       // Store run completion via lifecycle hooks (fire-and-forget, errors swallowed internally)
       this.hooks?.onRunComplete(run, result);
 
+      this.fireStatusChangeCallbacks(run.id, "completed", run.runtime);
       // Notify terminal listeners (observer learning loop)
       this.fireTerminalCallbacks(run.id, "completed", run.runtime);
     } catch (error) {
@@ -623,7 +758,7 @@ export class RunManager {
       this.runAbortControllers.delete(stableRunId);
       const message = error instanceof Error ? error.message : "Unknown error";
       const latest = await this.store.getRun(stableRunId) ?? run;
-      const cancelled = latest.runtime === "kubernetes" && latest.status === "cancel_requested";
+      const cancelled = latest.status === "cancel_requested";
       const terminalRun = await this.store.updateRun(stableRunId, {
         status: cancelled ? "cancelled" : "failed",
         phase: cancelled ? "cancelled" : "failed",
@@ -651,9 +786,53 @@ export class RunManager {
         logError("Run failed", { runId: terminalRun.id, error: message });
       }
 
+      this.fireStatusChangeCallbacks(terminalRun.id, terminalRun.status, terminalRun.runtime);
       // Notify terminal listeners (observer learning loop)
       this.fireTerminalCallbacks(terminalRun.id, terminalRun.status, terminalRun.runtime);
     }
+  }
+
+  private async emitAndProcessCheckpoint(input: EmitRunCheckpointInput): Promise<void> {
+    if (!this.checkpointStore) {
+      return;
+    }
+
+    const emitted = await this.checkpointStore.emit(input);
+    if (!this.checkpointProcessor || (!emitted.inserted && emitted.checkpoint.processedAt)) {
+      return;
+    }
+
+    try {
+      await this.checkpointProcessor.process(emitted.checkpoint);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logError("Failed to process run checkpoint", {
+        runId: input.runId,
+        checkpointKey: input.checkpointKey,
+        error: message,
+      });
+    }
+  }
+
+  private async maybeEmitTerminalProgressCheckpoint(run: RunRecord, result: ExecutionResult): Promise<void> {
+    if (!this.checkpointStore || !isFeatureDeliveryAutoReviewOrRepairCiRun(run)) {
+      return;
+    }
+    if (await this.checkpointStore.hasCheckpoint(run.id, "external_ci_wait_started")) {
+      return;
+    }
+
+    await this.emitAndProcessCheckpoint({
+      runId: run.id,
+      checkpointKey: "terminal_progress_without_external_wait",
+      checkpointType: "run.completed_without_external_wait",
+      payload: {
+        reason: deriveTerminalProgressReason(result, run),
+        commitSha: result.commitSha,
+        changedFiles: result.changedFiles,
+        ciConclusion: run.ciConclusion,
+      },
+    });
   }
 
   private async postRunSummary(run: RunRecord, result?: ExecutionResult): Promise<void> {

@@ -24,6 +24,8 @@ This is the recommended local path when Gooseherd runs in:
 - `SANDBOX_RUNTIME=local`
 - `SANDBOX_RUNTIME=docker`
 
+Legacy `SANDBOX_ENABLED=true` is still accepted for backward compatibility, but `SANDBOX_RUNTIME` is the canonical runtime switch.
+
 For a real Kubernetes local deployment path, run Gooseherd inside `minikube` instead and use [docs/installation-kubernetes.md](docs/installation-kubernetes.md).
 
 The repo now includes local `minikube` helpers:
@@ -313,6 +315,8 @@ docker compose up -d
 ```
 
 Database migrations run automatically on startup. PostgreSQL data persists in the `gooseherd-pgdata` volume.
+
+After updates that change the runner/control-plane protocol, deploy app and runner images from the same release. Current runner jobs emit `run.checkpoint` events; stale runner images can still complete runs, but some WorkItem lifecycle progression may wait for terminal fallback handling.
 
 ## 8. docker-compose.yml
 

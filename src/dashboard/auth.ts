@@ -114,14 +114,6 @@ export async function checkAuth(
   const session = await getDashboardSession(req, opts.sessionStore);
   if (session) return true;
 
-  if (opts.dashboardToken && pathname.startsWith("/api/")) {
-    const authHeader = req.headers["authorization"] ?? "";
-    if (authHeader.startsWith("Bearer ")) {
-      const token = authHeader.slice("Bearer ".length);
-      if (safeTokenCompare(token, opts.dashboardToken)) return true;
-    }
-  }
-
   const authConfigured = Boolean(opts.dashboardToken || opts.passwordHash || opts.slackAuthEnabled);
   if (!authConfigured) return true;
 
@@ -151,12 +143,12 @@ export async function handleAdminLogin(
 
 export function buildDashboardSessionCookie(token: string, config: Pick<AppConfig, "dashboardPublicUrl">): string {
   const secureSuffix = config.dashboardPublicUrl?.startsWith("https") ? "; Secure" : "";
-  return `gooseherd-session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/${secureSuffix}`;
+  return `gooseherd-session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/${secureSuffix}`;
 }
 
 export function clearDashboardSessionCookie(config: Pick<AppConfig, "dashboardPublicUrl">): string {
   const secureSuffix = config.dashboardPublicUrl?.startsWith("https") ? "; Secure" : "";
-  return `gooseherd-session=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/${secureSuffix}`;
+  return `gooseherd-session=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/${secureSuffix}`;
 }
 
 function renderSlackAuthActions(config: AppConfig): string {

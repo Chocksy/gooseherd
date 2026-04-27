@@ -7,7 +7,7 @@
  *   await cleanup(); // drops schema + closes connection
  *
  * Requires a local PostgreSQL instance. Defaults:
- *   DATABASE_URL_TEST=postgres://razvan@localhost:5432/gooseherd_test
+ *   DATABASE_URL_TEST=postgres://gooseherd:gooseherd@localhost:5432/gooseherd_test
  */
 
 import { randomUUID } from "node:crypto";
@@ -18,7 +18,8 @@ import postgres from "postgres";
 import * as schema from "../../src/db/schema.js";
 import type { Database } from "../../src/db/index.js";
 
-const DEFAULT_TEST_URL = "postgres://razvan@localhost:5432/gooseherd_test";
+const DEFAULT_TEST_URL = "postgres://gooseherd:gooseherd@localhost:5432/gooseherd_test";
+const SILENT_TEST_NOTICE = () => undefined;
 
 // Read all migration SQL files once at module load
 import { readdirSync } from "node:fs";
@@ -48,7 +49,7 @@ export async function createTestDb(): Promise<TestDb> {
   const schemaName = `test_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
   // Admin connection to create schema + run migration DDL inside it
-  const adminSql = postgres(url, { max: 1 });
+  const adminSql = postgres(url, { max: 1, onnotice: SILENT_TEST_NOTICE });
   await adminSql.unsafe(`CREATE SCHEMA "${schemaName}"`);
   await adminSql.unsafe(`SET search_path TO "${schemaName}"`);
   for (const stmt of migrationStatements) {
@@ -67,7 +68,7 @@ export async function createTestDb(): Promise<TestDb> {
     db,
     cleanup: async () => {
       await testSql.end();
-      const dropSql = postgres(url, { max: 1 });
+      const dropSql = postgres(url, { max: 1, onnotice: SILENT_TEST_NOTICE });
       await dropSql.unsafe(`DROP SCHEMA "${schemaName}" CASCADE`);
       await dropSql.end();
     },

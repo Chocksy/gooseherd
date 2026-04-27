@@ -4,7 +4,7 @@ import { resolveTeamFromChannel, type AppConfig } from "./config.js";
 import { logInfo } from "./logger.js";
 import { RunManager } from "./run-manager.js";
 import type { ObserverDaemon } from "./observer/index.js";
-import { parseSlackAlert, type SlackChannelAdapterConfig, type SlackMessageEvent } from "./observer/sources/slack-channel-adapter.js";
+import { parseSlackAlert, type SlackChannelAdapterConfig, type SlackMessageEvent } from "./slack-alert-adapter.js";
 import { handleMessage } from "./orchestrator/orchestrator.js";
 import { buildSystemContext } from "./orchestrator/system-context.js";
 import { ConversationStore } from "./orchestrator/conversation-store.js";
@@ -12,7 +12,7 @@ import type { HandleMessageDeps, HandleMessageRequest } from "./orchestrator/typ
 import type { LLMCallerConfig } from "./llm/caller.js";
 import type { MemoryProvider } from "./memory/provider.js";
 import type { GitHubService } from "./github.js";
-import { parseWorkItemSlackActionValue } from "./work-items/slack-actions.js";
+import { parseWorkItemSlackActionValue } from "./slack-review-actions.js";
 import type { ReviewRequestRecord } from "./work-items/types.js";
 
 function isChannelAllowed(channelId: string, channelAllowlist: string[]): boolean {

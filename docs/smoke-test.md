@@ -91,8 +91,7 @@ curl -H 'Cookie: gooseherd-session=<session-cookie>' \
     "summary":"Browser smoke for discovery workflow",
     "ownerTeamId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     "homeChannelId":"C_GROWTH_SMOKE",
-    "homeThreadTs":"1740001111.100",
-    "createdByUserId":"11111111-1111-1111-1111-111111111111"
+    "homeThreadTs":"1740001111.100"
   }'
 ```
 
@@ -113,9 +112,21 @@ const svc = new WorkItemService(db);
 
 await svc.startDiscovery(\"<discovery-id>\");
 
+const pmActor = {
+  principalType: \"user\",
+  userId: \"11111111-1111-1111-1111-111111111111\",
+  authMethod: \"system\"
+};
+
+const engineerActor = {
+  principalType: \"user\",
+  userId: \"22222222-2222-2222-2222-222222222222\",
+  authMethod: \"system\"
+};
+
 const requests = await svc.requestReview({
   workItemId: \"<discovery-id>\",
-  requestedByUserId: \"11111111-1111-1111-1111-111111111111\",
+  actor: pmActor,
   requests: [{
     type: \"review\",
     targetType: \"user\",
@@ -129,7 +140,7 @@ const requests = await svc.requestReview({
 await svc.recordReviewOutcome({
   reviewRequestId: requests[0].id,
   outcome: \"approved\",
-  authorUserId: \"22222222-2222-2222-2222-222222222222\",
+  actor: engineerActor,
   comment: \"Looks ready to me.\",
   source: \"dashboard\"
 });
@@ -204,10 +215,9 @@ In `Events`, verify at least:
 
 Click `PM Approve`.
 
-When prompted, use:
+If the card does not already have a Jira issue key, the dashboard will prompt only for:
 
 ```text
-PM user id: 11111111-1111-1111-1111-111111111111
 Jira issue key: HBL-SMOKE-2
 ```
 

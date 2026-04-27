@@ -2,6 +2,7 @@ import type {
   RunEnvelope,
   RunnerCompletionPayload,
   RunnerEventPayload,
+  RunnerTokenUsagePayload,
 } from "../runtime/control-plane-types.js";
 import { sleep } from "../utils/sleep.js";
 import { isRecord } from "../utils/type-guards.js";
@@ -30,6 +31,14 @@ interface ArtifactTarget {
 
 interface ArtifactTargetsResponse {
   targets: Record<string, ArtifactTarget>;
+}
+
+function toArtifactUploadBody(body: Buffer | Uint8Array | string, contentType: string): string | Blob {
+  if (typeof body === "string") {
+    return body;
+  }
+  const binaryBody = Uint8Array.from(body);
+  return new Blob([binaryBody], { type: contentType });
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -91,7 +100,7 @@ function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || /abort|timed out|timeout/i.test(error.message));
 }
 
-type RequestSuffix = "payload" | "artifacts" | "events" | "complete" | "cancellation";
+type RequestSuffix = "payload" | "artifacts" | "events" | "complete" | "cancellation" | "token-usage";
 
 function nextRetryDelayMs(attempt: number): number {
   const baseDelay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
@@ -116,6 +125,11 @@ export class RunnerControlPlaneClient {
     await this.request("POST", "complete", payload, opts?.maxAttempts);
   }
 
+  async addTokenUsage(payload: RunnerTokenUsagePayload, opts?: RetryOptions): Promise<void> {
+    void opts;
+    await this.request("POST", "token-usage", payload, 1);
+  }
+
   async getCancellation(opts?: RetryOptions): Promise<{ cancelRequested: boolean }> {
     return this.request<{ cancelRequested: boolean }>("GET", "cancellation", undefined, opts?.maxAttempts, (res, suffix) =>
       parseValidatedSuccessBody(res, suffix, isCancellationResponse),
@@ -126,6 +140,62 @@ export class RunnerControlPlaneClient {
     return this.request<ArtifactTargetsResponse>("GET", "artifacts", undefined, opts?.maxAttempts, (res, suffix) =>
       parseValidatedSuccessBody(res, suffix, isArtifactTargetsResponse),
     );
+  }
+
+  async uploadArtifact(
+    uploadUrl: string,
+    body: Buffer | Uint8Array | string,
+    contentType = "application/octet-stream",
+    opts?: RetryOptions,
+  ): Promise<void> {
+    const maxAttempts = Math.max(1, opts?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
+    const resolvedUrl = new URL(uploadUrl, this.cfg.baseUrl).toString();
+    const timeoutMs = Math.max(1, this.cfg.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    const requestBody = toArtifactUploadBody(body, contentType);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let response: Response;
+      const abortController = new AbortController();
+      const timeoutHandle = setTimeout(() => abortController.abort(), timeoutMs);
+
+      try {
+        response = await fetch(resolvedUrl, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            authorization: `Bearer ${this.cfg.token}`,
+            "content-type": contentType,
+          },
+          body: requestBody,
+        });
+      } catch (error) {
+        clearTimeout(timeoutHandle);
+        if (attempt === maxAttempts) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`retry budget exhausted for artifact upload: ${message}`);
+        }
+        await sleep(nextRetryDelayMs(attempt));
+        continue;
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
+
+      if (response.ok) {
+        return;
+      }
+
+      if (isTerminalStatus(response.status)) {
+        throw new Error(`terminal status ${response.status} for artifact upload`);
+      }
+
+      if (!isRetryableStatus(response.status) || attempt === maxAttempts) {
+        throw new Error(`retry budget exhausted for artifact upload: status ${response.status}`);
+      }
+
+      await sleep(nextRetryDelayMs(attempt));
+    }
+
+    throw new Error("retry budget exhausted for artifact upload");
   }
 
   private async request<T>(

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE_TAG="${1:-gooseherd/app:dev}"
-DOCKERFILE_PATH="${KUBERNETES_APP_DOCKERFILE:-${ROOT_DIR}/kubernetes/app.Dockerfile}"
+DOCKERFILE_PATH="${KUBERNETES_APP_DOCKERFILE:-${ROOT_DIR}/.docker/Dockerfile}"
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
 DOCKER_CONFIG="${DOCKER_CONFIG:-/tmp/gooseherd-docker-config}"
 
@@ -21,7 +21,7 @@ node_image_id() {
 # The local host app image consistently completes with the legacy builder,
 # while BuildKit occasionally stalls near the export path on this host.
 echo "[image] building ${IMAGE_TAG} on the host docker daemon"
-DOCKER_BUILDKIT=0 docker build -f "${DOCKERFILE_PATH}" -t "${IMAGE_TAG}" "${ROOT_DIR}"
+DOCKER_BUILDKIT=0 docker build -f "${DOCKERFILE_PATH}" --target app -t "${IMAGE_TAG}" "${ROOT_DIR}"
 
 HOST_IMAGE_ID="$(host_image_id)"
 NODE_IMAGE_ID="$(node_image_id)"

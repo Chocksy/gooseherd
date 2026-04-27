@@ -1,0 +1,24 @@
+version: 1
+name: feature-delivery-qa-preparation
+description: Run QA preparation for an existing feature-delivery PR, starting with a meaningful QA UAT plan.
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: hydrate_context
+    type: deterministic
+    action: hydrate_context
+
+  - id: generate_qa_uat
+    type: deterministic
+    action: generate_qa_uat
+
+  - id: post_qa_uat_comment
+    type: deterministic
+    action: post_qa_uat_comment
+
+  - id: notify
+    type: deterministic
+    action: notify

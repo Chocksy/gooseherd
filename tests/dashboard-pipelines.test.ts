@@ -177,6 +177,7 @@ function createMockPipelineStore(pipelines: StoredPipeline[] = [SAMPLE_STORED, S
 
 function createMockRunDatabase() {
   const query = {
+    leftJoin() { return this; },
     where() { return this; },
     orderBy() { return this; },
     limit() { return Promise.resolve([]); },
@@ -271,6 +272,10 @@ describe("Dashboard Pipeline API routes", () => {
     const port = await startServer(undefined, {
       sandboxRuntime: "docker",
       sandboxEnabled: false,
+      observerEnabled: true,
+      browserVerifyEnabled: true,
+      ciWaitEnabled: true,
+      dryRun: true,
     });
     const res = await request(port, "GET", "/api/settings");
     assert.equal(res.status, 200);
@@ -278,6 +283,13 @@ describe("Dashboard Pipeline API routes", () => {
     assert.equal((res.data.config as any).sandboxRuntimeLabel, "Docker");
     assert.equal((res.data.config as any).sandboxStatus?.enabled, false);
     assert.equal((res.data.config as any).features?.sandbox, undefined);
+    assert.equal((res.data.config as any).runtime?.sandbox?.mode, "docker");
+    assert.equal((res.data.config as any).runtime?.sandbox?.label, "Docker");
+    assert.equal((res.data.config as any).runtime?.sandbox?.enabled, false);
+    assert.equal((res.data.config as any).capabilities?.observer, true);
+    assert.equal((res.data.config as any).capabilities?.browserVerify, true);
+    assert.equal((res.data.config as any).capabilities?.ciWait, true);
+    assert.equal((res.data.config as any).capabilities?.dryRun, true);
   });
 
   test("GET /api/settings returns a human-friendly sandbox runtime label for kubernetes", async () => {
@@ -289,9 +301,11 @@ describe("Dashboard Pipeline API routes", () => {
     assert.equal(res.status, 200);
     assert.equal((res.data.config as any).sandboxRuntime, "kubernetes");
     assert.equal((res.data.config as any).sandboxRuntimeLabel, "Kubernetes");
+    assert.equal((res.data.config as any).runtime?.sandbox?.mode, "kubernetes");
+    assert.equal((res.data.config as any).runtime?.sandbox?.label, "Kubernetes");
   });
 
-  test("dashboard HTML surfaces sandbox runtime in the settings panel", async () => {
+  test("dashboard HTML settings panel uses dashboard runtime and capability payloads", async () => {
     const port = getPort();
     const html = dashboardHtml({
       ...makeConfig(port, "/tmp"),
@@ -301,8 +315,11 @@ describe("Dashboard Pipeline API routes", () => {
       dashboardPort: port,
     } as AppConfig);
     assert.match(html, /Sandbox Runtime/);
-    assert.match(html, /c\.sandboxRuntimeLabel \|\| c\.sandboxRuntime \|\| ''/);
-    assert.match(html, /c\.sandboxStatus && c\.sandboxStatus\.enabled === false/);
+    assert.match(html, /c\.runtime && c\.runtime\.sandbox/);
+    assert.match(html, /c\.capabilities\?\.observer/);
+    assert.match(html, /c\.capabilities\?\.browserVerify/);
+    assert.match(html, /c\.capabilities\?\.ciWait/);
+    assert.match(html, /c\.capabilities\?\.dryRun/);
     assert.match(html, /Disabled/);
   });
 

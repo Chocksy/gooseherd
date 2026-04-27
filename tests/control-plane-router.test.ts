@@ -7,7 +7,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { eq } from "drizzle-orm";
 import type { AppConfig } from "../src/config.js";
 import { startDashboardServer } from "../src/dashboard-server.js";
-import { runCompletions, runEvents, runs } from "../src/db/schema.js";
+import { runArtifacts, runCompletions, runEvents, runs } from "../src/db/schema.js";
 import { ControlPlaneStore } from "../src/runtime/control-plane-store.js";
 import { FileArtifactStore } from "../src/runtime/file-artifact-store.js";
 import { RunStore } from "../src/store.js";
@@ -134,10 +134,21 @@ async function request(
   headers: Record<string, string> = {},
 ): Promise<{ status: number; data: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
-    const bodyStr = body ? JSON.stringify(body) : undefined;
+    const bodyStr = typeof body === "string"
+      ? body
+      : Buffer.isBuffer(body)
+        ? body
+        : body
+          ? JSON.stringify(body)
+          : undefined;
     const requestHeaders = {
       ...headers,
-      ...(bodyStr ? { "content-type": "application/json", "content-length": String(Buffer.byteLength(bodyStr)) } : {}),
+      ...(bodyStr
+        ? {
+            ...(!headers["content-type"] ? { "content-type": "application/json" } : {}),
+            "content-length": String(Buffer.byteLength(bodyStr)),
+          }
+        : {}),
     };
     const req = http.request(
       { hostname: "127.0.0.1", port, path: requestPath, method, headers: requestHeaders },
@@ -295,7 +306,52 @@ test("GET /internal/runs/:runId/artifacts returns stable upload targets", async 
   const second = await authedRequest(port, token, "GET", `/internal/runs/${runId}/artifacts`);
 
   assert.deepEqual(first.data.targets, second.data.targets);
-  assert.equal((first.data.targets as Record<string, { class: string }>).log.class, "raw_run_log");
+  const targets = first.data.targets as Record<string, { class: string; uploadUrl: string }>;
+  assert.equal(targets.log.class, "raw_run_log");
+  assert.equal(targets["agent-stdout.log"]?.class, "debug_log");
+  assert.equal(targets["agent-stderr.log"]?.class, "debug_log");
+  assert.equal(targets["auto-review-summary.json"]?.class, "internal_artifact");
+  assert.equal(targets["auto-review-summary.json"]?.uploadUrl, `/internal/runs/${runId}/artifacts/auto-review-summary.json`);
+  await cleanup();
+});
+
+test("POST /internal/runs/:runId/artifacts/run.log stores uploaded bytes and marks artifact complete", async () => {
+  const { db, cleanup } = await createTestDb();
+  const controlPlaneStore = new ControlPlaneStore(db);
+  const runId = "44444444-4444-4444-4444-555555555555";
+  await insertRun(db, runId);
+  await controlPlaneStore.createRunEnvelope({
+    runId,
+    payloadRef: `payload/${runId}`,
+    payloadJson: { task: "upload run log" },
+    runtime: "kubernetes",
+  });
+  const { token } = await controlPlaneStore.issueRunToken(runId);
+
+  const port = await startTestServer(db, controlPlaneStore);
+  const artifactsRes = await authedRequest(port, token, "GET", `/internal/runs/${runId}/artifacts`);
+  const uploadUrl = (artifactsRes.data.targets as Record<string, { uploadUrl: string }>).log.uploadUrl;
+  const uploadPath = new URL(uploadUrl, `http://127.0.0.1:${String(port)}`).pathname;
+
+  const uploadRes = await request(
+    port,
+    "POST",
+    uploadPath,
+    "runner log body\n",
+    {
+      authorization: `Bearer ${token}`,
+      "content-type": "text/plain",
+    },
+  );
+
+  assert.equal(uploadRes.status, 202);
+
+  const artifactRows = await db.select().from(runArtifacts).where(eq(runArtifacts.runId, runId));
+  const logArtifact = artifactRows.find((row) => row.artifactKey === "run.log");
+  assert.equal(logArtifact?.status, "complete");
+
+  const artifactPath = String((logArtifact?.metadata as { path?: string })?.path ?? "");
+  assert.match(await (await import("node:fs/promises")).readFile(artifactPath, "utf8"), /runner log body/);
   await cleanup();
 });
 

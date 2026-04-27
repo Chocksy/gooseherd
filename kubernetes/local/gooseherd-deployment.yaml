@@ -47,6 +47,7 @@ spec:
             periodSeconds: 20
       volumes:
         - name: work
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: gooseherd-work
         - name: data
           emptyDir: {}

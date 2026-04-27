@@ -35,6 +35,7 @@ import {
 
 // ── Per-Repo Config imports ──
 import {
+  parseRepoConfigYaml,
   type RepoConfig,
   type RepoQualityGateOverrides
 } from "../src/pipeline/repo-config.js";
@@ -646,6 +647,24 @@ describe("Per-Repo Config", () => {
 
     applyRepoConfig({}, mockCtx);
     assert.equal(ctx.size, 0);
+  });
+
+  test("parseRepoConfigYaml: parses CI ignore checks from quality gates", () => {
+    const parsed = parseRepoConfigYaml(`
+quality_gates:
+  ci:
+    ignore_checks:
+      - PR Checker
+      - flaky policy gate
+`);
+
+    assert.deepEqual(parsed, {
+      qualityGates: {
+        ci: {
+          ignore_checks: ["PR Checker", "flaky policy gate"]
+        }
+      }
+    });
   });
 
 });

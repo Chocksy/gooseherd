@@ -23,6 +23,8 @@ import {
   foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { RunPrefetchContext } from "../runtime/run-context-types.js";
+import type { RunIntent } from "../runs/run-intent.js";
 
 // Custom bytea type for encrypted fields
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -54,6 +56,7 @@ export const runs = pgTable(
     statusMessageTs: text("status_message_ts"),
     commitSha: text("commit_sha"),
     changedFiles: text("changed_files").array(),
+    internalArtifacts: text("internal_artifacts").array(),
     prUrl: text("pr_url"),
     feedback: jsonb("feedback"),
     error: text("error"),
@@ -72,6 +75,10 @@ export const runs = pgTable(
     tokenUsage: jsonb("token_usage"),
     teamId: text("team_id"),
     workItemId: uuid("work_item_id"),
+    prefetchContext: jsonb("prefetch_context").$type<RunPrefetchContext>(),
+    autoReviewSourceSubstate: text("auto_review_source_substate"),
+    intent: jsonb("intent").$type<RunIntent>(),
+    intentKind: text("intent_kind"),
   },
   (t) => [
     index("runs_runtime_idx").on(t.runtime),
@@ -85,6 +92,12 @@ export const runs = pgTable(
     index("runs_team_id_idx")
       .on(t.teamId)
       .where(sql`team_id IS NOT NULL`),
+    index("runs_intent_kind_idx")
+      .on(t.intentKind)
+      .where(sql`intent_kind IS NOT NULL`),
+    index("runs_work_item_intent_kind_idx")
+      .on(t.workItemId, t.intentKind)
+      .where(sql`work_item_id IS NOT NULL AND intent_kind IS NOT NULL`),
   ]
 );
 
@@ -194,6 +207,31 @@ export const runArtifacts = pgTable(
   ]
 );
 
+export const runCheckpoints = pgTable(
+  "run_checkpoints",
+  {
+    runId: uuid("run_id").notNull(),
+    checkpointKey: text("checkpoint_key").notNull(),
+    checkpointType: text("checkpoint_type").notNull(),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>().default({}),
+    emittedAt: timestamp("emitted_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    processedError: text("processed_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.runId, t.checkpointKey] }),
+    foreignKey({
+      columns: [t.runId],
+      foreignColumns: [runs.id],
+      name: "run_checkpoints_run_id_runs_id_fk",
+    }).onDelete("cascade"),
+    index("run_checkpoints_type_emitted_at_idx").on(t.checkpointType, t.emittedAt),
+    index("run_checkpoints_unprocessed_idx").on(t.emittedAt).where(sql`processed_at IS NULL`),
+  ]
+);
+
 // ── learning_outcomes ──
 
 export const learningOutcomes = pgTable(
@@ -297,6 +335,7 @@ export const users = pgTable(
     slackUserId: text("slack_user_id"),
     githubLogin: text("github_login"),
     jiraAccountId: text("jira_account_id"),
+    primaryTeamId: uuid("primary_team_id"),
     displayName: text("display_name").notNull(),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -323,6 +362,7 @@ export const teams = pgTable(
     slackChannelId: text("slack_channel_id").notNull(),
     slackUserGroupId: text("slack_user_group_id"),
     slackUserGroupHandle: text("slack_user_group_handle"),
+    isDefault: boolean("is_default").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -332,6 +372,9 @@ export const teams = pgTable(
     uniqueIndex("teams_slack_user_group_id_idx")
       .on(t.slackUserGroupId)
       .where(sql`slack_user_group_id IS NOT NULL`),
+    uniqueIndex("teams_default_unique_idx")
+      .on(t.isDefault)
+      .where(sql`is_default = true`),
   ]
 );
 
@@ -393,11 +436,15 @@ export const workItems = pgTable(
     ownerTeamId: uuid("owner_team_id").notNull(),
     homeChannelId: text("home_channel_id").notNull(),
     homeThreadTs: text("home_thread_ts").notNull(),
+    repo: text("repo"),
     originChannelId: text("origin_channel_id"),
     originThreadTs: text("origin_thread_ts"),
     jiraIssueKey: text("jira_issue_key"),
     githubPrNumber: integer("github_pr_number"),
     githubPrUrl: text("github_pr_url"),
+    githubPrBaseBranch: text("github_pr_base_branch"),
+    githubPrHeadBranch: text("github_pr_head_branch"),
+    githubPrHeadSha: text("github_pr_head_sha"),
     sourceWorkItemId: uuid("source_work_item_id"),
     createdByUserId: uuid("created_by_user_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -423,12 +470,12 @@ export const workItems = pgTable(
     index("work_items_workflow_state_idx").on(t.workflow, t.state),
     index("work_items_owner_team_idx").on(t.ownerTeamId),
     index("work_items_created_at_idx").on(t.createdAt),
-    uniqueIndex("work_items_feature_delivery_jira_issue_key_idx")
+    uniqueIndex("work_items_product_discovery_jira_issue_key_idx")
       .on(t.jiraIssueKey)
-      .where(sql`jira_issue_key IS NOT NULL AND workflow = 'feature_delivery'`),
-    uniqueIndex("work_items_github_pr_number_idx")
-      .on(t.githubPrNumber)
-      .where(sql`github_pr_number IS NOT NULL`),
+      .where(sql`workflow = 'product_discovery' AND jira_issue_key IS NOT NULL`),
+    uniqueIndex("work_items_repo_github_pr_number_idx")
+      .on(t.repo, t.githubPrNumber)
+      .where(sql`repo IS NOT NULL AND github_pr_number IS NOT NULL`),
   ]
 );
 
@@ -633,7 +680,6 @@ export const configSections = pgTable("config_sections", {
   section: text("section").primaryKey(),
   config: jsonb("config").notNull().$type<Record<string, unknown>>().default({}),
   secretsEnc: bytea("secrets_enc"),
-  overrideFromEnv: boolean("override_from_env").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -660,5 +706,28 @@ export const agentProfiles = pgTable(
   (t) => [
     index("agent_profiles_active_idx").on(t.isActive),
     index("agent_profiles_runtime_idx").on(t.runtime),
+  ]
+);
+
+// ── model_prices ──
+
+export const modelPrices = pgTable(
+  "model_prices",
+  {
+    model: text("model").primaryKey(),
+    inputPerM: numeric("input_per_m", { precision: 12, scale: 6 }),
+    outputPerM: numeric("output_per_m", { precision: 12, scale: 6 }),
+    currency: text("currency").notNull().default("USD"),
+    source: text("source").notNull().default("observed"),
+    firstSeenRunId: uuid("first_seen_run_id"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text("updated_by"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("model_prices_missing_idx")
+      .on(t.source, t.lastSeenAt)
+      .where(sql`${t.inputPerM} IS NULL OR ${t.outputPerM} IS NULL`),
   ]
 );

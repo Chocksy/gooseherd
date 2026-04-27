@@ -169,6 +169,18 @@ async function handleGitHubWebhook(
     // Valid webhook but not an actionable event type
     sendJson(res, 200, { accepted: false, reason: "event type not actionable" });
   }
+
+  if (onGitHubWebhookPayload) {
+    void Promise.resolve()
+      .then(async () => onGitHubWebhookPayload(headers, payload))
+      .catch((error: unknown) => {
+        logError("GitHub webhook payload hook failed", {
+          eventType: headers["x-github-event"],
+          deliveryId: headers["x-github-delivery"],
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
 }
 
 async function handleSentryWebhook(

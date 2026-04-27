@@ -2,10 +2,11 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { runShell, runShellCapture, appendLog } from "../shell.js";
+import { runShell, runShellCapture, appendLog, shellEscape } from "../shell.js";
 import { buildAgentCommand } from "../agent-command.js";
 import { commitCaptureAndPush } from "../git-ops.js";
 import { buildCIFixPrompt, type CIAnnotation } from "./ci-monitor.js";
+import { buildGitAddPathspecs, filterInternalGeneratedFiles, mergeInternalArtifacts } from "../internal-generated-files.js";
 
 /**
  * CI Fix node: "fat" agent node that fixes CI failures, commits, and pushes.
@@ -31,18 +32,30 @@ export async function fixCiNode(
   await appendLog(logFile, `\n[ci:fix] starting CI fix attempt ${String(attempt)}\n`);
 
   // Build fix prompt from CI failure context
-  const annotations = ctx.get<CIAnnotation[]>("ciAnnotations") ?? [];
-  const logTail = ctx.get<string>("ciLogTail") ?? "";
+  const prefetchCi = deps.run.prefetchContext?.github?.ci;
+  const annotations = ctx.has("ciAnnotations")
+    ? (ctx.get<CIAnnotation[]>("ciAnnotations") ?? [])
+    : (prefetchCi?.failedAnnotations?.map((annotation) => ({
+        file: annotation.path,
+        line: annotation.line,
+        message: annotation.message,
+        level: annotation.level,
+      })) ?? []);
+  const failedRunNames = ctx.get<string[]>("ciFailedRunNames")
+    ?? prefetchCi?.failedRuns?.map((failedRun) => failedRun.name).filter(Boolean)
+    ?? [];
+  const logTail = ctx.get<string>("ciLogTail") ?? prefetchCi?.failedLogTail ?? "";
   const changedFiles = ctx.get<string[]>("changedFiles") ?? [];
+  const existingInternalArtifacts = ctx.get<string[]>("internalArtifacts");
 
-  const fixPrompt = (annotations.length > 0 || logTail)
-    ? buildCIFixPrompt(annotations, logTail, changedFiles)
-    : "CI failed. Fix the issues and ensure tests pass.";
+  const fixPrompt = buildCIFixPrompt(annotations, logTail, changedFiles, failedRunNames, run.id);
 
   // Write fix prompt to disk for the agent
   const runDir = ctx.getRequired<string>("runDir");
   const fixPromptFile = path.join(runDir, `ci-fix-round-${String(attempt)}.md`);
   await writeFile(fixPromptFile, fixPrompt, "utf8");
+  await appendCiFixPromptSummaryLog(logFile, fixPromptFile, annotations, logTail, changedFiles, failedRunNames);
+  const beforeHead = await currentHead(repoDir, logFile);
 
   // Run the coding agent with the fix prompt
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
@@ -54,16 +67,37 @@ export async function fixCiNode(
     timeoutMs: config.agentTimeoutSeconds * 1000
   });
 
-  // Check if agent made any changes (including untracked files)
-  const diffCheck = await runShellCapture("git status --porcelain", { cwd: repoDir, logFile });
+  // Check if agent made any user-committable changes, ignoring internal artifacts like AGENTS.md.
+  const pathspecArgs = buildGitAddPathspecs().map(shellEscape).join(" ");
+  const diffCheck = await runShellCapture(
+    `git status --porcelain --untracked-files=all -- ${pathspecArgs}`,
+    { cwd: repoDir, logFile },
+  );
   if (diffCheck.code === 0 && diffCheck.stdout.trim() === "") {
-    await appendLog(logFile, "\n[ci:fix] agent made no changes\n");
-    return { outcome: "success" };
+    const afterHead = await currentHead(repoDir, logFile);
+    if (afterHead !== beforeHead) {
+      await appendLog(logFile, "\n[ci:fix] agent changed HEAD without file changes; treating as history-only CI fix\n");
+      if (run.branchName) {
+        await runShell(`git push --force-with-lease origin HEAD:${shellEscape(run.branchName)}`, { cwd: repoDir, logFile });
+      }
+      const changedFiles = await changedFilesBetween(repoDir, logFile, beforeHead, afterHead);
+      return {
+        outcome: "success",
+        outputs: {
+          commitSha: afterHead,
+          changedFiles,
+          internalArtifacts: mergeInternalArtifacts(existingInternalArtifacts, [])
+        }
+      };
+    }
+
+    await appendLog(logFile, "\n[ci:fix] agent made no user-committable changes\n");
+    return { outcome: "failure", error: "CI fix agent made no changes" };
   }
 
   // Commit, capture SHA + changed files, and push
-  const commitMsg = `${config.appSlug}: fix CI (attempt ${String(attempt)})`;
-  const { commitSha: newSha, changedFiles: newChangedFiles } = await commitCaptureAndPush(
+  const commitMsg = `fix: Fix CI for run ${run.id}`;
+  const { commitSha: newSha, changedFiles: newChangedFiles, internalArtifacts } = await commitCaptureAndPush(
     repoDir, commitMsg, logFile, run.branchName
   );
 
@@ -71,6 +105,66 @@ export async function fixCiNode(
 
   return {
     outcome: "success",
-    outputs: { commitSha: newSha, changedFiles: newChangedFiles }
+    outputs: {
+      commitSha: newSha,
+      changedFiles: newChangedFiles,
+      internalArtifacts: mergeInternalArtifacts(existingInternalArtifacts, internalArtifacts)
+    }
   };
+}
+
+async function currentHead(repoDir: string, logFile: string): Promise<string> {
+  const result = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
+  return result.stdout.trim().split("\n").pop()?.trim() ?? "";
+}
+
+async function appendCiFixPromptSummaryLog(
+  logFile: string,
+  promptFile: string,
+  annotations: CIAnnotation[],
+  logTail: string,
+  changedFiles: string[],
+  failedRunNames: string[]
+): Promise<void> {
+  const lines = [
+    `[ci:fix] prompt file: ${promptFile}`,
+    [
+      `[ci:fix] prompt context: failed_runs=${failedRunNames.length > 0 ? failedRunNames.join(", ") : "none"}`,
+      `annotations=${String(annotations.length)}`,
+      `log_tail=${logTail.trim() ? "yes" : "no"}`,
+      `changed_files=${String(filterInternalGeneratedFiles(changedFiles).length)}`,
+    ].join(" "),
+  ];
+
+  for (const [index, annotation] of annotations.slice(0, 3).entries()) {
+    lines.push(
+      `[ci:fix] ci annotation ${String(index + 1)}: ${annotation.file}:${String(annotation.line)} — ${truncateSingleLine(annotation.message, 240)}`
+    );
+  }
+
+  await appendLog(logFile, `\n${lines.join("\n")}\n`);
+}
+
+function truncateSingleLine(value: string, max: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max)}...`;
+}
+
+async function changedFilesBetween(
+  repoDir: string,
+  logFile: string,
+  beforeHead: string,
+  afterHead: string
+): Promise<string[]> {
+  const result = await runShellCapture(
+    `git diff --name-only ${shellEscape(beforeHead)} ${shellEscape(afterHead)}`,
+    { cwd: repoDir, logFile },
+  );
+  return filterInternalGeneratedFiles(
+    result.stdout
+      .split("\n")
+      .map(f => f.trim())
+      .filter(Boolean)
+  );
 }

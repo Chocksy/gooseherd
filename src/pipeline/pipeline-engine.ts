@@ -14,13 +14,14 @@ import type {
 } from "./types.js";
 import { EventLogger } from "./event-logger.js";
 import { computeCostUsd } from "../llm/model-prices.js";
-import type { ExecutionResult, RunRecord, TokenUsage } from "../types.js";
+import type { ExecutionResult, RunRecord, TokenUsage, TokenUsageIncrement } from "../types.js";
 import type { AppConfig } from "../config.js";
 import type { GitHubService } from "../github.js";
 import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import { ContextBag } from "./context-bag.js";
 import { loadPipeline } from "./pipeline-loader.js";
 import { appendLog, runInSandboxContext } from "./shell.js";
+import { filterInternalGeneratedFiles } from "./internal-generated-files.js";
 import { logInfo } from "../logger.js";
 import type { ContainerManager } from "../sandbox/container-manager.js";
 import type { SandboxHandle } from "../sandbox/types.js";
@@ -29,7 +30,37 @@ import { NODE_HANDLERS } from "./node-registry.js";
 import { isNonCodeFixFailure, type BrowserVerifyFailureCode } from "./quality-gates/browser-verify-routing.js";
 import { escalateMode, type ExecutionMode } from "./quality-gates/task-classifier.js";
 
-export type PipelinePhase = "cloning" | "agent" | "validating" | "pushing" | "awaiting_ci" | "ci_fixing";
+export type PipelinePhase = "cloning" | "rebasing" | "agent" | "validating" | "pushing" | "awaiting_ci" | "ci_fixing";
+
+interface TokenUsageOutput {
+  input: number;
+  output: number;
+  model: string;
+}
+
+interface AgentCostOutput {
+  byModel: Array<TokenUsageOutput & { costUsd?: number }>;
+}
+
+function isTokenUsageOutput(value: unknown): value is TokenUsageOutput {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.input === "number"
+    && typeof candidate.output === "number"
+    && typeof candidate.model === "string"
+    && candidate.model.trim() !== "";
+}
+
+function isAgentCostOutput(value: unknown): value is AgentCostOutput {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return Array.isArray(candidate.byModel)
+    && candidate.byModel.every(entry => {
+      if (!isTokenUsageOutput(entry)) return false;
+      const costUsd = (entry as unknown as Record<string, unknown>).costUsd;
+      return typeof costUsd === "number" || costUsd === undefined;
+    });
+}
 
 /**
  * Evaluate a pipeline node `if` condition.
@@ -82,7 +113,14 @@ export class PipelineEngine {
     onDetail?: (detail: string) => Promise<void>,
     skipNodes?: string[],
     enableNodes?: string[],
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>,
+    onCheckpoint?: (checkpoint: {
+      checkpointKey: string;
+      checkpointType: import("../runs/run-checkpoints.js").RunCheckpointType;
+      payload?: Record<string, unknown>;
+      emittedAt?: string;
+    }) => Promise<void>,
   ): Promise<ExecutionResult> {
     const yamlPath = pipelineFile ?? path.resolve("pipelines/pipeline.yml");
     const pipeline = await loadPipeline(yamlPath);
@@ -107,7 +145,8 @@ export class PipelineEngine {
       baseBranch: run.baseBranch,
       branchName: run.branchName,
       task: run.task,
-      requestedBy: run.requestedBy
+      requestedBy: run.requestedBy,
+      ...(run.prefetchContext ? { prefetchContext: run.prefetchContext } : {})
     });
     // Merge pipeline-level context
     if (pipeline.context) {
@@ -127,7 +166,14 @@ export class PipelineEngine {
         await eventLogger.emit("phase_change", { phase });
         await onPhase(phase as PipelinePhase);
       },
-      onDetail
+      emitRunCheckpoint: async (checkpoint) => {
+        await onCheckpoint?.({
+          ...checkpoint,
+          emittedAt: new Date().toISOString(),
+        });
+      },
+      onDetail,
+      recordTokenUsage,
     };
 
     let startIndex = 0;
@@ -194,8 +240,10 @@ export class PipelineEngine {
     // Build ExecutionResult from context bag
     const branchName = run.branchName;
     const commitSha = ctx.get<string>("commitSha") ?? "";
-    const changedFiles = ctx.get<string[]>("changedFiles") ?? [];
+    const changedFiles = filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []);
+    const internalArtifacts = ctx.get<string[]>("internalArtifacts");
     const prUrl = ctx.get<string>("prUrl");
+    const prNumber = ctx.get<number>("prNumber");
 
     if (result.outcome === "failure") {
       const failedStep = result.steps.find(s => s.outcome === "failure");
@@ -207,7 +255,9 @@ export class PipelineEngine {
       logsPath: logFile,
       commitSha,
       changedFiles,
+      internalArtifacts,
       prUrl,
+      prNumber,
       tokenUsage: tokenUsage ?? undefined,
       title: ctx.get<string>("generatedTitle")
     };
@@ -276,6 +326,7 @@ export class PipelineEngine {
       // Write outputs to context bag
       if (result.outputs) {
         ctx.mergeOutputs(result.outputs);
+        await this.recordTokenUsageFromOutputs(result.outputs, deps);
 
         // Support dynamic node skipping from decision nodes
         const dynamicSkips = result.outputs["_skipNodes"];
@@ -603,6 +654,42 @@ export class PipelineEngine {
     return { result, durationMs };
   }
 
+  private async recordTokenUsageFromOutputs(outputs: Record<string, unknown>, deps: NodeDeps): Promise<void> {
+    if (!deps.recordTokenUsage) return;
+
+    for (const [key, value] of Object.entries(outputs)) {
+      if (!key.startsWith("_tokenUsage_") || !isTokenUsageOutput(value)) continue;
+      await this.recordTokenUsage(deps, {
+        model: value.model,
+        input: value.input,
+        output: value.output,
+        source: "quality_gate"
+      });
+    }
+
+    const agentCost = outputs["agentCost"];
+    if (isAgentCostOutput(agentCost)) {
+      for (const entry of agentCost.byModel) {
+        await this.recordTokenUsage(deps, {
+          model: entry.model,
+          input: entry.input,
+          output: entry.output,
+          source: "agent",
+          costUsd: entry.costUsd
+        });
+      }
+    }
+  }
+
+  private async recordTokenUsage(deps: NodeDeps, entry: TokenUsageIncrement): Promise<void> {
+    try {
+      await deps.recordTokenUsage?.(entry);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown";
+      await appendLog(deps.logFile, `[pipeline] warning: failed to persist token usage: ${message}\n`);
+    }
+  }
+
   private getHandler(action: string): NodeHandler {
     const handler = NODE_HANDLERS[action];
     if (!handler) {
@@ -707,6 +794,7 @@ export function aggregateTokenUsage(ctx: ContextBag, defaultModel?: string): Tok
   let gateInput = 0;
   let gateOutput = 0;
   const entries: Array<{ input: number; output: number; model?: string }> = [];
+  const byModel = new Map<string, { model: string; input: number; output: number; costUsd?: number }>();
 
   for (const key of ctx.keys()) {
     if (!key.startsWith("_tokenUsage_")) continue;
@@ -715,13 +803,27 @@ export function aggregateTokenUsage(ctx: ContextBag, defaultModel?: string): Tok
     gateInput += entry.input;
     gateOutput += entry.output;
     entries.push(entry);
+    mergeModelUsage(byModel, {
+      model: entry.model ?? defaultModel ?? "unknown",
+      input: entry.input,
+      output: entry.output,
+      costUsd: computeCostUsd([entry], defaultModel)
+    });
   }
 
   // Include pi-agent cost if present (from implement node)
-  const agentCost = ctx.get<{ inputTokens: number; outputTokens: number; totalCost: number }>("agentCost");
+  const agentCost = ctx.get<{
+    inputTokens: number;
+    outputTokens: number;
+    totalCost: number;
+    byModel?: Array<{ model: string; input: number; output: number; costUsd?: number }>;
+  }>("agentCost");
   const agentIn = agentCost?.inputTokens ?? 0;
   const agentOut = agentCost?.outputTokens ?? 0;
   const agentDollarCost = agentCost?.totalCost ?? 0;
+  for (const entry of agentCost?.byModel ?? []) {
+    mergeModelUsage(byModel, entry);
+  }
 
   if (gateInput === 0 && gateOutput === 0 && agentIn === 0) return null;
 
@@ -733,6 +835,24 @@ export function aggregateTokenUsage(ctx: ContextBag, defaultModel?: string): Tok
     qualityGateInputTokens: gateInput,
     qualityGateOutputTokens: gateOutput,
     ...(agentIn > 0 ? { agentInputTokens: agentIn, agentOutputTokens: agentOut } : {}),
+    ...(byModel.size > 0 ? { byModel: [...byModel.values()] } : {}),
     ...(totalCostUsd > 0 ? { costUsd: Math.round(totalCostUsd * 10000) / 10000 } : {})
   };
+}
+
+function mergeModelUsage(
+  byModel: Map<string, { model: string; input: number; output: number; costUsd?: number }>,
+  entry: { model: string; input: number; output: number; costUsd?: number }
+): void {
+  const existing = byModel.get(entry.model);
+  if (!existing) {
+    byModel.set(entry.model, { ...entry });
+    return;
+  }
+
+  existing.input += entry.input;
+  existing.output += entry.output;
+  if (entry.costUsd !== undefined || existing.costUsd !== undefined) {
+    existing.costUsd = Math.round(((existing.costUsd ?? 0) + (entry.costUsd ?? 0)) * 10000) / 10000;
+  }
 }

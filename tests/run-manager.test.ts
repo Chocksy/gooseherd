@@ -97,6 +97,7 @@ function makeMockPipelineEngine(result?: Partial<ExecutionResult>): RuntimeRegis
       commitSha: "abc1234def5678",
       changedFiles: ["src/index.ts", "src/config.ts"],
       prUrl: "https://github.com/org/repo/pull/42",
+      prNumber: 42,
       ...result
     } as ExecutionResult;
   };
@@ -159,6 +160,10 @@ async function waitForRunStatus(
   throw new Error(`waitForRunStatus: run ${runId} did not reach status ${expectedStatus} within ${timeoutMs}ms`);
 }
 
+async function waitForManagerIdle(manager: RunManager): Promise<void> {
+  await ((manager as unknown) as { queue: { onIdle: () => Promise<void> } }).queue.onIdle();
+}
+
 // ── enqueueRun ─────────────────────────────────────────
 
 test("enqueueRun creates a run record and returns it", async () => {
@@ -186,6 +191,583 @@ test("enqueueRun creates a run record and returns it", async () => {
   assert.ok(run.branchName.startsWith("testherd/"));
 
   await waitForRunDone(store, run.id);
+  await testDb.cleanup();
+});
+
+test("run manager prefetches work item context before backend dispatch and persists it", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const callOrder: string[] = [];
+  const workItemId = "11111111-1111-1111-1111-111111111111";
+  const prefetchContext: NonNullable<RunRecord["prefetchContext"]> = {
+    meta: {
+      fetchedAt: "2026-04-17T00:00:00.000Z",
+      sources: ["jira"],
+    },
+    workItem: {
+      id: workItemId,
+      title: "Work item",
+      workflow: "feature_delivery",
+    },
+    jira: {
+      issue: {
+        key: "HUB-1",
+        description: "issue description",
+      },
+      comments: [],
+    },
+  };
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run, { onPhase }) => {
+        callOrder.push("execute");
+        assert.deepEqual(run.prefetchContext, prefetchContext);
+        const stored = await store.getRun(run.id);
+        assert.deepEqual(stored?.prefetchContext, prefetchContext);
+        await onPhase("cloning");
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+          prUrl: "https://github.com/org/repo/pull/42",
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const prefetcher = {
+    prefetch: async (run: RunRecord) => {
+      callOrder.push("prefetch");
+      assert.equal(run.workItemId, workItemId);
+      return prefetchContext;
+    },
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "prefetch before dispatch",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+    workItemId,
+  });
+
+  await waitForRunDone(store, run.id);
+
+  assert.deepEqual(callOrder, ["prefetch", "execute"]);
+
+  await testDb.cleanup();
+});
+
+test("run manager fails closed when prefetch throws for a linked work item", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  let backendCalled = false;
+  const workItemId = "22222222-2222-2222-2222-222222222222";
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async () => {
+        backendCalled = true;
+        throw new Error("backend should not have been called");
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const prefetcher = {
+    prefetch: async (run: RunRecord) => {
+      assert.equal(run.workItemId, workItemId);
+      throw new Error("prefetch boom");
+    },
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "prefetch failure",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+    workItemId,
+  });
+
+  const failed = await waitForRunStatus(store, run.id, "failed");
+  assert.equal(failed.error, "prefetch boom");
+  assert.equal(backendCalled, false);
+
+  await testDb.cleanup();
+});
+
+test("run manager can cancel a run while prefetch is still pending", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  let backendCalled = false;
+  let resolvePrefetch: ((value: RunRecord["prefetchContext"]) => void) | undefined;
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async () => {
+        backendCalled = true;
+        throw new Error("backend should not have been called");
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const prefetcher = {
+    prefetch: async () =>
+      await new Promise<RunRecord["prefetchContext"]>((resolve) => {
+        resolvePrefetch = resolve;
+      }),
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "cancel during prefetch",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+    workItemId: "33333333-3333-3333-3333-333333333333",
+  });
+
+  await waitForRunStatus(store, run.id, "running");
+  const cancelled = await manager.cancelRun(run.id);
+  assert.equal(cancelled, true);
+
+  const terminal = await waitForRunStatus(store, run.id, "cancelled");
+  assert.equal(terminal.error, "Run cancelled");
+  assert.equal(backendCalled, false);
+
+  resolvePrefetch?.(undefined);
+  await waitForManagerIdle(manager);
+  await testDb.cleanup();
+});
+
+test("run manager can cancel a kubernetes run while prefetch is still pending", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  let backendCalled = false;
+  let resolvePrefetch: ((value: RunRecord["prefetchContext"]) => void) | undefined;
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: undefined,
+    docker: undefined,
+    kubernetes: {
+      runtime: "kubernetes",
+      execute: async () => {
+        backendCalled = true;
+        throw new Error("backend should not have been called");
+      },
+    },
+  };
+
+  const prefetcher = {
+    prefetch: async () =>
+      await new Promise<RunRecord["prefetchContext"]>((resolve) => {
+        resolvePrefetch = resolve;
+      }),
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "cancel kubernetes during prefetch",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: "kubernetes",
+    workItemId: "33333333-3333-3333-3333-333333333334",
+  });
+
+  await waitForRunStatus(store, run.id, "running");
+  const cancelled = await manager.cancelRun(run.id);
+  assert.equal(cancelled, true);
+
+  const cancelling = await waitForRunStatus(store, run.id, "cancel_requested");
+  assert.equal(cancelling.phase, "cancel_requested");
+
+  const terminal = await waitForRunStatus(store, run.id, "cancelled");
+  assert.equal(terminal.error, "Run cancelled");
+  assert.equal(backendCalled, false);
+
+  resolvePrefetch?.(undefined);
+  await waitForManagerIdle(manager);
+  await testDb.cleanup();
+});
+
+test("run manager reloads latest run state before prefetch and backend dispatch", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const workItemId = "44444444-4444-4444-4444-444444444444";
+  const prefetchContext: NonNullable<RunRecord["prefetchContext"]> = {
+    meta: {
+      fetchedAt: "2026-04-17T00:00:00.000Z",
+      sources: ["jira"],
+    },
+    workItem: {
+      id: workItemId,
+      title: "Late-linked work item",
+      workflow: "feature_delivery",
+    },
+    jira: {
+      issue: {
+        key: "HUB-444",
+        description: "late-linked issue description",
+      },
+      comments: [],
+    },
+  };
+  const originalUpdateRun = store.updateRun.bind(store);
+  let linkedAfterStart = false;
+
+  (store as typeof store & {
+    updateRun: typeof store.updateRun;
+  }).updateRun = async (runId, patch) => {
+    const updated = await originalUpdateRun(runId, patch);
+    if (patch.status === "running" && !linkedAfterStart) {
+      linkedAfterStart = true;
+      await originalUpdateRun(runId, { workItemId });
+    }
+    return updated;
+  };
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run) => {
+        assert.equal(run.workItemId, workItemId);
+        assert.deepEqual(run.prefetchContext, prefetchContext);
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  let prefetchedWorkItemId: string | undefined;
+  const prefetcher = {
+    prefetch: async (run: RunRecord) => {
+      prefetchedWorkItemId = run.workItemId;
+      return prefetchContext;
+    },
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "reload before prefetch",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+
+  await waitForRunDone(store, run.id);
+
+  assert.equal(prefetchedWorkItemId, workItemId);
+
+  await testDb.cleanup();
+});
+
+test("run manager refreshes run state again after resolving the pipeline before dispatch", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const workItemId = "55555555-5555-5555-5555-555555555555";
+  const prefetchContext: NonNullable<RunRecord["prefetchContext"]> = {
+    meta: {
+      fetchedAt: "2026-04-17T00:00:00.000Z",
+      sources: ["jira"],
+    },
+    workItem: {
+      id: workItemId,
+      title: "Post-resolve linked work item",
+      workflow: "feature_delivery",
+    },
+    jira: {
+      issue: {
+        key: "HUB-555",
+        description: "post-resolve issue description",
+      },
+      comments: [],
+    },
+  };
+  let linkedDuringResolve = false;
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run) => {
+        assert.equal(run.workItemId, workItemId);
+        assert.deepEqual(run.prefetchContext, prefetchContext);
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  let prefetchedWorkItemId: string | undefined;
+  const prefetcher = {
+    prefetch: async (run: RunRecord) => {
+      prefetchedWorkItemId = run.workItemId;
+      return prefetchContext;
+    },
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+  (manager as unknown as {
+    resolvePipeline: (hint: string | undefined, runId: string) => Promise<string>;
+  }).resolvePipeline = async (_hint, runId) => {
+    if (!linkedDuringResolve) {
+      linkedDuringResolve = true;
+      await store.updateRun(runId, { workItemId });
+    }
+    return config.pipelineFile;
+  };
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "refresh after resolvePipeline",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+
+  await waitForRunDone(store, run.id);
+
+  assert.equal(prefetchedWorkItemId, workItemId);
+
+  await testDb.cleanup();
+});
+
+test("run manager invalidates stale prefetched context when the linked work item changes", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const initialWorkItemId = "66666666-6666-6666-6666-666666666666";
+  const relinkedWorkItemId = "77777777-7777-7777-7777-777777777777";
+  const initialPrefetchContext: NonNullable<RunRecord["prefetchContext"]> = {
+    meta: {
+      fetchedAt: "2026-04-17T00:00:00.000Z",
+      sources: ["jira"],
+    },
+    workItem: {
+      id: initialWorkItemId,
+      title: "Original work item",
+      workflow: "feature_delivery",
+    },
+    jira: {
+      issue: {
+        key: "HUB-666",
+        description: "original issue description",
+      },
+      comments: [],
+    },
+  };
+  const relinkedPrefetchContext: NonNullable<RunRecord["prefetchContext"]> = {
+    meta: {
+      fetchedAt: "2026-04-17T00:00:01.000Z",
+      sources: ["jira"],
+    },
+    workItem: {
+      id: relinkedWorkItemId,
+      title: "Relinked work item",
+      workflow: "feature_delivery",
+    },
+    jira: {
+      issue: {
+        key: "HUB-777",
+        description: "relinked issue description",
+      },
+      comments: [],
+    },
+  };
+  let relinkedDuringResolve = false;
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run) => {
+        assert.equal(run.workItemId, relinkedWorkItemId);
+        assert.deepEqual(run.prefetchContext, relinkedPrefetchContext);
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const prefetcher = {
+    prefetch: async (run: RunRecord) => {
+      if (run.workItemId === initialWorkItemId) {
+        return initialPrefetchContext;
+      }
+      if (run.workItemId === relinkedWorkItemId) {
+        return relinkedPrefetchContext;
+      }
+      throw new Error(`unexpected work item id: ${run.workItemId}`);
+    },
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+  (manager as unknown as {
+    resolvePipeline: (hint: string | undefined, runId: string) => Promise<string>;
+  }).resolvePipeline = async (_hint, runId) => {
+    if (!relinkedDuringResolve) {
+      relinkedDuringResolve = true;
+      await store.updateRun(runId, { workItemId: relinkedWorkItemId });
+    }
+    return config.pipelineFile;
+  };
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "invalidate stale prefetched context",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+    workItemId: initialWorkItemId,
+  });
+
+  await waitForRunDone(store, run.id);
+
+  await testDb.cleanup();
+});
+
+test("run manager clears persisted prefetch context when the linked work item is removed before dispatch", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const workItemId = "88888888-8888-8888-8888-888888888888";
+  const prefetchContext: NonNullable<RunRecord["prefetchContext"]> = {
+    meta: {
+      fetchedAt: "2026-04-17T00:00:00.000Z",
+      sources: ["jira"],
+    },
+    workItem: {
+      id: workItemId,
+      title: "Transient work item",
+      workflow: "feature_delivery",
+    },
+    jira: {
+      issue: {
+        key: "HUB-888",
+        description: "transient issue description",
+      },
+      comments: [],
+    },
+  };
+  let prefetchCalls = 0;
+  let unlinkedDuringResolve = false;
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run) => {
+        assert.equal(run.workItemId, undefined);
+        assert.equal(run.prefetchContext, undefined);
+        assert.equal(run.autoReviewSourceSubstate, undefined);
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const prefetcher = {
+    prefetch: async (run: RunRecord) => {
+      prefetchCalls += 1;
+      assert.equal(run.workItemId, workItemId);
+      return prefetchContext;
+    },
+  };
+
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any, undefined, undefined, undefined, prefetcher);
+  (manager as unknown as {
+    resolvePipeline: (hint: string | undefined, runId: string) => Promise<string>;
+  }).resolvePipeline = async (_hint, runId) => {
+    if (!unlinkedDuringResolve) {
+      unlinkedDuringResolve = true;
+      await store.updateRun(runId, { workItemId: undefined });
+    }
+    return config.pipelineFile;
+  };
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "clear stale prefetched context after unlink",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+    workItemId,
+    autoReviewSourceSubstate: "pr_adopted",
+  });
+
+  await waitForRunDone(store, run.id);
+
+  assert.equal(prefetchCalls, 1);
+  const stored = await store.getRun(run.id);
+  assert.equal(stored?.workItemId, undefined);
+  assert.equal(stored?.prefetchContext, undefined);
+  assert.equal(stored?.autoReviewSourceSubstate, undefined);
+
   await testDb.cleanup();
 });
 
@@ -314,6 +896,57 @@ test("continueRun returns undefined for non-existent parent", async () => {
   await testDb.cleanup();
 });
 
+test("run manager keeps run status running while phase awaits CI", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+  const seenStatuses: string[] = [];
+  const mockPipeline: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (_run, { onPhase }) => {
+        await onPhase("cloning");
+        await onPhase("agent");
+        await onPhase("awaiting_ci");
+        return {
+          branchName: "testherd/test-branch",
+          logsPath: "/tmp/test-work/test-run/run.log",
+          commitSha: "abc1234def5678",
+          changedFiles: ["src/index.ts"],
+          prUrl: "https://github.com/org/repo/pull/42",
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+  manager.onRunStatusChange((runId, status) => {
+    if (runId) {
+      seenStatuses.push(status);
+    }
+  });
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "wait for ci",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+
+  await waitForRunDone(store, run.id);
+
+  assert.ok(seenStatuses.includes("running"));
+  assert.ok(!seenStatuses.includes("awaiting_ci"));
+  assert.equal(seenStatuses.at(-1), "completed");
+
+  await testDb.cleanup();
+});
+
 // ── processRun (via enqueueRun) ────────────────────────
 
 test("processRun posts status card and summary on success", async () => {
@@ -335,6 +968,7 @@ test("processRun posts status card and summary on success", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   // Should have posted messages: initial card + heartbeat updates + final card + summary
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
@@ -375,6 +1009,7 @@ test("processRun posts failure summary on error", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary = postMessages.findLast((c) => {
@@ -413,6 +1048,7 @@ test("processRun with local channel skips Slack posts and still completes", asyn
   const stored = await store.getRun(run.id);
   assert.equal(stored?.status, "completed");
   assert.equal(stored?.phase, "completed");
+  assert.equal(stored?.prNumber, 42);
   assert.equal(mockClient._calls.length, 0, "No Slack API calls should be made for local runs");
 
   await testDb.cleanup();
@@ -465,6 +1101,66 @@ test("cancelRun marks kubernetes runs as cancel_requested and finalizes them as 
   const cancelled = await waitForRunStatus(store, run.id, "cancelled");
   assert.equal(cancelled.phase, "cancelled");
   assert.ok(cancelled.finishedAt);
+
+  await testDb.cleanup();
+});
+
+test("cancelRun does not locally abort kubernetes runs after dispatch", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  let executionStarted = false;
+
+  const runtimeRegistry: RuntimeRegistry = {
+    local: undefined,
+    docker: undefined,
+    kubernetes: {
+      runtime: "kubernetes",
+      execute: async (run, { onPhase, abortSignal }) => {
+        await onPhase("agent");
+        executionStarted = true;
+
+        await new Promise<void>((resolve, reject) => {
+          const interval = setInterval(async () => {
+            const latest = await store.getRun(run.id);
+            if (latest?.status === "cancel_requested") {
+              clearInterval(interval);
+              resolve();
+            }
+          }, 10);
+          abortSignal.addEventListener("abort", () => {
+            clearInterval(interval);
+            reject(new Error("local abort before remote cancellation"));
+          }, { once: true });
+        });
+
+        throw new Error("remote cancellation observed");
+      },
+    },
+  };
+  const config = makeConfig({ sandboxRuntime: "kubernetes" });
+  const manager = new RunManager(config, store, runtimeRegistry, mockClient as any);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "cancel kubernetes after dispatch",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: "kubernetes",
+  });
+
+  while (!executionStarted) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(await manager.cancelRun(run.id), true);
+
+  const cancelling = await waitForRunStatus(store, run.id, "cancel_requested");
+  assert.equal(cancelling.phase, "cancel_requested");
+
+  const cancelled = await waitForRunStatus(store, run.id, "cancelled");
+  assert.equal(cancelled.error, "remote cancellation observed");
 
   await testDb.cleanup();
 });
@@ -712,6 +1408,7 @@ test("summary includes task preview when task is long", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary = postMessages[postMessages.length - 1];
@@ -741,6 +1438,7 @@ test("summary limits displayed files to 10", async () => {
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
   const summary = postMessages[postMessages.length - 1];
@@ -854,9 +1552,12 @@ test("failure summary shows classified error with suggestion for known patterns"
   });
 
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
 
   const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
-  const summary = postMessages[postMessages.length - 1];
+  const summary =
+    postMessages.findLast((call) => typeof call.args.text === "string" && String(call.args.text).includes("*Run failed*")) ??
+    postMessages[postMessages.length - 1];
   const summaryText = summary.args.text as string;
   assert.ok(summaryText.includes("Failed to clone repository"), "Should show friendly error name");
   assert.ok(summaryText.includes("GitHub credentials"), "Should show suggestion");

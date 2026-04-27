@@ -1,4 +1,6 @@
+import type { RunPrefetchContext } from "./runtime/run-context-types.js";
 import type { SandboxRuntime } from "./runtime/runtime-mode.js";
+import type { RunIntent, RunIntentKind } from "./runs/run-intent.js";
 
 export type RunStatus =
   | "queued"
@@ -15,6 +17,7 @@ export type RunStatus =
 export type RunPhase =
   | "queued"
   | "cloning"
+  | "rebasing"
   | "agent"
   | "validating"
   | "pushing"
@@ -30,7 +33,23 @@ export interface TokenUsage {
   qualityGateOutputTokens: number;
   agentInputTokens?: number;
   agentOutputTokens?: number;
+  byModel?: Array<{
+    model: string;
+    input: number;
+    output: number;
+    costUsd?: number;
+  }>;
+  missingPriceModels?: string[];
+  costIncomplete?: boolean;
   /** Estimated cost in USD (computed from token counts × model prices). */
+  costUsd?: number;
+}
+
+export interface TokenUsageIncrement {
+  model: string;
+  input: number;
+  output: number;
+  source?: "quality_gate" | "agent";
   costUsd?: number;
 }
 
@@ -60,6 +79,7 @@ export interface RunRecord {
   statusMessageTs?: string;
   commitSha?: string;
   changedFiles?: string[];
+  internalArtifacts?: string[];
   prUrl?: string;
   feedback?: RunFeedback;
   error?: string;
@@ -69,7 +89,7 @@ export interface RunRecord {
   rootRunId?: string;
   /** 0 for first run, 1 for first follow-up, etc. */
   chainIndex?: number;
-  /** Branch inherited from parent (reused instead of creating new) */
+  /** Existing branch to reuse instead of creating a fresh one */
   parentBranchName?: string;
   /** The engineer's follow-up instruction */
   feedbackNote?: string;
@@ -91,8 +111,12 @@ export interface RunRecord {
   tokenUsage?: TokenUsage;
   /** Team identifier derived from channel mapping */
   teamId?: string;
-  /** Managed work item this run belongs to, when attached */
+  /** Managed work item this run belongs to, whether linked at creation or later */
   workItemId?: string;
+  prefetchContext?: RunPrefetchContext;
+  autoReviewSourceSubstate?: string;
+  intent?: RunIntent;
+  intentKind?: RunIntentKind;
 }
 
 export interface NewRunInput {
@@ -103,6 +127,8 @@ export interface NewRunInput {
   channelId: string;
   threadTs: string;
   runtime: SandboxRuntime;
+  /** Managed work item this run belongs to, when created in-band */
+  workItemId?: string;
   /** Link to the parent run for follow-ups */
   parentRunId?: string;
   /** The engineer's follow-up instruction */
@@ -115,6 +141,12 @@ export interface NewRunInput {
   enableNodes?: string[];
   /** Team identifier derived from channel mapping */
   teamId?: string;
+  /** Existing PR metadata for runs that operate on an already-linked PR */
+  prUrl?: string;
+  prNumber?: number;
+  prefetchContext?: RunPrefetchContext;
+  autoReviewSourceSubstate?: string;
+  intent?: RunIntent;
 }
 
 export interface ExecutionResult {
@@ -122,7 +154,9 @@ export interface ExecutionResult {
   logsPath: string;
   commitSha: string;
   changedFiles: string[];
+  internalArtifacts?: string[];
   prUrl?: string;
+  prNumber?: number;
   tokenUsage?: TokenUsage;
   title?: string;
 }

@@ -11,6 +11,7 @@ import { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import { logError, logInfo } from "../logger.js";
 import { RunnerControlPlaneClient } from "./control-plane-client.js";
 import { runPipelineRunner, type RunnerEventEmitter } from "./pipeline-runner.js";
+import { applyRunnerConfigPayload } from "../runtime/runner-config-payload.js";
 
 function getRequiredEnv(name: "GOOSEHERD_INTERNAL_BASE_URL" | "RUN_ID" | "RUN_TOKEN"): string {
   const value = process.env[name];
@@ -45,11 +46,13 @@ function buildRunnerServices(): RunnerServices {
 
 async function executeSharedPipeline(
   services: RunnerServices,
+  client: RunnerControlPlaneClient,
   run: RunRecord,
-  _payload: RunEnvelope,
+  payload: RunEnvelope,
   emit: RunnerEventEmitter,
   abortSignal: AbortSignal,
 ) {
+  applyRunnerConfigPayload(services.config, payload);
   return services.pipelineEngine.execute(
     run,
     async (phase) => {
@@ -62,6 +65,12 @@ async function executeSharedPipeline(
     run.skipNodes,
     run.enableNodes,
     abortSignal,
+    async (entry) => {
+      await client.addTokenUsage(entry);
+    },
+    async (checkpoint) => {
+      await emit("run.checkpoint", checkpoint);
+    },
   );
 }
 
@@ -69,7 +78,7 @@ export async function main(): Promise<void> {
   const client = buildRunnerClientFromEnv();
   const services = buildRunnerServices();
   await runPipelineRunner(client, (run, payload, emit, abortSignal) =>
-    executeSharedPipeline(services, run, payload, emit, abortSignal),
+    executeSharedPipeline(services, client, run, payload, emit, abortSignal),
   );
   logInfo("Runner completed", { runId: process.env.RUN_ID ?? "unknown" });
 }

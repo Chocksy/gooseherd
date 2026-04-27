@@ -12,6 +12,16 @@ import type {
   ReviewRequestRecord,
   WorkItemRecord,
 } from "./types.js";
+import {
+  assertCanConfirmDiscovery,
+  assertCanRequestDiscoveryReview,
+  assertCanResolveDiscoveryReview,
+  assertStateTransitionAllowed,
+} from "./workflow-policy.js";
+
+export interface WorkItemServiceOptions {
+  readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
+}
 
 export class WorkItemService {
   private readonly workItems: WorkItemStore;
@@ -19,13 +29,15 @@ export class WorkItemService {
   private readonly events: WorkItemEventsStore;
   private readonly runs: RunStore;
   private readonly authorization: WorkItemAuthorization;
+  private readonly readyForMergeHandler?: WorkItemServiceOptions["readyForMergeHandler"];
 
-  constructor(db: Database) {
+  constructor(private readonly db: Database, options: WorkItemServiceOptions = {}) {
     this.workItems = new WorkItemStore(db);
     this.reviewRequests = new ReviewRequestStore(db);
     this.events = new WorkItemEventsStore(db);
     this.runs = new RunStore(db);
     this.authorization = new WorkItemAuthorization(db);
+    this.readyForMergeHandler = options.readyForMergeHandler;
   }
 
   async getWorkItem(id: string): Promise<WorkItemRecord | undefined> {
@@ -82,6 +94,7 @@ export class WorkItemService {
     const workItem = await this.requireWorkItem(input.workItemId);
     const actor = requireUserActor(input.actor);
     await this.authorization.assertCanRequestReview(actor.userId, workItem);
+    assertCanRequestDiscoveryReview(workItem);
     const currentRequests = await this.reviewRequests.listReviewRequestsForWorkItem(workItem.id);
     const nextReviewRound = Math.max(0, ...currentRequests.map((request) => request.reviewRound)) + 1;
 
@@ -140,6 +153,7 @@ export class WorkItemService {
     }
     const workItem = await this.requireWorkItem(existingReviewRequest.workItemId);
     await this.authorization.assertCanRespondToReviewRequest(actor.userId, workItem, existingReviewRequest);
+    assertCanResolveDiscoveryReview(workItem);
 
     const completed = await this.reviewRequests.completeReviewRequest(input.reviewRequestId, {
       outcome: input.outcome,
@@ -210,6 +224,7 @@ export class WorkItemService {
     const workItem = await this.requireWorkItem(input.workItemId);
     const actor = requireUserActor(input.actor);
     await this.authorization.assertCanApplyManualTransition(actor.userId, workItem);
+    assertCanConfirmDiscovery(workItem);
 
     if (input.approved) {
       const jiraIssueKey = input.jiraIssueKey?.trim() || workItem.jiraIssueKey;
@@ -217,50 +232,76 @@ export class WorkItemService {
         throw new Error("Jira issue key is required before completing discovery");
       }
 
-      const existingDelivery = (await this.workItems.listWorkItems()).find((candidate) => candidate.sourceWorkItemId === workItem.id);
-      if (existingDelivery) {
-        throw new Error(`Delivery work item already exists for discovery ${workItem.id}`);
+      try {
+        return await this.db.transaction(async (tx) => {
+          const txDb = tx as unknown as Database;
+          const txWorkItems = new WorkItemStore(txDb);
+          const txEvents = new WorkItemEventsStore(txDb);
+
+          const currentWorkItem = await txWorkItems.getWorkItem(input.workItemId);
+          if (!currentWorkItem) {
+            throw new Error(`WorkItem not found: ${input.workItemId}`);
+          }
+          assertCanConfirmDiscovery(currentWorkItem);
+
+          const currentJiraIssueKey = input.jiraIssueKey?.trim() || currentWorkItem.jiraIssueKey;
+          if (!currentJiraIssueKey) {
+            throw new Error("Jira issue key is required before completing discovery");
+          }
+
+          const existingDeliveries = await txWorkItems.listFeatureDeliveriesBySourceWorkItemId(currentWorkItem.id);
+          if (existingDeliveries.length > 0) {
+            throw new Error(`Delivery work item already exists for discovery ${currentWorkItem.id}`);
+          }
+
+          if (!currentWorkItem.jiraIssueKey) {
+            await txWorkItems.setJiraIssueKey(currentWorkItem.id, currentJiraIssueKey);
+          }
+
+          const delivery = await txWorkItems.createWorkItem({
+            workflow: "feature_delivery",
+            state: "backlog",
+            title: currentWorkItem.title,
+            summary: currentWorkItem.summary,
+            ownerTeamId: currentWorkItem.ownerTeamId,
+            homeChannelId: currentWorkItem.homeChannelId,
+            homeThreadTs: currentWorkItem.homeThreadTs,
+            originChannelId: currentWorkItem.originChannelId,
+            originThreadTs: currentWorkItem.originThreadTs,
+            jiraIssueKey: currentJiraIssueKey,
+            sourceWorkItemId: currentWorkItem.id,
+            createdByUserId: actor.userId,
+            flags: [],
+          });
+
+          const updated = await txWorkItems.updateState(input.workItemId, {
+            state: "done",
+            flagsToAdd: ["pm_approved", "jira_created", "delivery_work_item_created"],
+          });
+
+          await txEvents.append({
+            workItemId: input.workItemId,
+            eventType: "work_item.state_changed",
+            actorUserId: actor.userId,
+            payload: { state: updated.state, approved: input.approved, jiraIssueKey: currentJiraIssueKey, ...actorAuditFields(actor) },
+          });
+          await txEvents.append({
+            workItemId: delivery.id,
+            eventType: "work_item.created",
+            actorUserId: actor.userId,
+            payload: {
+              workflow: delivery.workflow,
+              sourceWorkItemId: currentWorkItem.id,
+              jiraIssueKey: currentJiraIssueKey,
+              ...actorAuditFields(actor),
+            },
+          });
+
+          return updated;
+        });
+      } catch (error) {
+        throw this.rewriteDeliveryCreationConflict(error, workItem.id, jiraIssueKey);
       }
-
-      if (!workItem.jiraIssueKey) {
-        await this.workItems.setJiraIssueKey(workItem.id, jiraIssueKey);
-      }
-
-      const delivery = await this.workItems.createWorkItem({
-        workflow: "feature_delivery",
-        state: "backlog",
-        title: workItem.title,
-        summary: workItem.summary,
-        ownerTeamId: workItem.ownerTeamId,
-        homeChannelId: workItem.homeChannelId,
-        homeThreadTs: workItem.homeThreadTs,
-        originChannelId: workItem.originChannelId,
-        originThreadTs: workItem.originThreadTs,
-        jiraIssueKey,
-        sourceWorkItemId: workItem.id,
-        createdByUserId: actor.userId,
-        flags: [],
-      });
-
-      const updated = await this.workItems.updateState(input.workItemId, {
-        state: "done",
-        flagsToAdd: ["pm_approved", "jira_created", "delivery_work_item_created"],
-      });
-
-      await this.events.append({
-        workItemId: input.workItemId,
-        eventType: "work_item.state_changed",
-        actorUserId: actor.userId,
-        payload: { state: updated.state, approved: input.approved, jiraIssueKey, ...actorAuditFields(actor) },
-      });
-      await this.events.append({
-        workItemId: delivery.id,
-        eventType: "work_item.created",
-        actorUserId: actor.userId,
-        payload: { workflow: delivery.workflow, sourceWorkItemId: workItem.id, jiraIssueKey, ...actorAuditFields(actor) },
-      });
-
-      return await this.requireWorkItem(input.workItemId);
     }
 
     const nextState = nextDiscoveryStateAfterPmConfirmation(input.approved);
@@ -336,8 +377,94 @@ export class WorkItemService {
     originThreadTs?: string;
     jiraIssueKey: string;
     createdByUserId: string;
+    repo?: string;
     githubPrNumber?: number;
     githubPrUrl?: string;
+    githubPrBaseBranch?: string;
+    githubPrHeadBranch?: string;
+    githubPrHeadSha?: string;
+    initialState?: Extract<WorkItemRecord["state"], "backlog" | "auto_review">;
+    initialSubstate?: string;
+    flags?: string[];
+  }): Promise<WorkItemRecord> {
+    return this.createFeatureDelivery({
+      title: input.title,
+      summary: input.summary,
+      ownerTeamId: input.ownerTeamId,
+      homeChannelId: input.homeChannelId,
+      homeThreadTs: input.homeThreadTs,
+      originChannelId: input.originChannelId,
+      originThreadTs: input.originThreadTs,
+      jiraIssueKey: input.jiraIssueKey,
+      repo: input.repo,
+      createdByUserId: input.createdByUserId,
+      githubPrNumber: input.githubPrNumber,
+      githubPrUrl: input.githubPrUrl,
+      githubPrBaseBranch: input.githubPrBaseBranch,
+      githubPrHeadBranch: input.githubPrHeadBranch,
+      githubPrHeadSha: input.githubPrHeadSha,
+      initialState: input.initialState,
+      initialSubstate: input.initialSubstate,
+      flags: input.flags,
+    });
+  }
+
+  async createDeliveryFromPullRequest(input: {
+    title: string;
+    summary?: string;
+    ownerTeamId: string;
+    homeChannelId: string;
+    homeThreadTs: string;
+    originChannelId?: string;
+    originThreadTs?: string;
+    createdByUserId: string;
+    repo?: string;
+    githubPrNumber?: number;
+    githubPrUrl?: string;
+    githubPrBaseBranch?: string;
+    githubPrHeadBranch?: string;
+    githubPrHeadSha?: string;
+    initialState?: Extract<WorkItemRecord["state"], "backlog" | "auto_review">;
+    initialSubstate?: string;
+    flags?: string[];
+  }): Promise<WorkItemRecord> {
+    return this.createFeatureDelivery({
+      title: input.title,
+      summary: input.summary,
+      ownerTeamId: input.ownerTeamId,
+      homeChannelId: input.homeChannelId,
+      homeThreadTs: input.homeThreadTs,
+      originChannelId: input.originChannelId,
+      originThreadTs: input.originThreadTs,
+      repo: input.repo,
+      createdByUserId: input.createdByUserId,
+      githubPrNumber: input.githubPrNumber,
+      githubPrUrl: input.githubPrUrl,
+      githubPrBaseBranch: input.githubPrBaseBranch,
+      githubPrHeadBranch: input.githubPrHeadBranch,
+      githubPrHeadSha: input.githubPrHeadSha,
+      initialState: input.initialState,
+      initialSubstate: input.initialSubstate,
+      flags: input.flags,
+    });
+  }
+
+  private async createFeatureDelivery(input: {
+    title: string;
+    summary?: string;
+    ownerTeamId: string;
+    homeChannelId: string;
+    homeThreadTs: string;
+    originChannelId?: string;
+    originThreadTs?: string;
+    jiraIssueKey?: string;
+    createdByUserId: string;
+    repo?: string;
+    githubPrNumber?: number;
+    githubPrUrl?: string;
+    githubPrBaseBranch?: string;
+    githubPrHeadBranch?: string;
+    githubPrHeadSha?: string;
     initialState?: Extract<WorkItemRecord["state"], "backlog" | "auto_review">;
     initialSubstate?: string;
     flags?: string[];
@@ -354,8 +481,12 @@ export class WorkItemService {
       originChannelId: input.originChannelId,
       originThreadTs: input.originThreadTs,
       jiraIssueKey: input.jiraIssueKey,
+      repo: input.repo,
       githubPrNumber: input.githubPrNumber,
       githubPrUrl: input.githubPrUrl,
+      githubPrBaseBranch: input.githubPrBaseBranch,
+      githubPrHeadBranch: input.githubPrHeadBranch,
+      githubPrHeadSha: input.githubPrHeadSha,
       createdByUserId: input.createdByUserId,
       flags: input.flags ?? [],
     });
@@ -406,7 +537,7 @@ export class WorkItemService {
     });
 
     const updated = await this.workItems.updateState(workItem.id, {
-      state: input.state,
+      state: this.assertOverrideTransitionAllowed(workItem, input.state),
       substate: input.substate,
     });
     await this.events.append({
@@ -422,6 +553,9 @@ export class WorkItemService {
         ...actorAuditFields(actor),
       },
     });
+
+    await this.handleReadyForMerge(updated);
+
     return updated;
   }
 
@@ -489,8 +623,33 @@ export class WorkItemService {
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
     return workItem;
   }
+
+  private assertOverrideTransitionAllowed(workItem: WorkItemRecord, nextState: WorkItemRecord["state"]): WorkItemRecord["state"] {
+    assertStateTransitionAllowed(workItem, nextState);
+    return nextState;
+  }
+
+  private async handleReadyForMerge(workItem: WorkItemRecord): Promise<void> {
+    if (!this.readyForMergeHandler || workItem.workflow !== "feature_delivery" || workItem.state !== "ready_for_merge") {
+      return;
+    }
+
+    await this.readyForMergeHandler(workItem);
+  }
+
+  private rewriteDeliveryCreationConflict(error: unknown, workItemId: string, jiraIssueKey: string): Error {
+    if (!isUniqueConstraintError(error)) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+
+    return error instanceof Error ? error : new Error(String(error));
+  }
 }
 
 function isActivelyProcessingStatus(status: string): boolean {
   return ["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"].includes(status);
+}
+
+function isUniqueConstraintError(error: unknown): error is Error & { code: string; constraint_name?: string } {
+  return error instanceof Error && "code" in error && (error as { code?: string }).code === "23505";
 }

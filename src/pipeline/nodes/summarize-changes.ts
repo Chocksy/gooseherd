@@ -3,6 +3,7 @@ import type { ContextBag } from "../context-bag.js";
 import { callLLM, type LLMCallerConfig } from "../../llm/caller.js";
 import { runShellCapture, appendLog } from "../shell.js";
 import { logInfo } from "../../logger.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 const SUMMARIZE_SYSTEM = `You are a technical writer summarizing code changes for a QA engineer who will verify them in a browser.
 
@@ -58,7 +59,7 @@ export async function summarizeChangesNode(
 
   // Truncate diff to avoid token blow-up (keep first ~4000 chars)
   const diff = diffResult.stdout.slice(0, 4000);
-  const changedFiles = ctx.get<string[]>("changedFiles") ?? [];
+  const changedFiles = filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []);
 
   const userMessage = [
     `Original task:\n${run.task}`,

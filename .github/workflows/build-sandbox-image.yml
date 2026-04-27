@@ -1,0 +1,39 @@
+name: Build Sandbox Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - sandbox/**
+      - .github/workflows/build-sandbox-image.yml
+
+env:
+  AWS_REGION: us-east-1
+  ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/sandbox
+
+jobs:
+  build-and-push:
+    runs-on: [self-hosted, linux, x64, medium]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push sandbox image
+        uses: docker/build-push-action@v7
+        with:
+          context: sandbox
+          file: sandbox/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_IMAGE }}:latest
+            ${{ env.ECR_IMAGE }}:${{ github.sha }}

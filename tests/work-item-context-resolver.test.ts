@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { eq } from "drizzle-orm";
 import { createTestDb } from "./helpers/test-db.js";
 import { teamMembers, teams, users } from "../src/db/schema.js";
 import { WorkItemContextResolver } from "../src/work-items/context-resolver.js";
@@ -67,6 +68,27 @@ test("context resolver requires explicit owner team when actor can access multip
     originChannelId: "C_RANDOM",
     originThreadTs: "1740000000.301",
   }), /owner team/i);
+});
+
+test("context resolver prefers the user's primary team when multiple memberships exist", async (t) => {
+  const { db, cleanup, resolver, pmUserId, growthTeamId, platformTeamId } = await createResolverFixture();
+  t.after(cleanup);
+
+  await db.insert(teamMembers).values([
+    { teamId: growthTeamId, userId: pmUserId, functionalRoles: ["pm"] },
+    { teamId: platformTeamId, userId: pmUserId, functionalRoles: ["pm"] },
+  ]);
+  await db.update(users).set({ primaryTeamId: growthTeamId }).where(eq(users.id, pmUserId));
+
+  const resolved = await resolver.resolveDiscoveryContext({
+    createdByUserId: pmUserId,
+    originChannelId: "C_RANDOM",
+    originThreadTs: "1740000000.301",
+    createHomeThread: async () => "1740000001.001",
+  });
+
+  assert.equal(resolved.ownerTeamId, growthTeamId);
+  assert.equal(resolved.homeChannelId, "C_GROWTH");
 });
 
 test("context resolver creates a new home thread when origin channel differs from team channel", async (t) => {

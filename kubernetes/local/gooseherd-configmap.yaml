@@ -8,6 +8,7 @@ data:
   DASHBOARD_PORT: "8787"
   WORK_ROOT: /app/.work
   DATA_DIR: /app/data
+  AUTO_REVIEW_DEBUG_LOG_MODE: failures
   SANDBOX_RUNTIME: kubernetes
   KUBERNETES_NAMESPACE: gooseherd
   KUBERNETES_RUNNER_IMAGE: gooseherd/k8s-runner:dev

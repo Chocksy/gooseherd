@@ -1,11 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { RunnerCompletionPayload, RunnerEventPayload } from "./control-plane-types.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { RunnerCompletionPayload, RunnerEventPayload, RunnerTokenUsagePayload } from "./control-plane-types.js";
 import { ControlPlaneConflictError, type ControlPlaneStore } from "./control-plane-store.js";
 import { authenticateRunnerRequest } from "./control-plane-auth.js";
 import type { ArtifactStore } from "./artifact-store.js";
+import type { RunStore } from "../store.js";
 import { isRecord } from "../utils/type-guards.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_ARTIFACT_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.statusCode = status;
@@ -13,7 +17,7 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
-async function readBody(req: IncomingMessage): Promise<string | null> {
+async function readBodyBuffer(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Buffer | null> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
@@ -21,7 +25,7 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
 
     req.on("data", (chunk: Buffer) => {
       totalBytes += chunk.length;
-      if (totalBytes > MAX_BODY_BYTES) {
+      if (totalBytes > maxBytes) {
         req.destroy();
         if (!resolved) {
           resolved = true;
@@ -35,7 +39,7 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
     req.on("end", () => {
       if (!resolved) {
         resolved = true;
-        resolve(Buffer.concat(chunks).toString("utf8"));
+        resolve(Buffer.concat(chunks));
       }
     });
 
@@ -48,14 +52,28 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
   });
 }
 
-type ControlPlaneAction = "payload" | "artifacts" | "cancellation" | "events" | "complete";
+async function readBody(req: IncomingMessage): Promise<string | null> {
+  const body = await readBodyBuffer(req, MAX_BODY_BYTES);
+  return body === null ? null : body.toString("utf8");
+}
 
-function parseRoute(pathname: string): { runId: string; action: ControlPlaneAction } | undefined {
-  const match = /^\/internal\/runs\/([^/]+)\/(payload|artifacts|cancellation|events|complete)$/.exec(pathname);
-  if (!match) return undefined;
+type ControlPlaneAction = "payload" | "artifacts" | "artifact_upload" | "cancellation" | "events" | "complete" | "token_usage";
 
+function parseRoute(pathname: string): { runId: string; action: ControlPlaneAction; artifactKey?: string } | undefined {
   try {
-    return { runId: decodeURIComponent(match[1] ?? ""), action: match[2] as ControlPlaneAction };
+    const artifactMatch = /^\/internal\/runs\/([^/]+)\/artifacts\/(.+)$/.exec(pathname);
+    if (artifactMatch) {
+      return {
+        runId: decodeURIComponent(artifactMatch[1] ?? ""),
+        action: "artifact_upload",
+        artifactKey: decodeURIComponent(artifactMatch[2] ?? ""),
+      };
+    }
+
+    const match = /^\/internal\/runs\/([^/]+)\/(payload|artifacts|cancellation|events|complete|token-usage)$/.exec(pathname);
+    if (!match) return undefined;
+    const action = match[2] === "token-usage" ? "token_usage" : match[2];
+    return { runId: decodeURIComponent(match[1] ?? ""), action: action as ControlPlaneAction };
   } catch {
     return undefined;
   }
@@ -79,17 +97,28 @@ function validateRunnerCompletionPayload(value: unknown): value is RunnerComplet
   return true;
 }
 
+function validateRunnerTokenUsagePayload(value: unknown): value is RunnerTokenUsagePayload {
+  if (!isRecord(value)) return false;
+  if (typeof value.model !== "string" || value.model.trim() === "") return false;
+  if (typeof value.input !== "number" || value.input < 0) return false;
+  if (typeof value.output !== "number" || value.output < 0) return false;
+  if (value.source !== undefined && value.source !== "quality_gate" && value.source !== "agent") return false;
+  if (value.costUsd !== undefined && (typeof value.costUsd !== "number" || value.costUsd < 0)) return false;
+  return true;
+}
+
 export async function routeControlPlaneRequest(
   req: IncomingMessage,
   res: ServerResponse,
   pathname: string,
   controlPlaneStore: ControlPlaneStore,
   artifactStore: ArtifactStore,
+  runStore?: Pick<RunStore, "addTokenUsage">,
 ): Promise<boolean> {
   const route = parseRoute(pathname);
   if (!route) return false;
 
-  const { runId, action } = route;
+  const { runId, action, artifactKey } = route;
   const authed = await authenticateRunnerRequest(req, controlPlaneStore, runId);
   if (!authed) {
     sendJson(res, 401, { error: "Unauthorized" });
@@ -116,12 +145,44 @@ export async function routeControlPlaneRequest(
     return true;
   }
 
+  if ((req.method === "POST" || req.method === "PUT") && action === "artifact_upload") {
+    if (!artifactKey || artifactKey.includes("\\") || artifactKey.includes("..") || artifactKey.startsWith(".") || artifactKey.startsWith("/")) {
+      sendJson(res, 400, { error: "Invalid artifact key" });
+      return true;
+    }
+
+    const artifact = await controlPlaneStore.getArtifact(runId, artifactKey);
+    const artifactPath = typeof artifact?.metadata?.path === "string"
+      ? artifact.metadata.path
+      : undefined;
+    if (!artifact || !artifactPath) {
+      sendJson(res, 404, { error: "Artifact target not found" });
+      return true;
+    }
+
+    const body = await readBodyBuffer(req, MAX_ARTIFACT_UPLOAD_BYTES);
+    if (body === null) {
+      sendJson(res, 413, { error: "Artifact body too large" });
+      return true;
+    }
+
+    await mkdir(path.dirname(artifactPath), { recursive: true });
+    await writeFile(artifactPath, body);
+    await controlPlaneStore.markArtifactUploaded(runId, artifactKey, {
+      sizeBytes: body.length,
+      contentType: typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream",
+      uploadedAt: new Date().toISOString(),
+    });
+    sendJson(res, 202, { accepted: true });
+    return true;
+  }
+
   if (req.method === "GET" && action === "cancellation") {
     sendJson(res, 200, await controlPlaneStore.getCancellationState(runId));
     return true;
   }
 
-  if (req.method === "POST" && (action === "events" || action === "complete")) {
+  if (req.method === "POST" && (action === "events" || action === "complete" || action === "token_usage")) {
     const rawBody = await readBody(req);
     if (rawBody === null) {
       sendJson(res, 413, { error: "Request body too large" });
@@ -142,6 +203,20 @@ export async function routeControlPlaneRequest(
         return true;
       }
       await controlPlaneStore.appendEvent(runId, parsedBody);
+      sendJson(res, 202, { accepted: true });
+      return true;
+    }
+
+    if (action === "token_usage") {
+      if (!runStore) {
+        sendJson(res, 501, { error: "Token usage recording is unavailable" });
+        return true;
+      }
+      if (!validateRunnerTokenUsagePayload(parsedBody)) {
+        sendJson(res, 422, { error: "Invalid token usage payload" });
+        return true;
+      }
+      await runStore.addTokenUsage(runId, parsedBody);
       sendJson(res, 202, { accepted: true });
       return true;
     }

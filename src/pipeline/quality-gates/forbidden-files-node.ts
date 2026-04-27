@@ -3,6 +3,7 @@ import type { ContextBag } from "../context-bag.js";
 import { checkForbiddenFiles } from "./forbidden-files.js";
 import { runShellCapture, appendLog } from "../shell.js";
 import { appendGateReport } from "./gate-report.js";
+import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
 
 /**
  * Forbidden files gate node: check changed files against deny/guarded patterns.
@@ -32,11 +33,13 @@ export async function forbiddenFilesNode(
     .map(f => f.trim())
     .filter(f => f.length > 0);
 
-  if (changedFiles.length === 0) {
+  const userChangedFiles = filterInternalGeneratedFiles(changedFiles);
+
+  if (userChangedFiles.length === 0) {
     return { outcome: "success" };
   }
 
-  const gateResult = checkForbiddenFiles(changedFiles, taskText);
+  const gateResult = checkForbiddenFiles(userChangedFiles, taskText);
 
   await appendLog(logFile, `\n[gate:forbidden_files] verdict=${gateResult.verdict} denied=${String(gateResult.deniedFiles.length)} guarded=${String(gateResult.guardedFiles.length)} lockfile=${String(gateResult.lockfileViolations.length)}\n`);
 

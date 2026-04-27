@@ -39,15 +39,22 @@ interface KubernetesResourceClientDeps {
 
 function isNotFoundError(error: unknown): boolean {
   if (!(error instanceof Error)) {
-    const statusCode = (error as { statusCode?: number; body?: { code?: number }; response?: { statusCode?: number } })?.statusCode
-      ?? (error as { body?: { code?: number } })?.body?.code
+    const statusCode = (error as { statusCode?: number; code?: number; body?: { code?: number } | string; response?: { statusCode?: number } })?.statusCode
+      ?? (error as { code?: number })?.code
+      ?? (typeof (error as { body?: { code?: number } | string })?.body === "object"
+        ? ((error as { body?: { code?: number } | string }).body as { code?: number } | undefined)?.code
+        : undefined)
       ?? (error as { response?: { statusCode?: number } })?.response?.statusCode;
     return statusCode === 404;
   }
 
-  const withStatus = error as Error & { statusCode?: number; body?: { code?: number }; response?: { statusCode?: number } };
+  const withStatus = error as Error & { statusCode?: number; code?: number; body?: { code?: number } | string; response?: { statusCode?: number } };
+  const bodyCode = typeof withStatus.body === "object" && withStatus.body !== null
+    ? withStatus.body.code
+    : undefined;
   return withStatus.statusCode === 404
-    || withStatus.body?.code === 404
+    || withStatus.code === 404
+    || bodyCode === 404
     || withStatus.response?.statusCode === 404;
 }
 

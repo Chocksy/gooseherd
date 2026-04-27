@@ -32,7 +32,9 @@ function adminSessionActor(sessionId = "admin-session-1") {
   };
 }
 
-async function createServiceFixture() {
+async function createServiceFixture(options: {
+  readyForMergeHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
+} = {}) {
   const testDb = await createTestDb();
   const pmUserId = randomUUID();
   const reviewerUserId = randomUUID();
@@ -65,7 +67,9 @@ async function createServiceFixture() {
   return {
     db: testDb.db,
     cleanup: testDb.cleanup,
-    service: new WorkItemService(testDb.db),
+    service: new WorkItemService(testDb.db, {
+      readyForMergeHandler: options.readyForMergeHandler,
+    }),
     pmUserId,
     reviewerUserId,
     outsiderUserId,
@@ -356,6 +360,168 @@ test("service only allows owner-team PM to request review and confirm discovery 
   assert.equal(updated.state, "in_progress");
 });
 
+test("service blocks manual discovery actions outside the allowed workflow states", async (t) => {
+  const { cleanup, service, pmUserId, reviewerUserId, ownerTeamId } = await createServiceFixture();
+  t.after(cleanup);
+
+  const discovery = await service.createDiscoveryWorkItem({
+    title: "Workflow guards",
+    summary: "Manual transitions should respect discovery policy",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.371",
+    createdByUserId: pmUserId,
+  });
+
+  await assert.rejects(() => service.requestReview({
+    workItemId: discovery.id,
+    actor: systemUserActor(pmUserId),
+    requests: [
+      {
+        type: "review",
+        targetType: "user",
+        targetRef: { userId: reviewerUserId },
+        title: "Too early",
+      },
+    ],
+  }), /in_progress/i);
+
+  await service.startDiscovery(discovery.id);
+  const [review] = await service.requestReview({
+    workItemId: discovery.id,
+    actor: systemUserActor(pmUserId),
+    requests: [
+      {
+        type: "review",
+        targetType: "user",
+        targetRef: { userId: reviewerUserId },
+        title: "Round 1",
+      },
+    ],
+  });
+
+  await assert.rejects(() => service.confirmDiscovery({
+    workItemId: discovery.id,
+    approved: false,
+    actor: systemUserActor(pmUserId),
+  }), /waiting_for_pm_confirmation/i);
+
+  await service.recordReviewOutcome({
+    reviewRequestId: review.id,
+    actor: systemUserActor(reviewerUserId),
+    outcome: "approved",
+  });
+
+  await assert.rejects(() => service.requestReview({
+    workItemId: discovery.id,
+    actor: systemUserActor(pmUserId),
+    requests: [
+      {
+        type: "review",
+        targetType: "user",
+        targetRef: { userId: reviewerUserId },
+        title: "Too late",
+      },
+    ],
+  }), /in_progress/i);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Delivery item",
+    summary: "Manual discovery flow must stay workflow-specific",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.372",
+    jiraIssueKey: "HBL-372",
+    createdByUserId: pmUserId,
+  });
+
+  await assert.rejects(() => service.requestReview({
+    workItemId: delivery.id,
+    actor: systemUserActor(pmUserId),
+    requests: [
+      {
+        type: "review",
+        targetType: "user",
+        targetRef: { userId: reviewerUserId },
+        title: "Wrong workflow",
+      },
+    ],
+  }), /product_discovery/i);
+
+  await assert.rejects(() => service.confirmDiscovery({
+    workItemId: delivery.id,
+    approved: true,
+    actor: systemUserActor(pmUserId),
+    jiraIssueKey: "HBL-373",
+  }), /product_discovery/i);
+});
+
+test("service rejects confirmation when a delivery already exists for the same source work item", async (t) => {
+  const { db, cleanup, service, pmUserId, reviewerUserId, ownerTeamId } = await createServiceFixture();
+  t.after(cleanup);
+
+  const discovery = await service.createDiscoveryWorkItem({
+    title: "Atomic confirm",
+    summary: "Discovery should not be partially updated",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.373",
+    createdByUserId: pmUserId,
+  });
+  await service.startDiscovery(discovery.id);
+  const [review] = await service.requestReview({
+    workItemId: discovery.id,
+    actor: systemUserActor(pmUserId),
+    requests: [
+      {
+        type: "review",
+        targetType: "user",
+        targetRef: { userId: reviewerUserId },
+        title: "Atomicity check",
+      },
+    ],
+  });
+  await service.recordReviewOutcome({
+    reviewRequestId: review.id,
+    actor: systemUserActor(reviewerUserId),
+    outcome: "approved",
+  });
+
+  await db.insert(workItems).values({
+    id: randomUUID(),
+    workflow: "feature_delivery",
+    state: "backlog",
+    title: "Existing Jira delivery",
+    summary: "Uses the same source work item",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.374",
+    sourceWorkItemId: discovery.id,
+    jiraIssueKey: "HBL-374",
+    createdByUserId: pmUserId,
+    flags: [],
+    repo: null,
+    githubPrNumber: null,
+    githubPrUrl: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  await assert.rejects(() => service.confirmDiscovery({
+    workItemId: discovery.id,
+    approved: true,
+    actor: systemUserActor(pmUserId),
+    jiraIssueKey: "HBL-374",
+  }), /already exists/i);
+
+  const storedDiscovery = await service.getWorkItem(discovery.id);
+  assert.equal(storedDiscovery?.state, "waiting_for_pm_confirmation");
+  assert.equal(storedDiscovery?.jiraIssueKey, undefined);
+
+  const deliveryRows = await db.select().from(workItems).where(eq(workItems.sourceWorkItemId, discovery.id));
+  assert.equal(deliveryRows.length, 1);
+});
+
 test("service stop processing requires manual transition authority, while override requires explicit admin override", async (t) => {
   const { db, cleanup, service, pmUserId, reviewerUserId, adminUserId, ownerTeamId } = await createServiceFixture();
   t.after(cleanup);
@@ -423,6 +589,83 @@ test("service stop processing requires manual transition authority, while overri
     reason: "Admin override",
   });
   assert.equal(overridden.state, "cancelled");
+});
+
+test("service guarded override only allows whitelisted transitions within the current workflow", async (t) => {
+  const { cleanup, service, pmUserId, adminUserId, ownerTeamId } = await createServiceFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Override whitelist",
+    summary: "Guarded override should stay within workflow policy",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.405",
+    jiraIssueKey: "HBL-405",
+    createdByUserId: pmUserId,
+  });
+
+  await assert.rejects(() => service.guardedOverrideState({
+    workItemId: delivery.id,
+    state: "waiting_for_pm_confirmation",
+    actor: systemUserActor(adminUserId),
+    reason: "Cross-workflow jump",
+  }), /feature_delivery/i);
+
+  await assert.rejects(() => service.guardedOverrideState({
+    workItemId: delivery.id,
+    state: "ready_for_merge",
+    actor: systemUserActor(adminUserId),
+    reason: "Skip the workflow",
+  }), /transition/i);
+
+  const cancelled = await service.guardedOverrideState({
+    workItemId: delivery.id,
+    state: "cancelled",
+    actor: systemUserActor(adminUserId),
+    reason: "Explicit cancellation is still allowed",
+  });
+  assert.equal(cancelled.state, "cancelled");
+});
+
+test("service guarded override triggers ready_for_merge actions when entering ready_for_merge", async (t) => {
+  const calls: Array<{ id: string; state: string }> = [];
+  const { db, cleanup, service, pmUserId, adminUserId, ownerTeamId } = await createServiceFixture({
+    readyForMergeHandler: async (workItem) => {
+      calls.push({ id: workItem.id, state: workItem.state });
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Manual merge-ready override",
+    summary: "Admin explicitly marks this ready for merge",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.406",
+    jiraIssueKey: "HBL-406",
+    createdByUserId: pmUserId,
+  });
+
+  await db
+    .update(workItems)
+    .set({
+      state: "qa_review",
+      substate: "waiting_qa_review",
+      flags: ["pr_opened", "self_review_done", "engineering_review_done"],
+      updatedAt: new Date(),
+    })
+    .where(eq(workItems.id, delivery.id));
+
+  const overridden = await service.guardedOverrideState({
+    workItemId: delivery.id,
+    state: "ready_for_merge",
+    actor: systemUserActor(adminUserId),
+    reason: "Admin marks the current QA-approved PR as merge-ready",
+  });
+
+  assert.equal(overridden.state, "ready_for_merge");
+  assert.deepEqual(calls, [{ id: delivery.id, state: "ready_for_merge" }]);
 });
 
 test("service records actor principal metadata in work item events", async (t) => {
@@ -529,6 +772,45 @@ test("admin_session may override but cannot confirm discovery as a normal partic
   assert.equal(overrideRequested.payload.actorSessionId, "admin-override");
 });
 
+test("run store can create a queued run already linked to a work item", async (t) => {
+  const { db, service, cleanup, pmUserId, ownerTeamId } = await createServiceFixture();
+  t.after(cleanup);
+
+  const workItem = await service.createDeliveryFromJira({
+    title: "Adopt run chain",
+    summary: "Attach ad-hoc run",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.400",
+    jiraIssueKey: "HBL-303",
+    createdByUserId: pmUserId,
+  });
+
+  const runStore = new RunStore(db);
+  const run = await runStore.createRun(
+    {
+      runtime: "local",
+      repoSlug: "hubstaff/gooseherd",
+      task: "Fix specs",
+      baseBranch: "main",
+      requestedBy: "U_PM",
+      channelId: "C_GROWTH",
+      threadTs: "1740000000.400",
+      workItemId: workItem.id,
+    },
+    "gooseherd"
+  );
+
+  const storedRun = await runStore.getRun(run.id);
+  assert.equal(storedRun?.workItemId, workItem.id);
+  assert.equal(storedRun?.status, "queued");
+
+  const linkedRuns = await runStore.listRunsForWorkItem(workItem.id);
+  assert.equal(linkedRuns.length, 1);
+  assert.equal(linkedRuns[0]?.id, run.id);
+  assert.equal(linkedRuns[0]?.workItemId, workItem.id);
+});
+
 test("service can attach an existing run to a work item", async (t) => {
   const { db, service, cleanup, pmUserId, ownerTeamId } = await createServiceFixture();
   t.after(cleanup);
@@ -565,6 +847,12 @@ test("service can attach an existing run to a work item", async (t) => {
 
   const storedRun = await runStore.getRun(run.id);
   assert.equal(storedRun?.workItemId, workItem.id);
+
+  const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem.id));
+  const attachedEvent = events.find((event) => event.eventType === "run.attached");
+  assert.ok(attachedEvent);
+  assert.equal(attachedEvent?.payload.runId, run.id);
+  assert.equal(attachedEvent?.actorUserId, pmUserId);
 });
 
 test("service stops active processing before guarded override", async (t) => {

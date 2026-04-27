@@ -66,6 +66,10 @@ async function waitForRunDone(store: RunStore, runId: string, timeoutMs = 15000)
   throw new Error(`waitForRunDone: run ${runId} did not reach terminal status within ${timeoutMs}ms`);
 }
 
+async function waitForManagerIdle(manager: RunManager): Promise<void> {
+  await ((manager as unknown) as { queue: { onIdle: () => Promise<void> } }).queue.onIdle();
+}
+
 async function setupTestStore(): Promise<{ store: RunStore; testDb: TestDb }> {
   const testDb = await createTestDb();
   const store = new RunStore(testDb.db);
@@ -129,6 +133,7 @@ test("enqueueRun uses config sandboxRuntime for new runs", async () => {
   const run = await manager.enqueueRun(baseInput);
   assert.equal(run.runtime, "docker");
   await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
   await testDb.cleanup();
 });
 
@@ -156,6 +161,7 @@ test("processRun dispatches to runtime-matched backend", async () => {
   await waitForRunDone(store, run.id);
   assert.equal(localBackendCalls.length, 1);
   assert.equal(dockerBackendCalls.length, 0);
+  await waitForManagerIdle(manager);
   await testDb.cleanup();
 });
 
@@ -201,6 +207,180 @@ test("processRun passes resolved pipelineFile to backend execution", async () =>
 
   await waitForRunDone(store, run.id);
   assert.match(receivedPipelineFile ?? "", new RegExp(`${run.id}/pipeline-runtime-test\\.yml$`));
+  await waitForManagerIdle(manager);
+  await testDb.cleanup();
+});
+
+test("processRun resolves work-item pipeline from intent instead of legacy pipelineHint", async () => {
+  const { store, testDb } = await setupTestStore();
+  const config = makeConfig({ pipelineFile: "pipelines/default.yml" } as Partial<AppConfig>);
+  let receivedPipelineFile: string | undefined;
+  const runtimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run, ctx) => {
+        receivedPipelineFile = ctx.pipelineFile;
+        return {
+          branchName: run.branchName,
+          logsPath: `/tmp/${run.id}.log`,
+          commitSha: "abc123",
+          changedFiles: [],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+  const manager = new RunManager(config, store, runtimeRegistry, undefined);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "repair CI",
+    baseBranch: "main",
+    requestedBy: "work-item:ci-fix",
+    channelId: "C1",
+    threadTs: "1",
+    pipelineHint: "wrong-pipeline",
+    workItemId: "11111111-1111-1111-1111-111111111111",
+    prUrl: "https://github.com/org/repo/pull/3",
+    prNumber: 3,
+    intent: {
+      version: 1,
+      kind: "feature_delivery.repair_ci",
+      source: "work_item",
+      workItemId: "11111111-1111-1111-1111-111111111111",
+      repo: "org/repo",
+      prNumber: 3,
+      prUrl: "https://github.com/org/repo/pull/3",
+      sourceSubstate: "ci_failed",
+    },
+  });
+
+  await waitForRunDone(store, run.id);
+  assert.match(receivedPipelineFile ?? "", /pipelines\/ci-fix\.yml$/);
+  await waitForManagerIdle(manager);
+  await testDb.cleanup();
+});
+
+test("processRun dispatches feature-delivery review pipelines from intent kind", async () => {
+  const cases = [
+    {
+      task: "self review",
+      requestedBy: "work-item:auto-review",
+      expectedPipelineFile: /pipelines\/feature-delivery-self-review\.yml$/,
+      intent: {
+        version: 1,
+        kind: "feature_delivery.self_review",
+        source: "work_item",
+        workItemId: "11111111-1111-1111-1111-111111111111",
+        repo: "org/repo",
+        prNumber: 3,
+        prUrl: "https://github.com/org/repo/pull/3",
+        sourceSubstate: "pr_adopted",
+      },
+    },
+    {
+      task: "apply review feedback",
+      requestedBy: "work-item:auto-review",
+      expectedPipelineFile: /pipelines\/feature-delivery-review-feedback\.yml$/,
+      intent: {
+        version: 1,
+        kind: "feature_delivery.apply_review_feedback",
+        source: "work_item",
+        workItemId: "22222222-2222-2222-2222-222222222222",
+        repo: "org/repo",
+        prNumber: 4,
+        prUrl: "https://github.com/org/repo/pull/4",
+        sourceSubstate: "applying_review_feedback",
+      },
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    const { store, testDb } = await setupTestStore();
+    const config = makeConfig({ pipelineFile: "pipelines/default.yml" } as Partial<AppConfig>);
+    let receivedPipelineFile: string | undefined;
+    const runtimeRegistry = {
+      local: {
+        runtime: "local",
+        execute: async (run, ctx) => {
+          receivedPipelineFile = ctx.pipelineFile;
+          return {
+            branchName: run.branchName,
+            logsPath: `/tmp/${run.id}.log`,
+            commitSha: "abc123",
+            changedFiles: [],
+          } satisfies ExecutionResult;
+        },
+      },
+      docker: undefined,
+      kubernetes: undefined,
+    };
+    const manager = new RunManager(config, store, runtimeRegistry, undefined);
+
+    const run = await manager.enqueueRun({
+      repoSlug: "org/repo",
+      task: testCase.task,
+      baseBranch: "main",
+      requestedBy: testCase.requestedBy,
+      channelId: "C1",
+      threadTs: "1",
+      pipelineHint: "pipeline",
+      workItemId: testCase.intent.workItemId,
+      prUrl: testCase.intent.prUrl,
+      prNumber: testCase.intent.prNumber,
+      intent: testCase.intent,
+    });
+
+    await waitForRunDone(store, run.id);
+    assert.match(receivedPipelineFile ?? "", testCase.expectedPipelineFile);
+    await waitForManagerIdle(manager);
+    await testDb.cleanup();
+  }
+});
+
+test("processRun keeps generic pipeline dispatch on legacy pipelineHint", async () => {
+  const { store, testDb } = await setupTestStore();
+  const config = makeConfig({ pipelineFile: "pipelines/default.yml" } as Partial<AppConfig>);
+  let receivedPipelineFile: string | undefined;
+  const runtimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run, ctx) => {
+        receivedPipelineFile = ctx.pipelineFile;
+        return {
+          branchName: run.branchName,
+          logsPath: `/tmp/${run.id}.log`,
+          commitSha: "abc123",
+          changedFiles: [],
+        } satisfies ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+  const manager = new RunManager(config, store, runtimeRegistry, undefined);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "generic task",
+    baseBranch: "main",
+    requestedBy: "manual:dashboard",
+    channelId: "C1",
+    threadTs: "1",
+    pipelineHint: "pipeline",
+    intent: {
+      version: 1,
+      kind: "generic_task",
+      source: "dashboard",
+      requestedBy: "manual:dashboard",
+      pipelineHint: "pipeline",
+    },
+  });
+
+  await waitForRunDone(store, run.id);
+  assert.match(receivedPipelineFile ?? "", /pipelines\/pipeline\.yml$/);
+  await waitForManagerIdle(manager);
   await testDb.cleanup();
 });
 
@@ -230,5 +410,6 @@ test("requeueExistingRun dispatches using persisted runtime instead of config de
   await waitForRunDone(store, run.id);
   assert.equal(localBackendCalls.length, 1);
   assert.equal(dockerBackendCalls.length, 0);
+  await waitForManagerIdle(manager);
   await testDb.cleanup();
 });

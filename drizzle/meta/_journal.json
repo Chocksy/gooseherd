@@ -78,6 +78,76 @@
       "when": 1779150000000,
       "tag": "0010_remove_legacy_setup_storage",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1779200000000,
+      "tag": "0011_feature_delivery_source_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1779300000000,
+      "tag": "0012_remove_config_section_override_from_env",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0013_feature_delivery_pr_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1779403600000,
+      "tag": "0014_work_item_pr_branches",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1779407200000,
+      "tag": "0015_run_prefetch_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1779489600000,
+      "tag": "0016_run_internal_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1779493200000,
+      "tag": "0017_work_item_pr_head_sha",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1779496800000,
+      "tag": "0018_run_intent",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1779500400000,
+      "tag": "0019_model_prices",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1779504000000,
+      "tag": "0020_run_checkpoints",
+      "breakpoints": true
     }
   ]
 }

@@ -1,12 +1,58 @@
 import { randomUUID } from "node:crypto";
-import { eq, desc, and, sql, inArray, ne } from "drizzle-orm";
-import type { NewRunInput, RunFeedback, RunRecord, RunStatus } from "./types.js";
+import { eq, desc, and, sql, inArray, ne, getTableColumns } from "drizzle-orm";
+import type { NewRunInput, RunFeedback, RunRecord, RunStatus, TokenUsage, TokenUsageIncrement } from "./types.js";
 import type { Database } from "./db/index.js";
-import { runs } from "./db/schema.js";
+import { modelPrices, runs, workItems } from "./db/schema.js";
+import { deriveRunIntentFromLegacy, isRunIntent } from "./runs/run-intent.js";
+import { MODEL_PRICES } from "./llm/model-prices.js";
 
 type RunRow = typeof runs.$inferSelect;
+type RunQueryRow = RunRow & {
+  linkedPrUrl: string | null;
+  linkedPrNumber: number | null;
+};
+const runColumns = getTableColumns(runs);
+const RECONCILABLE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "awaiting_ci",
+  "ci_fixing",
+  "cancel_requested",
+];
+const FAILABLE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "ci_fixing",
+];
+const RECOVERABLE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "ci_fixing",
+];
 
-function rowToRecord(row: RunRow): RunRecord {
+function rowToRecord(row: RunQueryRow): RunRecord {
+  const prUrl = row.prUrl ?? row.linkedPrUrl ?? undefined;
+  const prNumber = row.prNumber ?? row.linkedPrNumber ?? undefined;
+  const intent = isRunIntent(row.intent)
+    ? row.intent
+    : deriveRunIntentFromLegacy({
+        requestedBy: row.requestedBy,
+        pipelineHint: row.pipelineHint ?? undefined,
+        workItemId: row.workItemId ?? undefined,
+        autoReviewSourceSubstate: row.autoReviewSourceSubstate ?? undefined,
+        repoSlug: row.repoSlug,
+        prNumber,
+        prUrl,
+        skipNodes: row.skipNodes ?? undefined,
+        enableNodes: row.enableNodes ?? undefined,
+      });
+
   return {
     id: row.id,
     runtime: row.runtime as RunRecord["runtime"],
@@ -26,7 +72,8 @@ function rowToRecord(row: RunRow): RunRecord {
     statusMessageTs: row.statusMessageTs ?? undefined,
     commitSha: row.commitSha ?? undefined,
     changedFiles: row.changedFiles ?? undefined,
-    prUrl: row.prUrl ?? undefined,
+    internalArtifacts: row.internalArtifacts ?? undefined,
+    prUrl,
     feedback: row.feedback as RunFeedback | undefined,
     error: row.error ?? undefined,
     parentRunId: row.parentRunId ?? undefined,
@@ -39,12 +86,85 @@ function rowToRecord(row: RunRow): RunRecord {
     enableNodes: row.enableNodes ?? undefined,
     ciFixAttempts: row.ciFixAttempts ?? undefined,
     ciConclusion: row.ciConclusion ?? undefined,
-    prNumber: row.prNumber ?? undefined,
+    prNumber,
     title: row.title ?? undefined,
     tokenUsage: row.tokenUsage as RunRecord["tokenUsage"],
     teamId: row.teamId ?? undefined,
     workItemId: row.workItemId ?? undefined,
+    prefetchContext: (row.prefetchContext ?? undefined) as RunRecord["prefetchContext"],
+    autoReviewSourceSubstate: row.autoReviewSourceSubstate ?? undefined,
+    intent,
+    intentKind: intent.kind,
   };
+}
+
+function roundCost(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+type ResolvedModelPrice =
+  | { status: "priced"; inputPerM: number; outputPerM: number }
+  | { status: "missing" };
+
+function computeEntryCost(entry: TokenUsageIncrement, price: ResolvedModelPrice): number | undefined {
+  if (entry.costUsd !== undefined) return entry.costUsd;
+  if (price.status === "missing") return undefined;
+  return (entry.input / 1_000_000) * price.inputPerM + (entry.output / 1_000_000) * price.outputPerM;
+}
+
+function mergeTokenUsage(current: TokenUsage, entry: TokenUsageIncrement, price: ResolvedModelPrice): TokenUsage {
+  const source = entry.source ?? "quality_gate";
+  const byModel = [...(current.byModel ?? [])].map(modelUsage => ({ ...modelUsage }));
+  const existing = byModel.find(modelUsage => modelUsage.model === entry.model);
+  const entryCost = computeEntryCost(entry, price);
+  const missingPriceModels = new Set(current.missingPriceModels ?? []);
+
+  if (existing) {
+    existing.input += entry.input;
+    existing.output += entry.output;
+    if (entryCost !== undefined && (entryCost > 0 || existing.costUsd !== undefined)) {
+      existing.costUsd = roundCost((existing.costUsd ?? 0) + entryCost);
+    }
+  } else {
+    byModel.push({
+      model: entry.model,
+      input: entry.input,
+      output: entry.output,
+      ...(entryCost !== undefined && entryCost > 0 ? { costUsd: roundCost(entryCost) } : {})
+    });
+  }
+
+  if (entry.costUsd === undefined && price.status === "missing") {
+    missingPriceModels.add(entry.model);
+  } else if (price.status === "priced" || entry.costUsd !== undefined) {
+    missingPriceModels.delete(entry.model);
+  }
+
+  const next: TokenUsage = {
+    ...current,
+    qualityGateInputTokens: current.qualityGateInputTokens ?? 0,
+    qualityGateOutputTokens: current.qualityGateOutputTokens ?? 0,
+    byModel,
+    ...(entryCost !== undefined ? { costUsd: roundCost((current.costUsd ?? 0) + entryCost) } : {}),
+  };
+
+  if (missingPriceModels.size > 0) {
+    next.missingPriceModels = [...missingPriceModels].sort((a, b) => a.localeCompare(b));
+    next.costIncomplete = true;
+  } else {
+    delete next.missingPriceModels;
+    delete next.costIncomplete;
+  }
+
+  if (source === "agent") {
+    next.agentInputTokens = (current.agentInputTokens ?? 0) + entry.input;
+    next.agentOutputTokens = (current.agentOutputTokens ?? 0) + entry.output;
+  } else {
+    next.qualityGateInputTokens += entry.input;
+    next.qualityGateOutputTokens += entry.output;
+  }
+
+  return next;
 }
 
 export class RunStore {
@@ -56,6 +176,17 @@ export class RunStore {
 
   async init(): Promise<void> {
     // No-op — migrations handle schema
+  }
+
+  private selectRunRows() {
+    return this.db
+      .select({
+        ...runColumns,
+        linkedPrUrl: workItems.githubPrUrl,
+        linkedPrNumber: workItems.githubPrNumber,
+      })
+      .from(runs)
+      .leftJoin(workItems, eq(runs.workItemId, workItems.id));
   }
 
   async createRun(
@@ -81,6 +212,10 @@ export class RunStore {
       }
     }
 
+    const intent = isRunIntent(input.intent)
+      ? input.intent
+      : deriveRunIntentFromLegacy(input);
+
     await this.db.insert(runs).values({
       id,
       runtime: input.runtime,
@@ -94,6 +229,9 @@ export class RunStore {
       channelId: input.channelId,
       threadTs: input.threadTs,
       createdAt: new Date(),
+      prUrl: input.prUrl,
+      prNumber: input.prNumber,
+      workItemId: input.workItemId,
       parentRunId: input.parentRunId,
       rootRunId,
       chainIndex,
@@ -103,13 +241,17 @@ export class RunStore {
       skipNodes: input.skipNodes,
       enableNodes: input.enableNodes,
       teamId: input.teamId,
+      prefetchContext: input.prefetchContext,
+      autoReviewSourceSubstate: input.autoReviewSourceSubstate,
+      intent,
+      intentKind: intent.kind,
     });
 
     return (await this.getRun(id))!;
   }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
-    const rows = await this.db.select().from(runs).where(eq(runs.id, id));
+    const rows = await this.selectRunRows().where(eq(runs.id, id));
     return rows[0] ? rowToRecord(rows[0]) : undefined;
   }
 
@@ -122,9 +264,7 @@ export class RunStore {
       conditions.push(eq(runs.teamId, opts.teamId));
     }
 
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(runs.createdAt))
       .limit(limit);
@@ -133,9 +273,7 @@ export class RunStore {
   }
 
   async getLatestRunForThread(channelId: string, threadTs: string): Promise<RunRecord | undefined> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(and(eq(runs.channelId, channelId), eq(runs.threadTs, threadTs)))
       .orderBy(desc(runs.createdAt))
       .limit(1);
@@ -143,18 +281,14 @@ export class RunStore {
   }
 
   async getRunChain(channelId: string, threadTs: string): Promise<RunRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(and(eq(runs.channelId, channelId), eq(runs.threadTs, threadTs)))
       .orderBy(runs.createdAt);
     return rows.map(rowToRecord);
   }
 
   async listRunsForWorkItem(workItemId: string): Promise<RunRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(eq(runs.workItemId, workItemId))
       .orderBy(desc(runs.createdAt));
     return rows.map(rowToRecord);
@@ -162,9 +296,7 @@ export class RunStore {
 
   async getRecentRuns(repoSlug?: string, limit = 10): Promise<RunRecord[]> {
     const conditions = repoSlug ? eq(runs.repoSlug, repoSlug) : undefined;
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(conditions)
       .orderBy(desc(runs.createdAt))
       .limit(limit);
@@ -172,9 +304,7 @@ export class RunStore {
   }
 
   async getLatestRunForChannel(channelId: string): Promise<RunRecord | undefined> {
-    const rows = await this.db
-      .select()
-      .from(runs)
+    const rows = await this.selectRunRows()
       .where(eq(runs.channelId, channelId))
       .orderBy(desc(runs.createdAt))
       .limit(1);
@@ -188,15 +318,13 @@ export class RunStore {
     // Full UUID → exact match
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     if (UUID_RE.test(normalized)) {
-      const exact = await this.db.select().from(runs).where(eq(runs.id, normalized));
+      const exact = await this.selectRunRows().where(eq(runs.id, normalized));
       if (exact[0]) return rowToRecord(exact[0]);
       return undefined;
     }
 
     // Short ID → prefix match (cast uuid to text for LIKE)
-    const prefixRows = await this.db
-      .select()
-      .from(runs)
+    const prefixRows = await this.selectRunRows()
       .where(sql`${runs.id}::text LIKE ${normalized + "%"}`)
       .limit(2);
     if (prefixRows.length === 1) return rowToRecord(prefixRows[0]!);
@@ -221,7 +349,9 @@ export class RunStore {
         | "statusMessageTs"
         | "commitSha"
         | "changedFiles"
+        | "internalArtifacts"
         | "prUrl"
+        | "prNumber"
         | "feedback"
         | "error"
         | "parentRunId"
@@ -232,10 +362,14 @@ export class RunStore {
         | "tokenUsage"
         | "title"
         | "workItemId"
+        | "prefetchContext"
+        | "autoReviewSourceSubstate"
       >
     >
   ): Promise<RunRecord> {
     const dbUpdate: Record<string, unknown> = {};
+    const has = <K extends keyof typeof update>(key: K): boolean =>
+      Object.prototype.hasOwnProperty.call(update, key);
 
     if (update.status !== undefined) dbUpdate.status = update.status;
     if (update.phase !== undefined) dbUpdate.phase = update.phase;
@@ -245,7 +379,9 @@ export class RunStore {
     if (update.statusMessageTs !== undefined) dbUpdate.statusMessageTs = update.statusMessageTs;
     if (update.commitSha !== undefined) dbUpdate.commitSha = update.commitSha;
     if (update.changedFiles !== undefined) dbUpdate.changedFiles = update.changedFiles;
+    if (update.internalArtifacts !== undefined) dbUpdate.internalArtifacts = update.internalArtifacts;
     if (update.prUrl !== undefined) dbUpdate.prUrl = update.prUrl;
+    if (update.prNumber !== undefined) dbUpdate.prNumber = update.prNumber;
     if (update.feedback !== undefined) dbUpdate.feedback = update.feedback;
     if (update.error !== undefined) dbUpdate.error = update.error;
     if (update.parentRunId !== undefined) dbUpdate.parentRunId = update.parentRunId;
@@ -255,7 +391,9 @@ export class RunStore {
     if (update.feedbackNote !== undefined) dbUpdate.feedbackNote = update.feedbackNote;
     if (update.tokenUsage !== undefined) dbUpdate.tokenUsage = update.tokenUsage;
     if (update.title !== undefined) dbUpdate.title = update.title;
-    if (update.workItemId !== undefined) dbUpdate.workItemId = update.workItemId;
+    if (has("workItemId")) dbUpdate.workItemId = update.workItemId ?? null;
+    if (has("prefetchContext")) dbUpdate.prefetchContext = update.prefetchContext ?? null;
+    if (has("autoReviewSourceSubstate")) dbUpdate.autoReviewSourceSubstate = update.autoReviewSourceSubstate ?? null;
 
     await this.db.update(runs).set(dbUpdate).where(eq(runs.id, id));
     const result = await this.getRun(id);
@@ -263,12 +401,67 @@ export class RunStore {
     return result;
   }
 
+  async addTokenUsage(id: string, entry: TokenUsageIncrement): Promise<RunRecord> {
+    const run = await this.getRun(id);
+    if (!run) throw new Error(`Run not found: ${id}`);
+
+    const current = run.tokenUsage ?? {
+      qualityGateInputTokens: 0,
+      qualityGateOutputTokens: 0
+    };
+    const price = await this.resolveModelPrice(id, entry.model);
+    const next = mergeTokenUsage(current, entry, price);
+    return this.updateRun(id, { tokenUsage: next });
+  }
+
+  private async resolveModelPrice(runId: string, model: string): Promise<ResolvedModelPrice> {
+    const now = new Date();
+    const rows = await this.db.select().from(modelPrices).where(eq(modelPrices.model, model)).limit(1);
+    const row = rows[0];
+    if (row) {
+      await this.db.update(modelPrices).set({ lastSeenAt: now }).where(eq(modelPrices.model, model));
+      if (row.inputPerM !== null && row.outputPerM !== null) {
+        return {
+          status: "priced",
+          inputPerM: Number(row.inputPerM),
+          outputPerM: Number(row.outputPerM)
+        };
+      }
+      return { status: "missing" };
+    }
+
+    const fallback = MODEL_PRICES[model];
+    if (fallback) {
+      await this.db.insert(modelPrices).values({
+        model,
+        inputPerM: String(fallback.inputPerM),
+        outputPerM: String(fallback.outputPerM),
+        source: "fallback",
+        firstSeenRunId: runId,
+        lastSeenAt: now,
+        updatedAt: now,
+      }).onConflictDoNothing();
+      return { status: "priced", inputPerM: fallback.inputPerM, outputPerM: fallback.outputPerM };
+    }
+
+    await this.db.insert(modelPrices).values({
+      model,
+      source: "observed",
+      firstSeenRunId: runId,
+      lastSeenAt: now,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: modelPrices.model,
+      set: { lastSeenAt: now }
+    });
+    return { status: "missing" };
+  }
+
   async linkToWorkItem(runId: string, workItemId: string): Promise<RunRecord> {
     return this.updateRun(runId, { workItemId });
   }
 
   async failInProgressRuns(reason: string): Promise<number> {
-    const inProgressStatuses = ["queued", "running", "validating", "pushing"];
     const affected = await this.db
       .update(runs)
       .set({
@@ -277,34 +470,20 @@ export class RunStore {
         finishedAt: new Date(),
         error: reason,
       })
-      .where(inArray(runs.status, inProgressStatuses))
+      .where(inArray(runs.status, FAILABLE_RUN_STATUSES))
       .returning({ id: runs.id });
 
     return affected.length;
   }
 
   async getInProgressRuns(): Promise<RunRecord[]> {
-    const inProgressStatuses = ["queued", "running", "validating", "pushing", "cancel_requested"];
-    const rows = await this.db
-      .select()
-      .from(runs)
-      .where(inArray(runs.status, inProgressStatuses));
+    const rows = await this.selectRunRows()
+      .where(inArray(runs.status, RECONCILABLE_RUN_STATUSES));
     return rows.map(rowToRecord);
   }
 
   async recoverInProgressRuns(reason: string): Promise<RunRecord[]> {
-    const inProgressStatuses = ["queued", "running", "validating", "pushing"];
     const affected = await this.db
-      .select()
-      .from(runs)
-      .where(and(
-        inArray(runs.status, inProgressStatuses),
-        ne(runs.runtime, "kubernetes"),
-      ));
-
-    if (affected.length === 0) return [];
-
-    await this.db
       .update(runs)
       .set({
         status: "queued",
@@ -314,13 +493,15 @@ export class RunStore {
         error: reason,
       })
       .where(and(
-        inArray(runs.status, inProgressStatuses),
+        inArray(runs.status, RECOVERABLE_RUN_STATUSES),
         ne(runs.runtime, "kubernetes"),
-      ));
+      ))
+      .returning({ id: runs.id });
 
-    // Re-fetch after update
     const ids = affected.map((r) => r.id);
-    const rows = await this.db.select().from(runs).where(inArray(runs.id, ids));
+    if (ids.length === 0) return [];
+
+    const rows = await this.selectRunRows().where(inArray(runs.id, ids));
     return rows.map(rowToRecord);
   }
 
@@ -371,7 +552,7 @@ function shortRunId(id: string): string {
 export function mapPhaseToRunStatus(phase: string): RunStatus {
   if (phase === "validating") return "validating";
   if (phase === "pushing") return "pushing";
-  if (phase === "awaiting_ci") return "awaiting_ci";
-  if (phase === "ci_fixing") return "ci_fixing";
+  if (phase === "awaiting_ci") return "running";
+  if (phase === "ci_fixing") return "running";
   return "running";
 }

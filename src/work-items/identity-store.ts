@@ -5,6 +5,9 @@ import { orgRoleAssignments, teamMembers, teams, users } from "../db/schema.js";
 export interface IdentityUserRecord {
   id: string;
   slackUserId?: string;
+  githubLogin?: string;
+  jiraAccountId?: string;
+  primaryTeamId?: string;
   displayName: string;
   isActive: boolean;
 }
@@ -13,10 +16,26 @@ export interface IdentityTeamRecord {
   id: string;
   name: string;
   slackChannelId: string;
+  isDefault: boolean;
 }
 
 export class WorkItemIdentityStore {
   constructor(private readonly db: Database) {}
+
+  async getUserByGitHubLogin(githubLogin: string): Promise<IdentityUserRecord | undefined> {
+    const rows = await this.db.select().from(users).where(eq(users.githubLogin, githubLogin)).limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      slackUserId: row.slackUserId ?? undefined,
+      githubLogin: row.githubLogin ?? undefined,
+      jiraAccountId: row.jiraAccountId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
+      displayName: row.displayName,
+      isActive: row.isActive,
+    };
+  }
 
   async getUser(id: string): Promise<IdentityUserRecord | undefined> {
     const rows = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
@@ -25,6 +44,9 @@ export class WorkItemIdentityStore {
     return {
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      githubLogin: row.githubLogin ?? undefined,
+      jiraAccountId: row.jiraAccountId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     };
@@ -37,6 +59,9 @@ export class WorkItemIdentityStore {
     return {
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      githubLogin: row.githubLogin ?? undefined,
+      jiraAccountId: row.jiraAccountId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     };
@@ -49,6 +74,9 @@ export class WorkItemIdentityStore {
     return {
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      githubLogin: row.githubLogin ?? undefined,
+      jiraAccountId: row.jiraAccountId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     };
@@ -62,7 +90,53 @@ export class WorkItemIdentityStore {
       id: row.id,
       name: row.name,
       slackChannelId: row.slackChannelId,
+      isDefault: row.isDefault,
     };
+  }
+
+  async getDefaultTeam(): Promise<IdentityTeamRecord | undefined> {
+    const rows = await this.db.select().from(teams).where(eq(teams.isDefault, true)).limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      name: row.name,
+      slackChannelId: row.slackChannelId,
+      isDefault: row.isDefault,
+    };
+  }
+
+  async getPrimaryTeamForUser(userId: string): Promise<IdentityTeamRecord | undefined> {
+    const user = await this.getUser(userId);
+    if (!user?.primaryTeamId) return undefined;
+    return this.getTeam(user.primaryTeamId);
+  }
+
+  async ensureUserTeamMembership(
+    userId: string,
+    teamId: string,
+    membershipSource: string,
+    createIfMissing = false
+  ): Promise<void> {
+    const rows = await this.db
+      .select()
+      .from(teamMembers)
+      .where(and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)))
+      .limit(1);
+    if (rows.length > 0) {
+      return;
+    }
+
+    if (!createIfMissing) {
+      throw new Error(`User ${userId} must already be a member of team ${teamId} before setting ${membershipSource}`);
+    }
+
+    await this.db.insert(teamMembers).values({
+      teamId,
+      userId,
+      functionalRoles: [],
+      membershipSource,
+    });
   }
 
   async listTeamsForUser(userId: string): Promise<IdentityTeamRecord[]> {
@@ -74,6 +148,7 @@ export class WorkItemIdentityStore {
       id: row.id,
       name: row.name,
       slackChannelId: row.slackChannelId,
+      isDefault: row.isDefault,
     }));
   }
 
@@ -139,6 +214,9 @@ export class WorkItemIdentityStore {
     return rows.map((row) => ({
       id: row.id,
       slackUserId: row.slackUserId ?? undefined,
+      githubLogin: row.githubLogin ?? undefined,
+      jiraAccountId: row.jiraAccountId ?? undefined,
+      primaryTeamId: row.primaryTeamId ?? undefined,
       displayName: row.displayName,
       isActive: row.isActive,
     }));

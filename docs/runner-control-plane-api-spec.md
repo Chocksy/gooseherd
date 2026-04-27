@@ -127,6 +127,7 @@ Required v1 event types:
 - `run.started`
 - `run.progress`
 - `run.phase_changed`
+- `run.checkpoint`
 - `run.warning`
 - `run.artifact_status`
 - `run.cancellation_observed`
@@ -140,7 +141,8 @@ Ordering rule:
 - de-duplication must not collapse distinct events that share `eventType` but have different `eventId` or `sequence`
 
 `run.progress` is a progress update event.
-`run.phase_changed` is a lifecycle transition event.
+`run.phase_changed` is a technical lifecycle transition event.
+`run.checkpoint` is a persisted lifecycle milestone event consumed by the control plane. It is distinct from status/phase updates: for example, when `wait_ci` starts external CI waiting, the runner emits `run.checkpoint` with `checkpointType=run.waiting_external_ci` and `checkpointKey=external_ci_wait_started`. Gooseherd stores checkpoints idempotently and may use them to advance WorkItem automation state.
 
 ## Cancellation Endpoint
 

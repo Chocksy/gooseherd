@@ -11,14 +11,13 @@ data
 .github
 .research
 .claude
+.helm
 *.log
 *.md
 tests
 documentation
-findings.md
-progress.md
-task_plan.md
 docker-compose.override.yml
 website
 Makefile
 logs
+commitlint.config.mjs

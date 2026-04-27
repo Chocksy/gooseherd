@@ -113,6 +113,36 @@ test("resource client returns null for missing jobs and deletes pods via label s
   );
 });
 
+test("resource client returns null for ApiException-style missing jobs with code 404 and string body", async () => {
+  const missing = Object.assign(new Error("HTTP-Code: 404"), {
+    code: 404,
+    body: "{\"kind\":\"Status\",\"code\":404,\"reason\":\"NotFound\"}\n",
+    headers: {},
+  });
+
+  const client = new KubernetesResourceClient({
+    batchApi: {
+      createNamespacedJob: async () => ({}),
+      readNamespacedJob: async () => {
+        throw missing;
+      },
+      deleteNamespacedJob: async () => undefined,
+    } satisfies KubernetesBatchApi,
+    coreApi: {
+      createNamespacedSecret: async () => ({}),
+      listNamespacedPod: async () => ({ items: [] }),
+      deleteCollectionNamespacedPod: async () => undefined,
+      deleteNamespacedSecret: async () => undefined,
+    } satisfies KubernetesCoreApi,
+    podLogReader: {
+      readNamespacedPodLog: async () => "",
+    } satisfies KubernetesPodLogReader,
+  });
+
+  const job = await client.readJob("gooseherd-smoke-run-1", "gooseherd");
+  assert.equal(job, null);
+});
+
 test("resource client lists pods for a job and reads logs from the first pod", async () => {
   const calls: Array<{ method: string; param: Record<string, unknown> }> = [];
 

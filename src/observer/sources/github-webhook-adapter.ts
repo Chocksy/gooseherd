@@ -4,7 +4,6 @@
  *
  * Handles:
  * - check_suite completed with failure → CI failure trigger
- * - pull_request_review submitted with changes_requested → review trigger
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -56,8 +55,6 @@ export function parseGitHubWebhook(
   switch (eventType) {
     case "check_suite":
       return parseCheckSuite(payload, deliveryId);
-    case "pull_request_review":
-      return parsePullRequestReview(payload, deliveryId);
     default:
       return null;
   }
@@ -101,50 +98,6 @@ function parseCheckSuite(
   };
 }
 
-function parsePullRequestReview(
-  payload: Record<string, unknown>,
-  deliveryId: string
-): TriggerEvent | null {
-  const action = payload["action"] as string | undefined;
-  const review = payload["review"] as Record<string, unknown> | undefined;
-  const pr = payload["pull_request"] as Record<string, unknown> | undefined;
-  const repo = payload["repository"] as Record<string, unknown> | undefined;
-
-  if (action !== "submitted" || !review || !pr || !repo) return null;
-
-  const state = review["state"] as string | undefined;
-  if (state !== "changes_requested") return null;
-
-  const repoFullName = repo["full_name"] as string | undefined;
-  const prNumber = pr["number"] as number | undefined;
-  const prTitle = pr["title"] as string | undefined;
-  const baseBranch = (pr["base"] as Record<string, unknown> | undefined)?.["ref"] as string | undefined;
-  const reviewBody = review["body"] as string | undefined;
-  const reviewId = review["id"] as number | undefined;
-  const reviewer = (review["user"] as Record<string, unknown> | undefined)?.["login"] as string | undefined;
-
-  return {
-    id: `gh-review-${deliveryId}`,
-    source: "github_webhook",
-    timestamp: new Date().toISOString(),
-    repoSlug: repoFullName,
-    baseBranch,
-    suggestedTask: buildReviewTask(prTitle, prNumber, reviewer, reviewBody),
-    priority: "medium" as TriggerPriority,
-    rawPayload: {
-      eventType: "pull_request_review",
-      repo: repoFullName,
-      prNumber: prNumber ? String(prNumber) : undefined,
-      reviewId: reviewId ? String(reviewId) : undefined,
-      prTitle,
-      reviewer,
-      reviewBody,
-      state
-    },
-    notificationTarget: { type: "slack" }
-  };
-}
-
 function buildCheckSuiteTask(
   repo: string | undefined,
   branch: string | undefined,
@@ -156,22 +109,5 @@ function buildCheckSuiteTask(
   if (branch) lines.push(`Branch: ${branch}`);
   lines.push(`Conclusion: ${conclusion}`);
   if (app) lines.push(`CI System: ${app}`);
-  return lines.join("\n");
-}
-
-function buildReviewTask(
-  prTitle: string | undefined,
-  prNumber: number | undefined,
-  reviewer: string | undefined,
-  reviewBody: string | undefined
-): string {
-  const lines: string[] = [];
-  lines.push(`Address PR review feedback`);
-  if (prTitle) lines.push(`PR: #${String(prNumber ?? "")} ${prTitle}`);
-  if (reviewer) lines.push(`Reviewer: @${reviewer}`);
-  if (reviewBody) {
-    const trimmed = reviewBody.length > 500 ? `${reviewBody.slice(0, 497)}...` : reviewBody;
-    lines.push("", "Feedback:", trimmed);
-  }
   return lines.join("\n");
 }

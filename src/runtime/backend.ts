@@ -1,9 +1,13 @@
 import type { ExecutionResult, RunRecord } from "../types.js";
+import type { TokenUsageIncrement } from "../types.js";
 import type { PipelinePhase } from "../pipeline/pipeline-engine.js";
+import type { EmitRunCheckpointInput } from "../runs/run-checkpoint-store.js";
 
 export interface RunExecutionContext {
   onPhase: (phase: PipelinePhase) => Promise<void>;
+  onCheckpoint?: (checkpoint: Omit<EmitRunCheckpointInput, "runId">) => Promise<void>;
   onDetail?: (detail: string) => Promise<void>;
+  recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>;
   abortSignal?: AbortSignal;
   pipelineFile?: string;
 }

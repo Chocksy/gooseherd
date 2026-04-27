@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   aggregateConclusions,
+  excludeCheckRuns,
   filterCheckRuns,
   mapAnnotations,
   truncateLog,
@@ -108,6 +109,16 @@ test("filterCheckRuns: filters by name (case-insensitive)", () => {
   assert.ok(filtered.some(r => r.name === "Rubocop Lint"));
 });
 
+test("excludeCheckRuns: ignores matching runs by name (case-insensitive contains)", () => {
+  const runs: CICheckRun[] = [
+    { id: 1, name: "build-and-test", status: "completed", conclusion: "success" },
+    { id: 2, name: "PR Checker", status: "completed", conclusion: "failure" },
+    { id: 3, name: "commitlint", status: "completed", conclusion: "success" }
+  ];
+  const filtered = excludeCheckRuns(runs, ["pr checker"]);
+  assert.deepEqual(filtered.map(r => r.name), ["build-and-test", "commitlint"]);
+});
+
 // ── mapAnnotations ──
 
 test("mapAnnotations: converts GitHub format to CIAnnotation", () => {
@@ -162,10 +173,24 @@ test("buildCIFixPrompt: includes changed files", () => {
   assert.ok(prompt.includes("Your Changed Files"));
 });
 
+test("buildCIFixPrompt: filters internal-generated files from changed files", () => {
+  const prompt = buildCIFixPrompt([], "", ["AGENTS.md", "src/app.ts"]);
+  assert.ok(prompt.includes("src/app.ts"));
+  assert.ok(!prompt.includes("AGENTS.md"));
+});
+
 test("buildCIFixPrompt: includes fix instructions", () => {
   const prompt = buildCIFixPrompt([], "", []);
   assert.ok(prompt.includes("Fix only the CI failures"));
   assert.ok(prompt.includes("Do not refactor unrelated code"));
+  assert.match(prompt, /existing PR branch/i);
+  assert.match(prompt, /do not create .* new branch/i);
+  assert.match(prompt, /do not create .* new PR/i);
+});
+
+test("buildCIFixPrompt: includes current run id when provided", () => {
+  const prompt = buildCIFixPrompt([], "", [], [], "445ad8a6-33c3-45c6-badf-429ec98c4a51");
+  assert.match(prompt, /Current Gooseherd run id: `445ad8a6-33c3-45c6-badf-429ec98c4a51`/);
 });
 
 // ── shouldAbortFixLoop ──

@@ -1,0 +1,41 @@
+version: 1
+name: "ci-fix"
+description: "Standalone CI-fix pipeline for work-item launched CI recovery"
+
+context:
+  max_ci_fix_rounds: 1
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: setup_sandbox
+    type: deterministic
+    action: setup_sandbox
+    if: "config.sandboxEnabled"
+
+  - id: classify_task
+    type: deterministic
+    action: classify_task
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: fix_ci
+    type: agentic
+    action: fix_ci
+
+  - id: wait_ci
+    type: async
+    action: wait_ci
+    on_failure:
+      action: loop
+      agent_node: fix_ci
+      max_rounds: 1
+      on_exhausted: fail_run
+
+  - id: notify
+    type: deterministic
+    action: notify

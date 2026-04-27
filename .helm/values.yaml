@@ -1,0 +1,49 @@
+gooseherd:
+  strategyType: "Recreate"
+  envFrom:
+    configs:
+      - gooseherd-config
+    secrets:
+      - gooseherd-env
+  serviceAccount:
+    name: "gooseherd"
+    automount: true
+  ports:
+    http:
+      containerPort: 8787
+      servicePort: 8787
+    webhook:
+      containerPort: 9090
+      servicePort: 9090
+  ingress:
+    external:
+      domains:
+        - gooseherd.hbstf.co
+      annotations:
+        cert-manager.io/cluster-issuer: "letsencrypt-internal-dns"
+        nginx.org/proxy-read-timeout: "30s"
+  probes:
+    path: "/healthz"
+    port: "http"
+    initialDelaySeconds: 10
+  securityContext:
+    pod:
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  persistence:
+    - name: "gooseherd-work"
+      size: "20Gi"
+      mountPath: "/app/work"
+    - name: "gooseherd-data"
+      size: "5Gi"
+      mountPath: "/app/data"
+  rbac:
+    create: true

@@ -5,6 +5,7 @@ import {
   nextDiscoveryStateAfterPmConfirmation,
 } from "../src/work-items/product-discovery-policy.js";
 import {
+  advanceFeatureDeliveryStateAfterAutoReview,
   nextFeatureDeliveryStateAfterAutoReview,
   nextFeatureDeliveryStateAfterEngineeringReview,
   nextFeatureDeliveryStateAfterQaPreparation,
@@ -101,6 +102,38 @@ test("feature delivery moves from auto_review to engineering_review when gates a
   );
 });
 
+test("feature delivery revalidation returns to ready_for_merge when sticky QA approval already exists", () => {
+  assert.equal(
+    advanceFeatureDeliveryStateAfterAutoReview({
+      ciGreen: true,
+      selfReviewDone: true,
+      hasActiveAutoFixes: false,
+      engineeringReviewDone: true,
+      productReviewDone: false,
+      qaReviewDone: true,
+      productReviewRequired: false,
+      skipProductReview: false,
+    }),
+    "ready_for_merge"
+  );
+});
+
+test("feature delivery revalidation returns to qa_preparation when only engineering approval is sticky", () => {
+  assert.equal(
+    advanceFeatureDeliveryStateAfterAutoReview({
+      ciGreen: true,
+      selfReviewDone: true,
+      hasActiveAutoFixes: false,
+      engineeringReviewDone: true,
+      productReviewDone: false,
+      qaReviewDone: false,
+      productReviewRequired: false,
+      skipProductReview: false,
+    }),
+    "qa_preparation"
+  );
+});
+
 test("feature delivery stays in auto_review when gates are not ready", () => {
   assert.equal(
     nextFeatureDeliveryStateAfterAutoReview({ ciGreen: false, selfReviewDone: true, hasActiveAutoFixes: false }),
@@ -119,6 +152,17 @@ test("feature delivery advances to qa_preparation when engineering review is app
 test("feature delivery routes qa preparation based on product review requirement", () => {
   assert.equal(nextFeatureDeliveryStateAfterQaPreparation({ productReviewRequired: true, qaPrepFoundIssue: false }), "product_review");
   assert.equal(nextFeatureDeliveryStateAfterQaPreparation({ productReviewRequired: false, qaPrepFoundIssue: false }), "qa_review");
+});
+
+test("feature delivery can skip product review after qa preparation", () => {
+  assert.equal(
+    nextFeatureDeliveryStateAfterQaPreparation({
+      productReviewRequired: true,
+      qaPrepFoundIssue: false,
+      skipProductReview: true,
+    }),
+    "qa_review"
+  );
 });
 
 test("feature delivery returns to auto_review when qa preparation finds an issue", () => {

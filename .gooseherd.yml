@@ -1,0 +1,7 @@
+quality_gates:
+  ci:
+    ignore_checks:
+      - PR Checker
+      - assign-author
+      - jira-sync
+      - kodiakhq: status

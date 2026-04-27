@@ -43,6 +43,21 @@ test("local postgres manifest defines deployment and service in the gooseherd na
   assert.equal(requireObject(service.metadata).namespace, "gooseherd");
 });
 
+test("local gooseherd work manifest defines a pvc in the gooseherd namespace", async () => {
+  const [claim] = await loadYaml("kubernetes/local/gooseherd-work-pvc.yaml");
+  const manifest = requireObject(claim);
+  const spec = requireObject(manifest.spec);
+  const resources = requireObject(spec.resources);
+  const requests = requireObject(resources.requests);
+
+  assert.equal(manifest.kind, "PersistentVolumeClaim");
+  assert.equal(requireObject(manifest.metadata).name, "gooseherd-work");
+  assert.equal(requireObject(manifest.metadata).namespace, "gooseherd");
+  assert.equal(Array.isArray(spec.accessModes), true);
+  assert.equal((spec.accessModes as Array<unknown>).includes("ReadWriteOnce"), true);
+  assert.equal(requests.storage, "10Gi");
+});
+
 test("local gooseherd configmap forces kubernetes runtime with cluster DNS callback URL", async () => {
   const [configMap] = await loadYaml("kubernetes/local/gooseherd-configmap.yaml");
   const manifest = requireObject(configMap);
@@ -130,6 +145,24 @@ test("local gooseherd deployment mounts work/data volumes and uses config plus s
   const volumeMounts = container.volumeMounts as Array<Record<string, unknown>>;
   assert.equal(volumeMounts.some((mount) => mount.mountPath === "/app/.work"), true);
   assert.equal(volumeMounts.some((mount) => mount.mountPath === "/app/data"), true);
+
+  const volumes = template.volumes as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    volumes.find((volume) => volume.name === "work"),
+    {
+      name: "work",
+      persistentVolumeClaim: {
+        claimName: "gooseherd-work",
+      },
+    },
+  );
+  assert.deepEqual(
+    volumes.find((volume) => volume.name === "data"),
+    {
+      name: "data",
+      emptyDir: {},
+    },
+  );
 });
 
 test("local manifests include a restrictive runner NetworkPolicy", async () => {

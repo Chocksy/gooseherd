@@ -189,6 +189,28 @@ export function dashboardHtml(config: AppConfig): string {
       margin-right: 2px;
       white-space: nowrap;
     }
+    .repo-filter {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .repo-filter .material-symbols-rounded {
+      color: var(--muted);
+      font-size: 17px;
+      flex-shrink: 0;
+    }
+    .repo-filter select {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 28px 6px 9px;
+      font-size: 12px;
+      font-family: var(--font-ui);
+      max-width: 230px;
+      min-width: 170px;
+    }
     .material-symbols-rounded {
       font-variation-settings:
         "FILL" 0,
@@ -1775,6 +1797,12 @@ export function dashboardHtml(config: AppConfig): string {
       </div>
       <div class="top-controls">
         <div class="top-meta" id="top-meta">0 runs</div>
+        <label class="repo-filter" for="repo-filter" title="Repository filter">
+          <span class="material-symbols-rounded">source</span>
+          <select id="repo-filter">
+            <option value="all">All repositories</option>
+          </select>
+        </label>
         <div class="view-switch" id="view-switch">
           <button class="view-btn active" data-view="runs">Runs</button>
           <button class="view-btn" data-view="board">Board</button>
@@ -2215,6 +2243,8 @@ export function dashboardHtml(config: AppConfig): string {
       themePreference: 'system',
       viewMode: 'runs',
       boardWorkflow: 'feature_delivery',
+      selectedRepository: 'all',
+      repositoryOptions: [],
     };
 
     var logStreamState = { runId: null, offset: 0 };
@@ -2236,6 +2266,7 @@ export function dashboardHtml(config: AppConfig): string {
       appRoot: document.getElementById('app-root'),
       meta: document.getElementById('meta'),
       topMeta: document.getElementById('top-meta'),
+      repoFilter: document.getElementById('repo-filter'),
       sidebarTitle: document.getElementById('sidebar-title'),
       runs: document.getElementById('runs'),
       viewSwitch: document.getElementById('view-switch'),
@@ -2532,6 +2563,56 @@ export function dashboardHtml(config: AppConfig): string {
         return;
       }
       setLinkState(el.reportBtn, 'https://github.com/' + run.repoSlug + '/issues/new');
+    }
+
+    function selectedRepository() {
+      return state.selectedRepository && state.selectedRepository !== 'all' ? state.selectedRepository : '';
+    }
+
+    function matchesRepositoryFilter(record) {
+      var repo = record ? (record.repoSlug || record.repo || '') : '';
+      var selected = selectedRepository();
+      return !selected || repo === selected;
+    }
+
+    function repositoryFilterQueryParam() {
+      var selected = selectedRepository();
+      return selected ? '&repo=' + encodeURIComponent(selected) : '';
+    }
+
+    function rememberRepositoryOptions(records) {
+      var seen = {};
+      for (var i = 0; i < state.repositoryOptions.length; i++) {
+        seen[state.repositoryOptions[i]] = true;
+      }
+      for (var j = 0; j < records.length; j++) {
+        var repo = records[j] ? (records[j].repoSlug || records[j].repo || '') : '';
+        if (repo) seen[repo] = true;
+      }
+      state.repositoryOptions = Object.keys(seen).sort();
+      populateRepositoryFilter();
+    }
+
+    function populateRepositoryFilter() {
+      if (!el.repoFilter) return;
+      var current = state.selectedRepository || 'all';
+      while (el.repoFilter.options.length > 0) el.repoFilter.remove(0);
+
+      var all = document.createElement('option');
+      all.value = 'all';
+      all.textContent = 'All repositories';
+      el.repoFilter.appendChild(all);
+
+      for (var i = 0; i < state.repositoryOptions.length; i++) {
+        var repo = state.repositoryOptions[i];
+        var option = document.createElement('option');
+        option.value = repo;
+        option.textContent = repo;
+        el.repoFilter.appendChild(option);
+      }
+
+      el.repoFilter.value = current === 'all' || state.repositoryOptions.includes(current) ? current : 'all';
+      state.selectedRepository = el.repoFilter.value;
     }
 
     function normalizeThemePreference(value) {
@@ -3158,6 +3239,7 @@ export function dashboardHtml(config: AppConfig): string {
 
     function getFilteredRuns() {
       return state.runs.filter(function(run) {
+        if (!matchesRepositoryFilter(run)) return false;
         if (currentStatusFilter !== 'all') {
           if (currentStatusFilter === 'running') {
             if (run.status !== 'running' && run.status !== 'queued' && run.status !== 'validating' && run.status !== 'pushing' && run.status !== 'awaiting_ci' && run.status !== 'ci_fixing') return false;
@@ -3662,29 +3744,32 @@ export function dashboardHtml(config: AppConfig): string {
 
     async function loadRuns() {
       const [runsData, statsData] = await Promise.all([
-        fetchJson('/api/runs?limit=200'),
+        fetchJson('/api/runs?limit=200' + repositoryFilterQueryParam()),
         fetchJson('/api/stats').catch(function() { return {}; }),
       ]);
       state.runs = runsData.runs || [];
-      el.meta.textContent = state.runs.length + ' runs';
+      rememberRepositoryOptions(state.runs);
+      var filteredRuns = getFilteredRuns();
+      el.meta.textContent = filteredRuns.length + ' runs';
       if (el.topMeta) {
-        var parts = [state.runs.length + ' runs'];
+        var parts = [filteredRuns.length + ' runs'];
+        if (selectedRepository()) parts.push(selectedRepository());
         if (statsData.successRate !== undefined) parts.push(statsData.successRate + '% success');
         if (statsData.totalCostUsd > 0) parts.push('$' + statsData.totalCostUsd.toFixed(2) + ' total');
         el.topMeta.textContent = parts.join(' | ');
       }
-      if (state.selectedId && !state.runs.some((run) => run.id === state.selectedId)) {
+      if (state.selectedId && !filteredRuns.some((run) => run.id === state.selectedId)) {
         state.selectedId = null;
       }
-      if (!state.selectedId && state.runs.length > 0) {
+      if (!state.selectedId && filteredRuns.length > 0) {
         var hashTarget = currentHashTarget();
         if (hashTarget && hashTarget.type === 'run') {
           var prefix = hashTarget.prefix;
-          var match = state.runs.find(function(r) { return r.id.startsWith(prefix); });
+          var match = filteredRuns.find(function(r) { return r.id.startsWith(prefix); });
           if (match) { state.selectedId = match.id; }
-          else { state.selectedId = state.runs[0].id; }
+          else { state.selectedId = filteredRuns[0].id; }
         } else {
-          state.selectedId = state.runs[0].id;
+          state.selectedId = filteredRuns[0].id;
         }
       }
       renderRuns();
@@ -3694,7 +3779,7 @@ export function dashboardHtml(config: AppConfig): string {
       var workflow = state.boardWorkflow || 'feature_delivery';
       var data;
       try {
-        data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow));
+        data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow) + repositoryFilterQueryParam());
       } catch (error) {
         if (isWorkItemsUnavailableError(error)) {
           state.workItemsAvailable = false;
@@ -3718,6 +3803,7 @@ export function dashboardHtml(config: AppConfig): string {
 
       state.workItemsAvailable = true;
       state.workItems = Array.isArray(data.workItems) ? data.workItems : [];
+      rememberRepositoryOptions(state.workItems);
       var hashTarget = currentHashTarget();
       if (hashTarget && hashTarget.type === 'workItem') {
         var hashMatch = state.workItems.find(function(item) {
@@ -3737,10 +3823,12 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedWorkItemRuns = [];
       }
       if (el.boardMeta) {
-        el.boardMeta.textContent = state.workItems.length + ' work items';
+        el.boardMeta.textContent = state.workItems.filter(matchesRepositoryFilter).length + ' work items';
       }
       if (state.viewMode === 'board' && el.topMeta) {
-        el.topMeta.textContent = state.workItems.length + ' work items';
+        var boardParts = [state.workItems.filter(matchesRepositoryFilter).length + ' work items'];
+        if (selectedRepository()) boardParts.push(selectedRepository());
+        el.topMeta.textContent = boardParts.join(' | ');
       }
       renderBoard();
       if (state.selectedWorkItemId) {
@@ -3764,7 +3852,7 @@ export function dashboardHtml(config: AppConfig): string {
       for (var i = 0; i < columns.length; i++) {
         var columnState = columns[i];
         var items = state.workItems.filter(function(item) {
-          return item.state === columnState;
+          return item.state === columnState && matchesRepositoryFilter(item);
         });
 
         var column = document.createElement('section');
@@ -3903,7 +3991,7 @@ export function dashboardHtml(config: AppConfig): string {
       ]);
 
       state.selectedWorkItem = results[0].workItem || null;
-      state.selectedWorkItemRuns = Array.isArray(results[1].runs) ? results[1].runs : [];
+      state.selectedWorkItemRuns = (Array.isArray(results[1].runs) ? results[1].runs : []).filter(matchesRepositoryFilter);
       state.selectedWorkItemReviewRequests = Array.isArray(results[2].reviewRequests) ? results[2].reviewRequests : [];
       state.selectedWorkItemEvents = Array.isArray(results[3].events) ? results[3].events : [];
       state.selectedWorkItemReviewComments = {};
@@ -4691,6 +4779,18 @@ export function dashboardHtml(config: AppConfig): string {
         state.boardWorkflow = el.boardWorkflow.value || 'feature_delivery';
         setBoardStatusMessage('');
         loadWorkItems().catch(console.error);
+        scheduleRefresh(nextRefreshDelayMs());
+      };
+    }
+
+    if (el.repoFilter) {
+      el.repoFilter.onchange = function() {
+        state.selectedRepository = el.repoFilter.value || 'all';
+        state.selectedId = null;
+        state.selectedWorkItemId = null;
+        state.selectedWorkItem = null;
+        state.selectedWorkItemRuns = [];
+        refreshCurrentView().catch(console.error);
         scheduleRefresh(nextRefreshDelayMs());
       };
     }

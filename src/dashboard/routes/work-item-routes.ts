@@ -30,7 +30,11 @@ export async function handleWorkItemRoutes(
     }
 
     const workflow = requestUrl.searchParams.get("workflow") ?? undefined;
-    const workItems = await workItemsSource.listWorkItems(workflow || undefined);
+    const repoFilter = requestUrl.searchParams.get("repo") ?? undefined;
+    let workItems = await workItemsSource.listWorkItems(workflow || undefined);
+    if (repoFilter && repoFilter !== "all") {
+      workItems = workItems.filter((workItem) => workItem.repo === repoFilter);
+    }
     sendJson(res, 200, { workItems });
     return true;
   }

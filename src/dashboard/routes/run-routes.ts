@@ -79,7 +79,11 @@ export async function handleRunRoutes(
     const teamId = requestUrl.searchParams.get("team") ?? undefined;
     const statusFilter = requestUrl.searchParams.get("status") ?? undefined;
     const search = requestUrl.searchParams.get("search") ?? undefined;
+    const repoFilter = requestUrl.searchParams.get("repo") ?? undefined;
     let runs = await store.listRuns({ limit: 500, teamId });
+    if (repoFilter && repoFilter !== "all") {
+      runs = runs.filter((run) => run.repoSlug === repoFilter);
+    }
     if (statusFilter && statusFilter !== "all") {
       runs = runs.filter((run) => run.status === statusFilter);
     }

@@ -11,7 +11,7 @@ import {
   type FeatureDeliveryReducerPolicy,
 } from "./feature-delivery-reducer.js";
 import { WorkItemEventsStore } from "./events-store.js";
-import { logError } from "../logger.js";
+import { logError, logWarn } from "../logger.js";
 import { RunStore } from "../store.js";
 import { WorkItemService } from "./service.js";
 import { WorkItemStore } from "./store.js";
@@ -26,6 +26,8 @@ import {
 const ENGINEERING_REVIEW_PASSED_LABEL = "code review passed";
 const QA_PASSED_LABEL = "qa passed";
 const ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
+const WORK_ITEM_PR_BODY_MARKER = "<!-- gooseherd-work-item-link -->";
+const WORK_ITEM_PR_BODY_BLOCK_PATTERN = /\n*<!-- gooseherd-work-item-link -->\n## Work item\n\n\[Open work item\]\([^)]+\)/;
 
 export interface GitHubWorkItemWebhookPayload {
   eventType: "pull_request" | "pull_request_review" | "check_suite";
@@ -64,7 +66,8 @@ export interface DeliveryContextResolverResult {
 
 export interface GitHubWorkItemSyncOptions {
   adoptionLabels?: string[];
-  githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
+  dashboardPublicUrl?: string;
+  githubService?: Pick<GitHubService, "getPullRequestCiSnapshot" | "updatePullRequestBody">;
   qaPreparationHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   resetEngineeringReviewOnNewCommits?: boolean;
@@ -172,7 +175,8 @@ export class GitHubWorkItemSync {
   private readonly events: WorkItemEventsStore;
   private readonly runs: RunStore;
   private readonly adoptionLabels: string[];
-  private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
+  private readonly dashboardPublicUrl?: string;
+  private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot" | "updatePullRequestBody">;
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
   private readonly skipProductReview: boolean;
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
@@ -191,6 +195,22 @@ export class GitHubWorkItemSync {
     this.adoptionLabels = (options.adoptionLabels ?? ["ai:assist"]).map((label) => label.trim().toLowerCase()).filter(Boolean);
     this.githubService = options.githubService;
     this.qaPreparationHandler = options.qaPreparationHandler;
+    const dashboardPublicUrl = options.dashboardPublicUrl?.trim();
+    if (!dashboardPublicUrl) {
+      if (this.githubService?.updatePullRequestBody) {
+        logWarn("GitHubWorkItemSync: dashboardPublicUrl not configured; WorkItem PR-body links disabled");
+      }
+      this.dashboardPublicUrl = undefined;
+    } else if (!/^https?:\/\//i.test(dashboardPublicUrl)) {
+      if (this.githubService?.updatePullRequestBody) {
+        logWarn("GitHubWorkItemSync: unsupported dashboardPublicUrl scheme; WorkItem PR-body links disabled", {
+          dashboardPublicUrl,
+        });
+      }
+      this.dashboardPublicUrl = undefined;
+    } else {
+      this.dashboardPublicUrl = dashboardPublicUrl;
+    }
     this.readyForMergeHandler = options.readyForMergeHandler;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.skipProductReview = options.skipProductReview ?? false;
@@ -258,6 +278,8 @@ export class GitHubWorkItemSync {
       if (payload.action === "synchronize") {
         return this.handlePullRequestSynchronize(current, payload);
       }
+
+      await this.appendWorkItemLinkToPullRequestBody(current, payload);
 
       if (
         existing.state !== "cancelled" &&
@@ -329,6 +351,7 @@ export class GitHubWorkItemSync {
             labels: payload.labels ?? [],
           },
         });
+        await this.appendWorkItemLinkToPullRequestBody(updated, payload);
         await this.reconcileIfConfigured(updated.id, "github.pr_adopted");
         return updated;
       }
@@ -442,6 +465,7 @@ export class GitHubWorkItemSync {
       },
     });
 
+    await this.appendWorkItemLinkToPullRequestBody(adopted, payload);
     await this.reconcileIfConfigured(adopted.id, "github.pr_adopted");
     return adopted;
   }
@@ -687,6 +711,77 @@ export class GitHubWorkItemSync {
 
   private isAdoptionLabel(label: string | undefined): boolean {
     return typeof label === "string" && this.adoptionLabels.includes(label.trim().toLowerCase());
+  }
+
+  private shouldAppendWorkItemLink(payload: GitHubWorkItemWebhookPayload): boolean {
+    if (payload.action !== "labeled") {
+      return false;
+    }
+    if (payload.labelName !== undefined) {
+      return this.isAdoptionLabel(payload.labelName);
+    }
+    return this.hasAdoptionLabel(payload.labels);
+  }
+
+  private appendWorkItemLinkToBody(body: string | undefined, workItemId: string): string | undefined {
+    if (!this.dashboardPublicUrl) {
+      return undefined;
+    }
+    const baseUrl = this.dashboardPublicUrl.trim().replace(/\/+$/, "");
+    if (!baseUrl) {
+      return undefined;
+    }
+    const encodedId = encodeURIComponent(workItemId);
+    const block = [
+      WORK_ITEM_PR_BODY_MARKER,
+      "## Work item",
+      "",
+      `[Open work item](${baseUrl}/#work-item/${encodedId})`,
+    ].join("\n");
+    if (body?.includes(WORK_ITEM_PR_BODY_MARKER)) {
+      const existingIdMatch = body.match(/<!-- gooseherd-work-item-link -->[\s\S]*?#work-item\/([^)\s]+)/);
+      if (existingIdMatch && existingIdMatch[1] === encodedId) {
+        return undefined;
+      }
+      const blockMatch = body.match(WORK_ITEM_PR_BODY_BLOCK_PATTERN);
+      if (!blockMatch || blockMatch.index === undefined) {
+        const stripped = body.replace(/\n*<!-- gooseherd-work-item-link -->[\s\S]*$/, "").trimEnd();
+        return stripped ? `${stripped}\n\n${block}` : block;
+      }
+      const prefix = body.slice(0, blockMatch.index).trimEnd();
+      const suffix = body.slice(blockMatch.index + blockMatch[0].length).trimStart();
+      return [prefix, block, suffix].filter(Boolean).join("\n\n");
+    }
+    const currentBody = body?.trimEnd() ?? "";
+    return currentBody ? `${currentBody}\n\n${block}` : block;
+  }
+
+  private async appendWorkItemLinkToPullRequestBody(
+    workItem: WorkItemRecord,
+    payload: GitHubWorkItemWebhookPayload
+  ): Promise<void> {
+    if (!payload.repo || !payload.prNumber || !this.githubService?.updatePullRequestBody || !this.shouldAppendWorkItemLink(payload)) {
+      return;
+    }
+    const updatedBody = this.appendWorkItemLinkToBody(payload.prBody, workItem.id);
+    if (!updatedBody) {
+      return;
+    }
+    try {
+      await this.githubService.updatePullRequestBody({
+        repoSlug: payload.repo,
+        prNumber: payload.prNumber,
+        body: updatedBody,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logError("GitHub work item PR body link update failed", {
+        workItemId: workItem.id,
+        repo: payload.repo,
+        prNumber: payload.prNumber,
+        error: message,
+      });
+    }
   }
 
   private reviewFlagsFromLabels(labels: string[] | undefined): string[] {

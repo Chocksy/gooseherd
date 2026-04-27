@@ -373,6 +373,7 @@ async function createWorkItemServices(
 
     workItemGitHubSync = new workItemGitHubSyncMod.GitHubWorkItemSync(db, {
       adoptionLabels: config.workItemGithubAdoptionLabels,
+      dashboardPublicUrl: config.dashboardPublicUrl,
       githubService,
       qaPreparationHandler,
       readyForMergeHandler,

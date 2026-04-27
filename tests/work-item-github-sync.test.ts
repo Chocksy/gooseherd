@@ -37,7 +37,13 @@ async function createGitHubSyncFixture(options: {
       state: string;
       headSha?: string;
     }>;
+    updatePullRequestBody?: (params: {
+      repoSlug: string;
+      prNumber: number;
+      body: string;
+    }) => Promise<void>;
   };
+  dashboardPublicUrl?: string;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
   skipProductReview?: boolean;
@@ -85,6 +91,7 @@ async function createGitHubSyncFixture(options: {
       resetEngineeringReviewOnNewCommits: options.resetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: options.resetQaReviewOnNewCommits,
       skipProductReview: options.skipProductReview,
+      dashboardPublicUrl: options.dashboardPublicUrl,
       ...(options.githubService ? ({ githubService: options.githubService } as never) : {}),
     } as never),
   };
@@ -367,6 +374,311 @@ test("github sync adopts labeled PR into delivery work item", async (t) => {
   const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, adopted!.id));
   assert.ok(events.some((event) => event.eventType === "github.label_observed"));
   assert.ok(events.some((event) => event.eventType === "github.pr_adopted"));
+});
+
+test("github sync appends work item link to adopted PR body", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const { cleanup, sync } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "https://gooseherd.example.com/",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 7701,
+    prTitle: "Link work item from PR",
+    prBody: "Implements workflow support",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/7701",
+    labels: ["ai:assist"],
+    baseBranch: "main",
+  });
+
+  assert.ok(adopted);
+  assert.equal(bodyUpdates.length, 1);
+  assert.equal(bodyUpdates[0]?.repoSlug, "hubstaff/gooseherd");
+  assert.equal(bodyUpdates[0]?.prNumber, 7701);
+  assert.ok(bodyUpdates[0]?.body.includes("<!-- gooseherd-work-item-link -->"));
+  assert.ok(bodyUpdates[0]?.body.includes(`[Open work item](https://gooseherd.example.com/#work-item/${adopted.id})`));
+});
+
+test("github sync does not append duplicate work item link when PR body already has marker", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "https://gooseherd.example.com",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Restore assist label without duplicate link",
+    summary: "Existing PR automation should restart",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.770",
+    jiraIssueKey: "HBL-770",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 770,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/770",
+    initialState: "cancelled",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_disabled"],
+  });
+
+  const revived = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 770,
+    prTitle: "Restore assist label without duplicate link",
+    prBody: [
+      "Refs HBL-770",
+      "",
+      "<!-- gooseherd-work-item-link -->",
+      "## Work item",
+      "",
+      `[Open work item](https://gooseherd.example.com/#work-item/${delivery.id})`,
+    ].join("\n"),
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/770",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(revived?.id, delivery.id);
+  assert.deepEqual(bodyUpdates, []);
+});
+
+test("github sync refreshes stale work item link when PR body marker points to a different work item", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "https://gooseherd.example.com",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Adopt superseded work item",
+    summary: "Existing PR with stale link should refresh",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.771",
+    jiraIssueKey: "HBL-771",
+    createdByUserId: pmUserId,
+    initialState: "backlog",
+    flags: [],
+  });
+
+  const staleWorkItemId = "00000000-0000-0000-0000-000000000bad";
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 771,
+    prTitle: "Refresh stale work item link",
+    prBody: [
+      "Refs HBL-771",
+      "",
+      "<!-- gooseherd-work-item-link -->",
+      "## Work item",
+      "",
+      `[Open work item](https://gooseherd.example.com/#work-item/${staleWorkItemId})`,
+    ].join("\n"),
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/771",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(bodyUpdates.length, 1);
+  const newBody = bodyUpdates[0]?.body ?? "";
+  assert.ok(newBody.includes(`[Open work item](https://gooseherd.example.com/#work-item/${delivery.id})`));
+  assert.ok(!newBody.includes(staleWorkItemId));
+  assert.equal(newBody.match(/<!-- gooseherd-work-item-link -->/g)?.length, 1);
+});
+
+test("github sync preserves content after the work item link block when refreshing stale marker", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "https://gooseherd.example.com",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Preserve notes after generated link",
+    summary: "Existing PR with stale link and manual notes should refresh safely",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.772",
+    jiraIssueKey: "HBL-772",
+    createdByUserId: pmUserId,
+    initialState: "backlog",
+    flags: [],
+  });
+
+  await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 772,
+    prTitle: "Preserve notes after generated link",
+    prBody: [
+      "Refs HBL-772",
+      "",
+      "<!-- gooseherd-work-item-link -->",
+      "## Work item",
+      "",
+      "[Open work item](https://gooseherd.example.com/#work-item/stale-id)",
+      "",
+      "Reviewer notes that should stay.",
+    ].join("\n"),
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/772",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(bodyUpdates.length, 1);
+  const newBody = bodyUpdates[0]?.body ?? "";
+  assert.ok(newBody.includes(`[Open work item](https://gooseherd.example.com/#work-item/${delivery.id})`));
+  assert.ok(newBody.includes("Reviewer notes that should stay."));
+});
+
+test("github sync does not refresh work item link when an unrelated label is added to an adopted PR", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "https://gooseherd.example.com",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  await service.createDeliveryFromJira({
+    title: "Existing adopted PR",
+    summary: "Adding bug label should not touch the PR body",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.773",
+    jiraIssueKey: "HBL-773",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 773,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/773",
+    initialState: "auto_review",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 773,
+    prTitle: "Existing adopted PR",
+    prBody: [
+      "Refs HBL-773",
+      "",
+      "<!-- gooseherd-work-item-link -->",
+      "## Work item",
+      "",
+      "[Open work item](https://gooseherd.example.com/#work-item/stale-id)",
+    ].join("\n"),
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/773",
+    labelName: "bug",
+    labels: ["ai:assist", "bug"],
+  });
+
+  assert.deepEqual(bodyUpdates, []);
+});
+
+test("github sync warns and skips PR body links when dashboard public URL is not configured", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+
+  const { cleanup, sync } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "   ",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 774,
+    prTitle: "No dashboard URL",
+    prBody: "Implements workflow support",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/774",
+    labels: ["ai:assist"],
+  });
+
+  assert.ok(adopted);
+  assert.deepEqual(bodyUpdates, []);
+  assert.ok(warnings.some((args) => String(args[0]).includes("dashboardPublicUrl not configured")));
+});
+
+test("github sync warns and skips PR body links when dashboard public URL has an unsupported scheme", async (t) => {
+  const bodyUpdates: Array<{ repoSlug: string; prNumber: number; body: string }> = [];
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+
+  const { cleanup, sync } = await createGitHubSyncFixture({
+    dashboardPublicUrl: "javascript:alert(1)",
+    githubService: {
+      updatePullRequestBody: async (params) => {
+        bodyUpdates.push(params);
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 775,
+    prTitle: "Invalid dashboard URL",
+    prBody: "Implements workflow support",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/775",
+    labels: ["ai:assist"],
+  });
+
+  assert.ok(adopted);
+  assert.deepEqual(bodyUpdates, []);
+  assert.ok(warnings.some((args) => String(args[0]).includes("unsupported dashboardPublicUrl scheme")));
 });
 
 test("github sync adopts labeled PR when ai:assist is only in the top-level webhook label", async (t) => {

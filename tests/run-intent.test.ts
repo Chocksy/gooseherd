@@ -32,6 +32,7 @@ test("selectPipelineIdForIntent maps feature-delivery intents to built-in pipeli
     [{ ...BASE_FEATURE, kind: "feature_delivery.repair_ci", sourceSubstate: "ci_failed" }, "ci-fix"],
     [{ ...BASE_FEATURE, kind: "feature_delivery.sync_branch", maxBehindCommits: 5 }, "branch-sync"],
     [{ ...BASE_FEATURE, kind: "feature_delivery.finalize_pr", strategy: "squash" }, "ready-for-merge"],
+    [{ ...BASE_FEATURE, kind: "feature_delivery.qa_preparation" }, "feature-delivery-qa-preparation"],
   ];
 
   for (const [intent, expected] of cases) {
@@ -70,6 +71,7 @@ test("deriveRunIntentFromLegacy converts work-item requesters to feature-deliver
   assert.equal(deriveRunIntentFromLegacy({ ...common, requestedBy: "work-item:ci-fix" }).kind, "feature_delivery.repair_ci");
   assert.equal(deriveRunIntentFromLegacy({ ...common, requestedBy: "work-item:branch-sync" }).kind, "feature_delivery.sync_branch");
   assert.equal(deriveRunIntentFromLegacy({ ...common, requestedBy: "work-item:ready-for-merge" }).kind, "feature_delivery.finalize_pr");
+  assert.equal(deriveRunIntentFromLegacy({ ...common, requestedBy: "work-item:qa-preparation" }).kind, "feature_delivery.qa_preparation");
 });
 
 test("deriveRunIntentFromLegacy falls back to generic when feature metadata is incomplete", () => {
@@ -100,6 +102,7 @@ test("isRunIntent rejects malformed feature-delivery intents", () => {
   assert.equal(isRunIntent({ ...BASE_FEATURE, kind: "feature_delivery.sync_branch", maxBehindCommits: 5 }), true);
   assert.equal(isRunIntent({ ...BASE_FEATURE, kind: "feature_delivery.sync_branch", maxBehindCommits: -1 }), false);
   assert.equal(isRunIntent({ ...BASE_FEATURE, kind: "feature_delivery.sync_branch", maxBehindCommits: 1.5 }), false);
+  assert.equal(isRunIntent({ ...BASE_FEATURE, kind: "feature_delivery.qa_preparation" }), true);
 });
 
 test("isRunIntent rejects malformed generic intents", () => {
@@ -125,4 +128,5 @@ test("run intent predicates keep legacy requestedBy fallback", () => {
   assert.equal(isFeatureDeliverySystemRun(repairCi), true);
   assert.equal(isFeatureDeliveryAutoReviewRun({ intent: undefined, requestedBy: "work-item:auto-review" }), true);
   assert.equal(isFeatureDeliveryAutoReviewOrRepairCiRun({ intent: undefined, requestedBy: "work-item:ci-fix" }), true);
+  assert.equal(isFeatureDeliverySystemRun({ intent: undefined, requestedBy: "work-item:qa-preparation" }), true);
 });

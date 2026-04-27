@@ -164,7 +164,6 @@ export interface AppConfig {
   ciMaxFixRounds: number;
   featureDeliveryResetEngineeringReviewOnNewCommits: boolean;
   featureDeliveryResetQaReviewOnNewCommits: boolean;
-  featureDeliverySkipQaPreparation: boolean;
   featureDeliverySkipProductReview: boolean;
   workItemGithubAdoptionLabels: string[];
   autoReviewBranchSyncEnabled: boolean;

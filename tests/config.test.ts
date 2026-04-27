@@ -156,13 +156,11 @@ test("work item review reset flags default to false", () => {
       ...originalEnv,
       FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: undefined,
       FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: undefined,
-      FEATURE_DELIVERY_SKIP_QA_PREPARATION: undefined,
       FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW: undefined,
     };
     const config = loadConfig();
     assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, false);
     assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, false);
-    assert.equal(config.featureDeliverySkipQaPreparation, false);
     assert.equal(config.featureDeliverySkipProductReview, false);
   } finally {
     process.env = originalEnv;
@@ -176,17 +174,21 @@ test("work item review reset flags respect env overrides", () => {
       ...originalEnv,
       FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: "true",
       FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: "yes",
-      FEATURE_DELIVERY_SKIP_QA_PREPARATION: "1",
       FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW: "true",
     };
     const config = loadConfig();
     assert.equal(config.featureDeliveryResetEngineeringReviewOnNewCommits, true);
     assert.equal(config.featureDeliveryResetQaReviewOnNewCommits, true);
-    assert.equal(config.featureDeliverySkipQaPreparation, true);
     assert.equal(config.featureDeliverySkipProductReview, true);
   } finally {
     process.env = originalEnv;
   }
+});
+
+test("loadConfig does not expose removed QA preparation skip flag", () => {
+  const config = loadConfig();
+  const removedKey = "featureDelivery" + "SkipQaPreparation";
+  assert.equal(removedKey in config, false);
 });
 
 test("branch sync max behind commits accepts zero", () => {

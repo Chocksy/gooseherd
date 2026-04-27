@@ -40,8 +40,8 @@ async function createGitHubSyncFixture(options: {
   };
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
-  skipQaPreparation?: boolean;
   skipProductReview?: boolean;
+  qaPreparationHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
   readyForMergeHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
 } = {}) {
   const testDb = await createTestDb();
@@ -80,10 +80,10 @@ async function createGitHubSyncFixture(options: {
       reconcileWorkItem: async (workItemId, reason) => {
         reconcileCalls.push({ workItemId, reason });
       },
+      qaPreparationHandler: options.qaPreparationHandler as never,
       readyForMergeHandler: options.readyForMergeHandler as never,
       resetEngineeringReviewOnNewCommits: options.resetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: options.resetQaReviewOnNewCommits,
-      skipQaPreparation: options.skipQaPreparation,
       skipProductReview: options.skipProductReview,
       ...(options.githubService ? ({ githubService: options.githubService } as never) : {}),
     } as never),
@@ -1700,9 +1700,8 @@ test("github sync advances engineering review when code review passed label is p
   assert.ok(updated?.flags.includes("qa_review_done"));
 });
 
-test("github sync advances directly to ready_for_merge when QA passed is already present at qa review entry", async (t) => {
+test("github sync keeps qa_preparation when QA passed is already present at qa review entry", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
-    skipQaPreparation: true,
     skipProductReview: true,
   });
   t.after(cleanup);
@@ -1733,8 +1732,8 @@ test("github sync advances directly to ready_for_merge when QA passed is already
   });
 
   assert.equal(updated?.id, delivery.id);
-  assert.equal(updated?.state, "ready_for_merge");
-  assert.equal(updated?.substate, "waiting_merge");
+  assert.equal(updated?.state, "qa_preparation");
+  assert.equal(updated?.substate, "preparing_review_app");
   assert.ok(updated?.flags.includes("engineering_review_done"));
   assert.ok(updated?.flags.includes("qa_review_done"));
 });
@@ -2119,16 +2118,19 @@ test("github sync advances qa preparation to product review when required", asyn
   assert.equal(updated?.substate, "waiting_product_review");
 });
 
-test("github sync skips qa preparation after engineering approval when configured", async (t) => {
+test("github sync advances engineering approval to qa preparation", async (t) => {
+  const qaPreparationCalls: Array<{ id: string; state: string }> = [];
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
-    skipQaPreparation: true,
     skipProductReview: true,
+    qaPreparationHandler: async (workItem) => {
+      qaPreparationCalls.push({ id: workItem.id, state: workItem.state });
+    },
   });
   t.after(cleanup);
 
   const delivery = await service.createDeliveryFromJira({
-    title: "Skip QA preparation",
-    summary: "Go straight to QA review",
+    title: "Prepare QA",
+    summary: "Go to QA preparation",
     ownerTeamId,
     homeChannelId: "C_GROWTH",
     homeThreadTs: "1740000000.704",
@@ -2152,9 +2154,10 @@ test("github sync skips qa preparation after engineering approval when configure
   });
 
   assert.equal(updated?.id, delivery.id);
-  assert.equal(updated?.state, "qa_review");
-  assert.equal(updated?.substate, "waiting_qa_review");
+  assert.equal(updated?.state, "qa_preparation");
+  assert.equal(updated?.substate, "preparing_review_app");
   assert.ok(updated?.flags.includes("engineering_review_done"));
+  assert.deepEqual(qaPreparationCalls, [{ id: delivery.id, state: "qa_preparation" }]);
 });
 
 test("github sync skips product review after qa preparation when configured", async (t) => {

@@ -124,6 +124,7 @@ interface WorkItemServicesBundle {
   reviewRequestStore?: ReviewRequestStore;
   workItemEventsStore?: WorkItemEventsStore;
   workItemService?: WorkItemService;
+  qaPreparationHandler?: (workItem: import("./work-items/types.js").WorkItemRecord) => Promise<void> | void;
   readyForMergeHandler?: (workItem: import("./work-items/types.js").WorkItemRecord) => Promise<void> | void;
   workItemIdentityStore?: WorkItemIdentityStore;
   workItemContextResolver?: WorkItemContextResolver;
@@ -298,6 +299,7 @@ async function createWorkItemServices(
   let reviewRequestStore: ReviewRequestStore | undefined;
   let workItemEventsStore: WorkItemEventsStore | undefined;
   let workItemService: WorkItemService | undefined;
+  let qaPreparationHandler: ((workItem: import("./work-items/types.js").WorkItemRecord) => Promise<void> | void) | undefined;
   let readyForMergeHandler: ((workItem: import("./work-items/types.js").WorkItemRecord) => Promise<void> | void) | undefined;
   let workItemIdentityStore: WorkItemIdentityStore | undefined;
   let workItemContextResolver: WorkItemContextResolver | undefined;
@@ -319,6 +321,7 @@ async function createWorkItemServices(
       workItemContextResolverMod,
       workItemGitHubSyncMod,
       workItemJiraSyncMod,
+      qaPreparationActionsMod,
       readyForMergeActionsMod,
       userDirectoryServiceMod,
     ] = await Promise.all([
@@ -331,6 +334,7 @@ async function createWorkItemServices(
       import("./work-items/context-resolver.js"),
       import("./work-items/github-sync.js"),
       import("./work-items/jira-sync.js"),
+      import("./work-items/qa-preparation-actions.js"),
       import("./work-items/ready-for-merge-actions.js"),
       import("./user-directory/service.js"),
     ]);
@@ -346,6 +350,15 @@ async function createWorkItemServices(
           },
         })
       : undefined;
+    const qaPreparationActions = githubService
+      ? new qaPreparationActionsMod.QaPreparationActions({
+          githubService,
+          queueQaPreparationRun: async (workItemId: string, reason?: string) => {
+            return workItemOrchestratorRef.current?.queueQaPreparationRun(workItemId, reason);
+          },
+        })
+      : undefined;
+    qaPreparationHandler = qaPreparationActions?.handleEntry.bind(qaPreparationActions);
     readyForMergeHandler = readyForMergeActions?.handleEntry.bind(readyForMergeActions);
     workItemService = new workItemServiceMod.WorkItemService(db, {
       readyForMergeHandler,
@@ -361,10 +374,10 @@ async function createWorkItemServices(
     workItemGitHubSync = new workItemGitHubSyncMod.GitHubWorkItemSync(db, {
       adoptionLabels: config.workItemGithubAdoptionLabels,
       githubService,
+      qaPreparationHandler,
       readyForMergeHandler,
       resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
-      skipQaPreparation: config.featureDeliverySkipQaPreparation,
       skipProductReview: config.featureDeliverySkipProductReview,
       reconcileWorkItem: async (workItemId, reason) => {
         await workItemOrchestratorRef.current?.reconcileWorkItem(workItemId, reason);
@@ -463,6 +476,7 @@ async function createWorkItemServices(
     reviewRequestStore,
     workItemEventsStore,
     workItemService,
+    qaPreparationHandler,
     readyForMergeHandler,
     workItemIdentityStore,
     workItemContextResolver,
@@ -488,6 +502,7 @@ async function createDashboardWorkItemsBundle(
     reviewRequestStore,
     workItemEventsStore,
     workItemService,
+    qaPreparationHandler,
     readyForMergeHandler,
     workItemIdentityStore,
     workItemContextResolver,
@@ -640,9 +655,9 @@ async function createDashboardWorkItemsBundle(
       defaultBaseBranch: config.defaultBaseBranch,
       sandboxRuntime: config.sandboxRuntime,
       autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
-      featureDeliverySkipQaPreparation: config.featureDeliverySkipQaPreparation,
       featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
     },
+    qaPreparationHandler,
     readyForMergeHandler,
     runManager,
   });
@@ -702,9 +717,9 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
           defaultBaseBranch: config.defaultBaseBranch,
           sandboxRuntime: config.sandboxRuntime,
           autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
-          featureDeliverySkipQaPreparation: config.featureDeliverySkipQaPreparation,
           featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
         },
+        qaPreparationHandler: workItemServices.qaPreparationHandler,
         readyForMergeHandler: workItemServices.readyForMergeHandler,
       }, runCheckpointStore)
     : undefined;

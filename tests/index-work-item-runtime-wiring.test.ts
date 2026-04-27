@@ -9,7 +9,7 @@ test("createServices passes runtime and delivery review config into WorkItemOrch
 
   assert.match(
     source,
-    /workItemOrchestrator\s*=\s*new WorkItemOrchestrator\(db,\s*\{\s*config:\s*\{[\s\S]*defaultBaseBranch:\s*config\.defaultBaseBranch,[\s\S]*sandboxRuntime:\s*config\.sandboxRuntime,[\s\S]*featureDeliverySkipQaPreparation:\s*config\.featureDeliverySkipQaPreparation,[\s\S]*featureDeliverySkipProductReview:\s*config\.featureDeliverySkipProductReview,[\s\S]*\},\s*(?:readyForMergeHandler,\s*)?runManager,\s*\}\);/s,
+    /workItemOrchestrator\s*=\s*new WorkItemOrchestrator\(db,\s*\{\s*config:\s*\{[\s\S]*defaultBaseBranch:\s*config\.defaultBaseBranch,[\s\S]*sandboxRuntime:\s*config\.sandboxRuntime,[\s\S]*featureDeliverySkipProductReview:\s*config\.featureDeliverySkipProductReview,[\s\S]*\},[\s\S]*qaPreparationHandler,[\s\S]*readyForMergeHandler,[\s\S]*runManager,\s*\}\);/s,
   );
 });
 

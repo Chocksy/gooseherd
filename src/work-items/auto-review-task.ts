@@ -119,3 +119,30 @@ export function buildReadyForMergeTask(input: AutoReviewTaskInput): string {
 
   return lines.join("\n");
 }
+
+export function buildQaPreparationTask(input: AutoReviewTaskInput): string {
+  const lines = [
+    `Run QA preparation for pull request #${String(input.prNumber)} in ${input.repo}.`,
+    `PR URL: ${input.prUrl}`,
+    `Work item title: ${input.title}`,
+  ];
+
+  if (input.jiraIssueKey) {
+    lines.push(`Jira issue: ${input.jiraIssueKey}`);
+  }
+
+  if (input.summary?.trim()) {
+    lines.push(`Context: ${input.summary.trim()}`);
+  }
+
+  lines.push("");
+  lines.push("Required workflow:");
+  lines.push("1. First prepare a meaningful QA UAT plan.");
+  lines.push("2. Read the PR description, Jira/work-item context, and current branch diff.");
+  lines.push("3. Produce a concise QA UAT plan tailored to the actual user-facing behavior and risk areas in this PR.");
+  lines.push("4. Include concrete setup/data assumptions, happy-path checks, edge cases, regression checks, and acceptance signals where relevant.");
+  lines.push("5. Do not change code, push commits, alter labels, or update the PR description.");
+  lines.push("6. The pipeline will post your UAT as a PR discussion comment.");
+
+  return lines.join("\n");
+}

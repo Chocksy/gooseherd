@@ -3,6 +3,7 @@ import type { WorkItemRecord } from "../work-items/types.js";
 import {
   FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
   FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
+  FEATURE_DELIVERY_QA_PREPARATION_PIPELINE_ID,
   FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
   FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
   FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
@@ -59,6 +60,9 @@ export type FeatureDeliveryRunIntent =
   | (BaseFeatureDeliveryRunIntent & {
       kind: "feature_delivery.finalize_pr";
       strategy: "squash";
+    })
+  | (BaseFeatureDeliveryRunIntent & {
+      kind: "feature_delivery.qa_preparation";
     });
 
 const FEATURE_DELIVERY_INTENT_KINDS = new Set([
@@ -67,6 +71,7 @@ const FEATURE_DELIVERY_INTENT_KINDS = new Set([
   "feature_delivery.repair_ci",
   "feature_delivery.sync_branch",
   "feature_delivery.finalize_pr",
+  "feature_delivery.qa_preparation",
 ]);
 
 const FEATURE_DELIVERY_PROGRESS_KINDS = new Set([
@@ -86,6 +91,7 @@ const PIPELINE_BY_INTENT_KIND: Partial<Record<RunIntentKind, string>> = {
   "feature_delivery.repair_ci": FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
   "feature_delivery.sync_branch": FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
   "feature_delivery.finalize_pr": FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
+  "feature_delivery.qa_preparation": FEATURE_DELIVERY_QA_PREPARATION_PIPELINE_ID,
 };
 
 const LEGACY_WORK_ITEM_SYSTEM_REQUESTERS = new Set([
@@ -93,6 +99,7 @@ const LEGACY_WORK_ITEM_SYSTEM_REQUESTERS = new Set([
   "work-item:ci-fix",
   "work-item:branch-sync",
   "work-item:ready-for-merge",
+  "work-item:qa-preparation",
 ]);
 
 const LEGACY_WORK_ITEM_PROGRESS_REQUESTERS = new Set([
@@ -142,6 +149,8 @@ export function isRunIntent(value: unknown): value is RunIntent {
     }
     case "feature_delivery.finalize_pr":
       return intent.strategy === "squash";
+    case "feature_delivery.qa_preparation":
+      return true;
     default:
       return false;
   }
@@ -237,6 +246,12 @@ export function deriveRunIntentFromLegacy(input: {
       strategy: "squash",
     };
   }
+  if (baseFeature && input.requestedBy === "work-item:qa-preparation") {
+    return {
+      ...baseFeature,
+      kind: "feature_delivery.qa_preparation",
+    };
+  }
 
   return {
     version: 1,
@@ -301,6 +316,16 @@ export function buildFeatureDeliveryFinalizePrIntent(
     ...buildFeatureDeliveryBaseIntent(workItem, input.triggerReason),
     kind: "feature_delivery.finalize_pr",
     strategy: input.strategy,
+  };
+}
+
+export function buildFeatureDeliveryQaPreparationIntent(
+  workItem: WorkItemRecord,
+  input: { triggerReason?: string } = {},
+): FeatureDeliveryRunIntent {
+  return {
+    ...buildFeatureDeliveryBaseIntent(workItem, input.triggerReason),
+    kind: "feature_delivery.qa_preparation",
   };
 }
 

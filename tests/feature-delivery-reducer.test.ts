@@ -80,7 +80,7 @@ test("reducer skips engineering_review after self-review checkpoint when approva
       substate: "preparing_review_app",
     },
   ]);
-  assert.deepEqual(decision.commands, []);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }]);
 });
 
 test("reducer reaches ready_for_merge after self-review checkpoint when sticky approvals already satisfy downstream gates", () => {
@@ -91,7 +91,6 @@ test("reducer reaches ready_for_merge after self-review checkpoint when sticky a
     }),
     { type: "run.feature_delivery_progress_ready", checkpointType: "run.waiting_external_ci", intentKind: "feature_delivery.self_review" },
     {
-      skipQaPreparation: true,
       skipProductReview: true,
     },
   );
@@ -103,6 +102,10 @@ test("reducer reaches ready_for_merge after self-review checkpoint when sticky a
       flagsToAdd: ["self_review_done"],
     },
     {
+      state: "qa_preparation",
+      substate: "preparing_review_app",
+    },
+    {
       state: "qa_review",
       substate: "waiting_qa_review",
     },
@@ -111,7 +114,7 @@ test("reducer reaches ready_for_merge after self-review checkpoint when sticky a
       substate: "waiting_merge",
     },
   ]);
-  assert.deepEqual(decision.commands, [{ type: "ready_for_merge_entered" }]);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }, { type: "ready_for_merge_entered" }]);
 });
 
 test("reducer carries sticky product review approval through the allowed state path after self-review checkpoint", () => {
@@ -147,7 +150,7 @@ test("reducer carries sticky product review approval through the allowed state p
       substate: "waiting_qa_review",
     },
   ]);
-  assert.deepEqual(decision.commands, []);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }]);
 });
 
 test("reducer turns green ci into pending self review when self review is still missing", () => {
@@ -393,7 +396,6 @@ test("reducer returns sticky-reviewed auto_review items directly to ready_for_me
       automationEnabled: false,
     },
     {
-      skipQaPreparation: true,
       skipProductReview: true,
     },
   );
@@ -405,6 +407,10 @@ test("reducer returns sticky-reviewed auto_review items directly to ready_for_me
       flagsToAdd: ["ci_green"],
     },
     {
+      state: "qa_preparation",
+      substate: "preparing_review_app",
+    },
+    {
       state: "qa_review",
       substate: "waiting_qa_review",
     },
@@ -413,7 +419,7 @@ test("reducer returns sticky-reviewed auto_review items directly to ready_for_me
       substate: "waiting_merge",
     },
   ]);
-  assert.deepEqual(decision.commands, [{ type: "ready_for_merge_entered" }]);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }, { type: "ready_for_merge_entered" }]);
 });
 
 test("reducer marks auto_review ci failure and requests reconcile when no system run is active", () => {
@@ -528,7 +534,7 @@ test("reducer advances engineering_review approvals through qa preparation", () 
     substate: "preparing_review_app",
     flagsToAdd: ["engineering_review_done"],
   }]);
-  assert.deepEqual(decision.commands, []);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }]);
 });
 
 test("reducer requests reconcile when engineering review asks for changes with automation enabled", () => {
@@ -681,7 +687,32 @@ test("reducer advances engineering_review when review labels confirm engineering
     substate: "preparing_review_app",
     flagsToAdd: ["engineering_review_done"],
   }]);
-  assert.deepEqual(decision.commands, []);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }]);
+});
+
+test("reducer keeps qa_preparation when review labels also confirm qa approval", () => {
+  const decision = reduceFeatureDelivery(
+    makeFeatureDeliveryWorkItem({
+      state: "engineering_review",
+      substate: "waiting_engineering_review",
+      flags: ["ci_green", "self_review_done", "product_review_required"],
+    }),
+    {
+      type: "github.review_labels_synced",
+      engineeringReviewDone: true,
+      qaReviewDone: true,
+    },
+    {
+      skipProductReview: true,
+    },
+  );
+
+  assert.deepEqual(decision.patches, [{
+    state: "qa_preparation",
+    substate: "preparing_review_app",
+    flagsToAdd: ["engineering_review_done", "qa_review_done"],
+  }]);
+  assert.deepEqual(decision.commands, [{ type: "qa_preparation_entered" }]);
 });
 
 test("reducer advances qa_review when review labels confirm qa approval", () => {

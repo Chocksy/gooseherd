@@ -354,6 +354,37 @@ test("orchestrator queues a standalone ready-for-merge run for multi-commit PR w
   assert.ok(events.some((event) => event.eventType === "run.ready_for_merge_launched"));
 });
 
+test("orchestrator queues a standalone QA preparation run for qa_preparation work items", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "qa_preparation",
+    substate: "waiting_qa_preparation",
+    flags: ["ci_green", "engineering_review_done"],
+  });
+  t.after(cleanup);
+  const { queueQaPreparationRun } = await import("../src/work-items/orchestrator.js");
+
+  await queueQaPreparationRun(db, workItem.id, "qa_preparation.entered", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+  const events = await db.select().from(workItemEvents).where(eq(workItemEvents.workItemId, workItem.id));
+
+  assert.equal(workItemRow?.state, "qa_preparation");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:qa-preparation");
+  assert.equal(runRows[0]?.pipelineHint, "feature-delivery-qa-preparation");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.qa_preparation");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.qa_preparation");
+  assert.equal(runRows[0]?.prUrl, "https://github.com/hubstaff/gooseherd/pull/90");
+  assert.equal(runRows[0]?.prNumber, 90);
+  assert.equal(runRows[0]?.branchName, "feature/hbl-405");
+  assert.equal(runRows[0]?.parentBranchName, "feature/hbl-405");
+  assert.equal(runRows[0]?.runtime, "kubernetes");
+  assert.ok(events.some((event) => event.eventType === "run.qa_preparation_launched"));
+});
+
 test("orchestrator does not queue branch-sync runs until engineering and QA reviews are complete", async (t) => {
   const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
     state: "ready_for_merge",
@@ -442,7 +473,7 @@ test("orchestrator writeback skips engineering_review when it is already marked 
   assert.equal(workItemRow?.substate, "preparing_review_app");
 });
 
-test("orchestrator writeback respects skip flags when engineering_review is already marked done", async (t) => {
+test("orchestrator writeback enters qa preparation when engineering_review is already marked done", async (t) => {
   const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("applying_review_feedback");
   t.after(cleanup);
 
@@ -456,14 +487,13 @@ test("orchestrator writeback respects skip flags when engineering_review is alre
   await writebackWorkItem(db, run.id, {
     config: {
       defaultBaseBranch: "release/2026.04",
-      featureDeliverySkipQaPreparation: true,
       featureDeliverySkipProductReview: true,
     },
   });
 
   const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
-  assert.equal(workItemRow?.state, "qa_review");
-  assert.equal(workItemRow?.substate, "waiting_qa_review");
+  assert.equal(workItemRow?.state, "qa_preparation");
+  assert.equal(workItemRow?.substate, "preparing_review_app");
 });
 
 test("orchestrator writeback advances directly to ready_for_merge when qa review is already marked done", async (t) => {
@@ -480,7 +510,6 @@ test("orchestrator writeback advances directly to ready_for_merge when qa review
   await writebackWorkItem(db, run.id, {
     config: {
       defaultBaseBranch: "release/2026.04",
-      featureDeliverySkipQaPreparation: true,
       featureDeliverySkipProductReview: true,
     },
   });
@@ -505,7 +534,6 @@ test("orchestrator writeback triggers ready_for_merge handler when entering read
   await writebackWorkItem(db, run.id, {
     config: {
       defaultBaseBranch: "release/2026.04",
-      featureDeliverySkipQaPreparation: true,
       featureDeliverySkipProductReview: true,
     },
     readyForMergeHandler: async (updatedWorkItem) => {

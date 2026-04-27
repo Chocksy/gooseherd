@@ -48,3 +48,19 @@ test("feature-delivery review-feedback pipeline is explicit", async () => {
     assert.equal(Boolean(node.on_failure && "until" in node.on_failure), false);
   }
 });
+
+test("feature-delivery QA preparation pipeline starts with UAT generation", async () => {
+  const pipeline = await loadPipeline(path.resolve("pipelines/feature-delivery-qa-preparation.yml"));
+
+  assert.equal(pipeline.name, "feature-delivery-qa-preparation");
+  assert.deepEqual(
+    pipeline.nodes.map((node) => ({ id: node.id, type: node.type, action: node.action })),
+    [
+      { id: "clone", type: "deterministic", action: "clone" },
+      { id: "hydrate_context", type: "deterministic", action: "hydrate_context" },
+      { id: "generate_qa_uat", type: "deterministic", action: "generate_qa_uat" },
+      { id: "post_qa_uat_comment", type: "deterministic", action: "post_qa_uat_comment" },
+      { id: "notify", type: "deterministic", action: "notify" },
+    ],
+  );
+});

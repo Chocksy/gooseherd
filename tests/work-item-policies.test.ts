@@ -112,7 +112,6 @@ test("feature delivery revalidation returns to ready_for_merge when sticky QA ap
       productReviewDone: false,
       qaReviewDone: true,
       productReviewRequired: false,
-      skipQaPreparation: false,
       skipProductReview: false,
     }),
     "ready_for_merge"
@@ -129,7 +128,6 @@ test("feature delivery revalidation returns to qa_preparation when only engineer
       productReviewDone: false,
       qaReviewDone: false,
       productReviewRequired: false,
-      skipQaPreparation: false,
       skipProductReview: false,
     }),
     "qa_preparation"
@@ -149,28 +147,6 @@ test("feature delivery returns to auto_review when engineering review requests c
 
 test("feature delivery advances to qa_preparation when engineering review is approved", () => {
   assert.equal(nextFeatureDeliveryStateAfterEngineeringReview("approved"), "qa_preparation");
-});
-
-test("feature delivery can skip qa preparation after engineering review approval", () => {
-  assert.equal(
-    nextFeatureDeliveryStateAfterEngineeringReview("approved", {
-      skipQaPreparation: true,
-      productReviewRequired: false,
-      skipProductReview: false,
-    }),
-    "qa_review"
-  );
-});
-
-test("feature delivery routes directly to product review when qa preparation is skipped but product review remains enabled", () => {
-  assert.equal(
-    nextFeatureDeliveryStateAfterEngineeringReview("approved", {
-      skipQaPreparation: true,
-      productReviewRequired: true,
-      skipProductReview: false,
-    }),
-    "product_review"
-  );
 });
 
 test("feature delivery routes qa preparation based on product review requirement", () => {

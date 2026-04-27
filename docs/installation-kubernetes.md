@@ -429,7 +429,6 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `AUTONOMOUS_SCHEDULER_INTERVAL_MS` | No | `300000` | Scheduler interval. |
 | `FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets engineering review when new commits arrive on adopted work. |
 | `FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS` | No | `false` | Resets QA review when new commits arrive on adopted work. |
-| `FEATURE_DELIVERY_SKIP_QA_PREPARATION` | No | `false` | Skips the manual QA-preparation stage after engineering review approval and routes directly into the next delivery stage. |
 | `FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW` | No | `false` | Skips the product-review stage when delivery policy would otherwise require it. |
 | `WORK_ITEM_GITHUB_ADOPTION_LABELS` | No | `ai:assist` | Labels that mark GitHub PRs/issues as work-item adoption candidates. |
 | `AUTO_REVIEW_BRANCH_SYNC_ENABLED` | No | `true` | Enables automatic branch-sync monitoring for auto-review. |
@@ -439,6 +438,8 @@ These are only relevant for `SANDBOX_RUNTIME=docker`, not for Kubernetes executi
 | `JIRA_BASE_URL` | No | unset | Jira site base URL used for browse links and scoped-token `cloudId` discovery. |
 | `JIRA_CLOUD_ID` | No | unset | Optional Atlassian Cloud ID override for Jira scoped-token requests. |
 | `JIRA_REQUEST_TIMEOUT_MS` | No | `10000` | Timeout for future Jira reads. |
+
+Upgrade note: `FEATURE_DELIVERY_SKIP_QA_PREPARATION` has been removed. Deployments that previously set it to `true` will now enter QA Preparation and launch the QA Preparation pipeline when engineering review is approved.
 
 ### Browser verify values
 

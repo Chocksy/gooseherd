@@ -21,6 +21,8 @@ import { runNode } from "./nodes/run.js";
 import { setupSandboxNode } from "./nodes/setup-sandbox.js";
 import { syncBaseBranchNode } from "./nodes/sync-base-branch.js";
 import { squashReadyForMergeNode } from "./nodes/squash-ready-for-merge.js";
+import { generateQaUatNode } from "./nodes/generate-qa-uat.js";
+import { postQaUatCommentNode } from "./nodes/post-qa-uat-comment.js";
 
 // Quality gate node imports
 import { classifyTaskNode } from "./quality-gates/classify-task-node.js";
@@ -100,6 +102,8 @@ export const NODE_HANDLERS: Record<string, NodeHandler> = {
   setup_sandbox: setupSandboxNode,
   sync_base_branch: syncBaseBranchNode,
   squash_ready_for_merge: squashReadyForMergeNode,
+  generate_qa_uat: generateQaUatNode,
+  post_qa_uat_comment: postQaUatCommentNode,
 };
 
 /** Set of valid action names, derived from the handler registry. */

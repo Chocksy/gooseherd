@@ -35,7 +35,6 @@ export function advanceFeatureDeliveryStateAfterAutoReview(input: {
   productReviewDone: boolean;
   qaReviewDone: boolean;
   productReviewRequired: boolean;
-  skipQaPreparation?: boolean;
   skipProductReview?: boolean;
 }): FeatureDeliveryState {
   const nextState = nextFeatureDeliveryStateAfterAutoReview({
@@ -60,36 +59,16 @@ export function advanceFeatureDeliveryStateAfterAutoReview(input: {
     return "engineering_review";
   }
 
-  return nextFeatureDeliveryStateAfterEngineeringReview("approved", {
-    skipQaPreparation: input.skipQaPreparation,
-    productReviewRequired: input.productReviewRequired,
-    skipProductReview: input.skipProductReview,
-  });
+  return nextFeatureDeliveryStateAfterEngineeringReview("approved");
 }
 
 export function nextFeatureDeliveryStateAfterEngineeringReview(
-  outcome: "approved" | "changes_requested",
-  input?: {
-    skipQaPreparation?: boolean;
-    productReviewRequired?: boolean;
-    skipProductReview?: boolean;
-  },
+  outcome: "approved" | "changes_requested"
 ): FeatureDeliveryState {
-  const skipQaPreparation = input?.skipQaPreparation ?? false;
-  const productReviewRequired = input?.productReviewRequired ?? false;
-  const skipProductReview = input?.skipProductReview;
-
   if (outcome !== "approved") {
     return "auto_review";
   }
-  if (!skipQaPreparation) {
-    return "qa_preparation";
-  }
-  return nextFeatureDeliveryStateAfterQaPreparation({
-    productReviewRequired,
-    qaPrepFoundIssue: false,
-    skipProductReview,
-  });
+  return "qa_preparation";
 }
 
 export function nextFeatureDeliveryStateAfterQaPreparation(input: {

@@ -65,10 +65,10 @@ export interface DeliveryContextResolverResult {
 export interface GitHubWorkItemSyncOptions {
   adoptionLabels?: string[];
   githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
+  qaPreparationHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
-  skipQaPreparation?: boolean;
   skipProductReview?: boolean;
   reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
   resolveDeliveryContext: (input: {
@@ -174,11 +174,11 @@ export class GitHubWorkItemSync {
   private readonly adoptionLabels: string[];
   private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot">;
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
-  private readonly skipQaPreparation: boolean;
   private readonly skipProductReview: boolean;
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
   private readonly resetQaReviewOnNewCommits?: boolean;
   private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
+  private readonly qaPreparationHandler?: GitHubWorkItemSyncOptions["qaPreparationHandler"];
   private readonly readyForMergeHandler?: GitHubWorkItemSyncOptions["readyForMergeHandler"];
 
   constructor(db: Database, options: GitHubWorkItemSyncOptions) {
@@ -190,9 +190,9 @@ export class GitHubWorkItemSync {
     this.runs = new RunStore(db);
     this.adoptionLabels = (options.adoptionLabels ?? ["ai:assist"]).map((label) => label.trim().toLowerCase()).filter(Boolean);
     this.githubService = options.githubService;
+    this.qaPreparationHandler = options.qaPreparationHandler;
     this.readyForMergeHandler = options.readyForMergeHandler;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
-    this.skipQaPreparation = options.skipQaPreparation ?? false;
     this.skipProductReview = options.skipProductReview ?? false;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
@@ -229,8 +229,11 @@ export class GitHubWorkItemSync {
         githubPrHeadSha: payload.headSha,
       });
       current = await this.syncAiAssistAutomationFlag(current, payload.labels);
+      let handledReadyForMergeByLabels = false;
       if (payload.action !== "synchronize") {
-        current = await this.syncReviewFlagsFromPullRequestLabels(current, payload.labels);
+        const result = await this.syncReviewFlagsFromPullRequestLabels(current, payload.labels);
+        current = result.workItem;
+        handledReadyForMergeByLabels = result.handledReadyForMerge;
       }
       await this.events.append({
         workItemId: current.id,
@@ -265,6 +268,13 @@ export class GitHubWorkItemSync {
         await this.reconcileIfConfigured(current.id, "github.automation_enabled");
       }
 
+      // Pull request label and automation-flag updates above do not apply feature-delivery
+      // reducer decisions, so there are no reducer commands to execute here. Keep this
+      // branch limited to ready-for-merge housekeeping unless it starts mutating state
+      // through reduceFeatureDelivery().
+      if (handledReadyForMergeByLabels) {
+        return current;
+      }
       return this.handleReadyForMergeIfNeeded(current);
     }
 
@@ -756,7 +766,7 @@ export class GitHubWorkItemSync {
   private async syncReviewFlagsFromPullRequestLabels(
     workItem: WorkItemRecord,
     labels: string[] | undefined
-  ): Promise<WorkItemRecord> {
+  ): Promise<{ workItem: WorkItemRecord; handledReadyForMerge: boolean }> {
     const reviewFlags = this.reviewFlagsFromLabels(labels);
     const decision = reduceFeatureDelivery(
       workItem,
@@ -768,9 +778,15 @@ export class GitHubWorkItemSync {
       this.reducerPolicy(),
     );
     if (decision.patches.length === 0 && decision.commands.length === 0) {
-      return workItem;
+      return { workItem, handledReadyForMerge: false };
     }
-    return applyWorkItemDecision(this.workItems, workItem, decision);
+    const updated = await applyWorkItemDecision(this.workItems, workItem, decision);
+    const handledReadyForMerge = await this.executeFeatureDeliveryCommands(updated, decision);
+    if (!handledReadyForMerge) {
+      const settled = await this.handleReadyForMergeIfNeeded(updated);
+      return { workItem: settled, handledReadyForMerge: false };
+    }
+    return { workItem: updated, handledReadyForMerge: true };
   }
 
   private async findWorkItemByPullRequestNumbers(
@@ -870,7 +886,6 @@ export class GitHubWorkItemSync {
 
   private reducerPolicy(): FeatureDeliveryReducerPolicy {
     return {
-      skipQaPreparation: this.skipQaPreparation,
       skipProductReview: this.skipProductReview,
       resetEngineeringReviewOnNewCommits: this.shouldResetEngineeringReviewOnNewCommits(),
       resetQaReviewOnNewCommits: this.shouldResetQaReviewOnNewCommits(),
@@ -895,6 +910,11 @@ export class GitHubWorkItemSync {
     for (const command of decision.commands) {
       if (command.type === "reconcile_work_item") {
         await this.reconcileIfConfigured(workItem.id, command.reason);
+        continue;
+      }
+
+      if (command.type === "qa_preparation_entered") {
+        await this.qaPreparationHandler?.(workItem);
         continue;
       }
 

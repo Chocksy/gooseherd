@@ -899,6 +899,20 @@ export class GitHubService {
     });
   }
 
+  async createPullRequestConversationComment(params: {
+    repoSlug: string;
+    prNumber: number;
+    body: string;
+  }): Promise<void> {
+    const { owner, repo } = parseRepoSlug(params.repoSlug);
+    await this.octokit.issues.createComment({
+      owner,
+      repo,
+      issue_number: params.prNumber,
+      body: params.body,
+    });
+  }
+
   /**
    * Validate a PAT token — returns the authenticated username.
    * Throws on invalid/expired tokens.

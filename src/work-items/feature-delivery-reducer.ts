@@ -63,7 +63,6 @@ type FeatureDeliveryPrSynchronizedEvent = {
 };
 
 export interface FeatureDeliveryReducerPolicy {
-  skipQaPreparation?: boolean;
   skipProductReview?: boolean;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
@@ -73,6 +72,9 @@ export type FeatureDeliveryCommand =
   | {
       type: "reconcile_work_item";
       reason: string;
+    }
+  | {
+      type: "qa_preparation_entered";
     }
   | {
       type: "ready_for_merge_entered";
@@ -266,7 +268,7 @@ function reduceSuccessfulCi(
 
   return {
     patches,
-    commands: enteredReadyForMerge(workItem.state, patches) ? [{ type: "ready_for_merge_entered" }] : [],
+    commands: commandsForEnteredStates(workItem.state, patches),
   };
 }
 
@@ -331,11 +333,7 @@ function reduceReviewSubmitted(
   let flagsToAdd: string[] = [];
 
   if (workItem.state === "engineering_review") {
-    nextState = nextFeatureDeliveryStateAfterEngineeringReview(event.reviewState, {
-      skipQaPreparation: policy.skipQaPreparation,
-      productReviewRequired: hasFlag(workItem, "product_review_required"),
-      skipProductReview: policy.skipProductReview,
-    });
+    nextState = nextFeatureDeliveryStateAfterEngineeringReview(event.reviewState);
     if (event.reviewState === "approved") {
       flagsToAdd = ["engineering_review_done"];
     }
@@ -376,9 +374,7 @@ function reduceReviewSubmitted(
       ...(event.reviewState === "changes_requested" && event.automationEnabled
         ? [{ type: "reconcile_work_item", reason: "github.review_changes_requested" } as const]
         : []),
-      ...(enteredReadyForMerge(workItem.state, patches)
-        ? [{ type: "ready_for_merge_entered" } as const]
-        : []),
+      ...commandsForEnteredStates(workItem.state, patches),
     ],
   };
 }
@@ -399,11 +395,7 @@ function reduceReviewLabelsSynced(
   const flagsActuallyRemoved = flagsToRemove.filter((flag) => hasFlag(workItem, flag));
 
   const nextState = workItem.state === "engineering_review" && event.engineeringReviewDone
-    ? nextFeatureDeliveryStateAfterEngineeringReview("approved", {
-        skipQaPreparation: policy.skipQaPreparation,
-        productReviewRequired: hasFlag(workItem, "product_review_required"),
-        skipProductReview: policy.skipProductReview,
-      })
+    ? nextFeatureDeliveryStateAfterEngineeringReview("approved")
     : workItem.state === "qa_review" && event.qaReviewDone
       ? nextFeatureDeliveryStateAfterQaReview("approved")
       : workItem.state;
@@ -437,7 +429,7 @@ function reduceReviewLabelsSynced(
 
   return {
     patches,
-    commands: enteredReadyForMerge(workItem.state, patches) ? [{ type: "ready_for_merge_entered" }] : [],
+    commands: commandsForEnteredStates(workItem.state, patches),
   };
 }
 
@@ -488,7 +480,6 @@ function featureDeliveryStatePathAfterAutoReview(
     productReviewDone: hasFlag(workItem, "product_review_done"),
     qaReviewDone: hasFlag(workItem, "qa_review_done"),
     productReviewRequired: hasFlag(workItem, "product_review_required"),
-    skipQaPreparation: input.policy.skipQaPreparation,
     skipProductReview: input.policy.skipProductReview,
   });
   const path: FeatureDeliveryProgressState[] = [];
@@ -502,11 +493,7 @@ function featureDeliveryStatePathAfterAutoReview(
     return path;
   }
 
-  const afterEngineeringReview = nextFeatureDeliveryStateAfterEngineeringReview("approved", {
-    skipQaPreparation: input.policy.skipQaPreparation,
-    productReviewRequired: hasFlag(workItem, "product_review_required"),
-    skipProductReview: input.policy.skipProductReview,
-  });
+  const afterEngineeringReview = nextFeatureDeliveryStateAfterEngineeringReview("approved");
   if (isFeatureDeliveryProgressState(afterEngineeringReview)) {
     pushUniqueState(path, afterEngineeringReview);
   }
@@ -579,8 +566,29 @@ function decisionForStatePath(
 
   return {
     patches,
-    commands: enteredReadyForMerge(initialState, patches) ? [{ type: "ready_for_merge_entered" }] : [],
+    commands: commandsForEnteredStates(initialState, patches),
   };
+}
+
+function commandsForEnteredStates(
+  initialState: WorkItemRecord["state"],
+  patches: UpdateWorkItemStateInput[],
+): FeatureDeliveryCommand[] {
+  const commands: FeatureDeliveryCommand[] = [];
+  if (enteredQaPreparation(initialState, patches)) {
+    commands.push({ type: "qa_preparation_entered" });
+  }
+  if (enteredReadyForMerge(initialState, patches)) {
+    commands.push({ type: "ready_for_merge_entered" });
+  }
+  return commands;
+}
+
+function enteredQaPreparation(
+  initialState: WorkItemRecord["state"],
+  patches: UpdateWorkItemStateInput[],
+): boolean {
+  return initialState !== "qa_preparation" && patches.some((patch) => patch.state === "qa_preparation");
 }
 
 function enteredReadyForMerge(

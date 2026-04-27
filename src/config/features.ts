@@ -67,7 +67,6 @@ type FeatureConfigSlice = Pick<
   | "ciMaxFixRounds"
   | "featureDeliveryResetEngineeringReviewOnNewCommits"
   | "featureDeliveryResetQaReviewOnNewCommits"
-  | "featureDeliverySkipQaPreparation"
   | "featureDeliverySkipProductReview"
   | "workItemGithubAdoptionLabels"
   | "autoReviewBranchSyncEnabled"
@@ -152,10 +151,6 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     ),
     featureDeliveryResetQaReviewOnNewCommits: parseBoolean(
       parsed.FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS,
-      false,
-    ),
-    featureDeliverySkipQaPreparation: parseBoolean(
-      parsed.FEATURE_DELIVERY_SKIP_QA_PREPARATION,
       false,
     ),
     featureDeliverySkipProductReview: parseBoolean(

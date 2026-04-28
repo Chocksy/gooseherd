@@ -328,12 +328,12 @@ export class RunManager {
    * Checks the PipelineStore first (for custom pipelines), falls back to disk.
    * For store-only pipelines, writes the YAML to a temp file in the run's work dir.
    */
-  private async resolvePipeline(hint: string | undefined, runId: string): Promise<string> {
-    if (!hint) return this.config.pipelineFile;
+  private async resolvePipeline(hint: string | undefined, runId: string): Promise<{ file: string; id?: string }> {
+    if (!hint) return { file: this.config.pipelineFile };
 
     if (!/^[a-zA-Z0-9_-]+$/.test(hint)) {
       logInfo("Invalid pipelineHint, using default", { hint });
-      return this.config.pipelineFile;
+      return { file: this.config.pipelineFile };
     }
 
     // Check pipeline store for custom (non-built-in) pipelines
@@ -345,12 +345,12 @@ export class RunManager {
         const tmpYaml = path.join(runDir, `pipeline-${hint}.yml`);
         await writeFile(tmpYaml, stored.yaml, "utf8");
         logInfo("Using custom pipeline from store", { hint, file: tmpYaml });
-        return tmpYaml;
+        return { file: tmpYaml, id: stored.id };
       }
     }
 
     // Built-in: resolve from pipelines/ directory on disk
-    return path.resolve("pipelines", `${hint}.yml`);
+    return { file: path.resolve("pipelines", `${hint}.yml`), id: hint };
   }
 
   /**
@@ -699,7 +699,7 @@ export class RunManager {
         });
       };
 
-      const pipelineFile = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
+      const pipeline = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
       run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
       const backend = this.getBackend(run.runtime);
       const result = await backend.execute(run, {
@@ -710,7 +710,8 @@ export class RunManager {
           run = await this.store.addTokenUsage(stableRunId, entry);
         },
         abortSignal: abortController.signal,
-        pipelineFile
+        pipelineFile: pipeline.file,
+        pipelineId: pipeline.id
       });
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);

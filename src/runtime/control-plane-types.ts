@@ -1,4 +1,5 @@
 import type { TokenUsage, TokenUsageIncrement } from "../types.js";
+import type { AgentProfilePolicySnapshot, AgentProfileSnapshot } from "../agent-profile-resolver.js";
 
 export type RunStatus =
   | "queued"
@@ -32,6 +33,8 @@ export interface RunnerConfigPayload {
   agentCommandTemplate?: string;
   agentFollowUpTemplate?: string;
   activeAgentProfile?: ActiveAgentProfileSnapshot;
+  agentProfileCatalog?: AgentProfileSnapshot[];
+  agentProfilePolicies?: AgentProfilePolicySnapshot[];
 }
 
 export interface RunEnvelope {

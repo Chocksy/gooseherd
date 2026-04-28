@@ -107,3 +107,76 @@ test("applyRunnerConfigPayload leaves env config untouched when snapshot is abse
     source: "env",
   });
 });
+
+test("runner config payload carries agent profile routing snapshots", () => {
+  const config = makeConfig({
+    agentProfileCatalog: [
+      {
+        id: "profile-top",
+        name: "Top reviewer",
+        runtime: "custom",
+        commandTemplate: "top @{{prompt_file}}",
+        source: "profile",
+      },
+    ],
+    agentProfilePolicies: [
+      {
+        id: "policy-review",
+        scope: "intent_action",
+        intentKind: "feature_delivery.self_review",
+        action: "implement",
+        targetKey: "intent:feature_delivery.self_review|action:implement",
+        mode: "single",
+        enabled: true,
+        members: [{ profileId: "profile-top", ordinal: 0, enabled: true }],
+      },
+    ],
+  });
+
+  const payload = buildRunnerConfigPayload(config);
+  assert.equal(payload.agentProfileCatalog?.[0]?.id, "profile-top");
+  assert.equal(payload.agentProfilePolicies?.[0]?.targetKey, "intent:feature_delivery.self_review|action:implement");
+
+  const runnerConfig = makeConfig({ agentProfileCatalog: [], agentProfilePolicies: [] });
+  applyRunnerConfigPayload(runnerConfig, makePayload({ runnerConfig: payload as unknown as Record<string, unknown> }));
+  assert.equal(runnerConfig.agentProfileCatalog?.[0]?.name, "Top reviewer");
+  assert.equal(runnerConfig.agentProfilePolicies?.[0]?.members[0]?.profileId, "profile-top");
+});
+
+test("runner config payload clears stale routing snapshots with empty arrays", () => {
+  const payload = buildRunnerConfigPayload(makeConfig({
+    agentProfileCatalog: [],
+    agentProfilePolicies: [],
+  }));
+
+  assert.deepEqual(payload.agentProfileCatalog, []);
+  assert.deepEqual(payload.agentProfilePolicies, []);
+
+  const runnerConfig = makeConfig({
+    agentProfileCatalog: [
+      {
+        id: "stale-profile",
+        name: "Stale profile",
+        runtime: "custom",
+        commandTemplate: "stale @{{prompt_file}}",
+        source: "profile",
+      },
+    ],
+    agentProfilePolicies: [
+      {
+        id: "stale-policy",
+        scope: "global_action",
+        action: "implement",
+        targetKey: "action:implement",
+        mode: "single",
+        enabled: true,
+        members: [{ profileId: "stale-profile", ordinal: 0, enabled: true }],
+      },
+    ],
+  });
+
+  applyRunnerConfigPayload(runnerConfig, makePayload({ runnerConfig: payload as unknown as Record<string, unknown> }));
+
+  assert.deepEqual(runnerConfig.agentProfileCatalog, []);
+  assert.deepEqual(runnerConfig.agentProfilePolicies, []);
+});

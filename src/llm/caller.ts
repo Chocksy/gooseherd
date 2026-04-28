@@ -214,7 +214,8 @@ export async function callLLMVision(
  */
 export async function summarizeTitle(
   config: LLMCallerConfig,
-  task: string
+  task: string,
+  model?: string
 ): Promise<{ title: string; inputTokens: number; outputTokens: number; model: string }> {
   const response = await callLLM(config, {
     system: "You are a title generator. Given a task description, produce a concise title of 5-8 words. " +
@@ -227,7 +228,7 @@ export async function summarizeTitle(
     userMessage: task,
     maxTokens: 30,
     timeoutMs: 10_000,
-    model: "anthropic/claude-sonnet-4-6"
+    model: model ?? "anthropic/claude-sonnet-4-6"
   });
 
   let title = response.content.trim();

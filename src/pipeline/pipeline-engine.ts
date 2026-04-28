@@ -76,6 +76,11 @@ function shouldRunNode(condition: string, ctx: ContextBag, config: Record<string
   return !!value;
 }
 
+function derivePipelineRoutingId(pipelineFilePath: string, pipeline: PipelineConfig): string {
+  const base = path.basename(pipelineFilePath).replace(/\.ya?ml$/i, "").trim();
+  return base || pipeline.name;
+}
+
 /**
  * Pipeline engine: loads YAML pipeline, executes nodes in order,
  * handles loop constructs for failure recovery.
@@ -110,6 +115,7 @@ export class PipelineEngine {
     run: RunRecord,
     onPhase: (phase: PipelinePhase) => Promise<void>,
     pipelineFile?: string,
+    pipelineId?: string,
     onDetail?: (detail: string) => Promise<void>,
     skipNodes?: string[],
     enableNodes?: string[],
@@ -124,8 +130,9 @@ export class PipelineEngine {
   ): Promise<ExecutionResult> {
     const yamlPath = pipelineFile ?? path.resolve("pipelines/pipeline.yml");
     const pipeline = await loadPipeline(yamlPath);
+    const pipelineRoutingId = pipelineId?.trim() || derivePipelineRoutingId(yamlPath, pipeline);
 
-    logInfo("Pipeline loaded", { name: pipeline.name, nodes: pipeline.nodes.length });
+    logInfo("Pipeline loaded", { id: pipelineRoutingId, name: pipeline.name, nodes: pipeline.nodes.length });
 
     const runDir = path.resolve(this.config.workRoot, run.id);
     const logFile = path.join(runDir, "run.log");
@@ -213,14 +220,14 @@ export class PipelineEngine {
         // Legacy path: Run pipeline inside AsyncLocalStorage context so all shell calls
         // within this async tree route through the correct container.
         result = await runInSandboxContext(sandbox.containerId, run.id, () =>
-          this.executePipeline(pipeline, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal)
+          this.executePipeline(pipeline, pipelineRoutingId, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal)
         );
       } else if (hasSetupSandbox) {
         // Deferred path: run pre-sandbox nodes on host, then enter sandbox context
         // after setup_sandbox completes. executePipeline handles the context switch.
-        result = await this.executePipeline(pipeline, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal, sandboxRef);
+        result = await this.executePipeline(pipeline, pipelineRoutingId, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal, sandboxRef);
       } else {
-        result = await this.executePipeline(pipeline, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal);
+        result = await this.executePipeline(pipeline, pipelineRoutingId, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal);
       }
     } finally {
       // Clean up sandbox (handles both upfront and deferred)
@@ -265,6 +272,7 @@ export class PipelineEngine {
 
   private async executePipeline(
     pipeline: PipelineConfig,
+    pipelineId: string,
     ctx: ContextBag,
     deps: NodeDeps,
     startIndex: number,
@@ -319,7 +327,7 @@ export class PipelineEngine {
       const startTime = Date.now();
       const handler = this.getHandler(node.action);
       const { result, durationMs } = await this.runTrackedNode(
-        node.id, node.action, handler, node, ctx, deps, eventLogger
+        pipelineId, node.id, node.action, handler, node, ctx, deps, eventLogger
       );
       await appendLog(deps.logFile, `\n[pipeline] ${node.id}: ${result.outcome} (${String(durationMs)}ms)\n`);
 
@@ -392,7 +400,7 @@ export class PipelineEngine {
       // Handle failure with loop construct
       if (result.outcome === "failure" && node.on_failure) {
         const loopResult = await this.handleLoopFailure(
-          node, result, ctx, deps, eventLogger
+          pipelineId, node, result, ctx, deps, eventLogger
         );
 
         if (loopResult.outcome === "success") {
@@ -442,7 +450,7 @@ export class PipelineEngine {
           sandboxRef.handle.containerId,
           deps.run.id,
           () => this.executePipeline(
-            pipeline, ctx, deps, i + 1,
+            pipeline, pipelineId, ctx, deps, i + 1,
             eventLogger, skipNodeIds, enableNodeIds, abortSignal
           )
         );
@@ -460,6 +468,7 @@ export class PipelineEngine {
    * Handle a loop-based failure recovery (validation retry, CI fix, etc.)
    */
   private async handleLoopFailure(
+    pipelineName: string,
     failedNode: NodeConfig,
     failedResult: NodeResult,
     ctx: ContextBag,
@@ -537,7 +546,7 @@ export class PipelineEngine {
         action: loopConfig.agent_node
       };
       const { result: fixResult } = await this.runTrackedNode(
-        fixNode.id, fixNode.action, agentHandler, fixNode, ctx, deps, eventLogger
+        pipelineName, fixNode.id, fixNode.action, agentHandler, fixNode, ctx, deps, eventLogger
       );
 
       if (fixResult.outcome !== "success") {
@@ -559,7 +568,7 @@ export class PipelineEngine {
       const retryNodeId = `${failedNode.id}_retry_${String(attempt)}`;
       const retryHandler = this.getHandler(failedNode.action);
       const { result: retryResult } = await this.runTrackedNode(
-        retryNodeId, failedNode.action, retryHandler, failedNode, ctx, deps, eventLogger
+        pipelineName, retryNodeId, failedNode.action, retryHandler, failedNode, ctx, deps, eventLogger
       );
 
       if (retryResult.outcome === "success") {
@@ -624,6 +633,7 @@ export class PipelineEngine {
    * Returns the result and duration. Catches handler errors into failure results.
    */
   private async runTrackedNode(
+    pipelineName: string,
     nodeId: string,
     action: string,
     handler: NodeHandler,
@@ -637,11 +647,21 @@ export class PipelineEngine {
     const start = Date.now();
 
     let result: NodeResult;
+    const previousAgentProfileTarget = deps.agentProfileTarget;
+    deps.agentProfileTarget = {
+      pipelineName,
+      pipelineId: pipelineName,
+      intentKind: deps.run.intentKind,
+      nodeId,
+      nodeAction: action,
+    };
     try {
       result = await handler(node, ctx, deps);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       result = { outcome: "failure", error: message };
+    } finally {
+      deps.agentProfileTarget = previousAgentProfileTarget;
     }
 
     const durationMs = Date.now() - start;

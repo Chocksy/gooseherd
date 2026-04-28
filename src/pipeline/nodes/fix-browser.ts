@@ -3,7 +3,8 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { runShell, runShellCapture, appendLog, sleep } from "../shell.js";
-import { buildAgentCommand } from "../agent-command.js";
+import { buildAgentCommandWithSelection } from "../agent-command.js";
+import { describeAgentProfileSelection } from "../../agent-profile-resolver.js";
 import { commitCaptureAndPush } from "../git-ops.js";
 import { isNonCodeFixFailure, type BrowserVerifyFailureCode } from "../quality-gates/browser-verify-routing.js";
 import { filterInternalGeneratedFiles, mergeInternalArtifacts } from "../internal-generated-files.js";
@@ -88,7 +89,15 @@ export async function fixBrowserNode(
 
   // Run the coding agent
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
-  const agentCommand = buildAgentCommand(config, run, repoDir, fixPromptFile, isFollowUp);
+  const { command: agentCommand, selection: agentProfileSelection } = buildAgentCommandWithSelection(
+    config,
+    run,
+    repoDir,
+    fixPromptFile,
+    isFollowUp,
+    deps.agentProfileTarget,
+  );
+  await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(agentProfileSelection) + "\n");
 
   await runShell(agentCommand, {
     cwd: path.resolve("."),

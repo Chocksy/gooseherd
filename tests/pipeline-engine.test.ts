@@ -191,10 +191,12 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
   const config = makeConfig({ workRoot: workDir, dryRun: true });
   const engine = new PipelineEngine(config);
   let observedPrefetchContext: RunRecord["prefetchContext"] | undefined;
+  let observedPipelineId: string | undefined;
 
   (engine as unknown as {
     executePipeline: (
       pipeline: unknown,
+      pipelineId: string,
       ctx: ContextBag,
       deps: unknown,
       startIndex: number,
@@ -204,7 +206,8 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
       abortSignal?: AbortSignal,
       sandboxRef?: { handle?: unknown }
     ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
-  }).executePipeline = async (_pipeline, ctx) => {
+  }).executePipeline = async (_pipeline, _pipelineId, ctx) => {
+    observedPipelineId = _pipelineId;
     observedPrefetchContext = ctx.get<RunRecord["prefetchContext"]>("prefetchContext");
     return {
       outcome: "success",
@@ -213,9 +216,10 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
     };
   };
 
-  await engine.execute(run, async () => undefined, pipelinePath);
+  await engine.execute(run, async () => undefined, pipelinePath, "stored-custom-pipeline");
 
   assert.deepEqual(observedPrefetchContext, prefetchContext);
+  assert.equal(observedPipelineId, "stored-custom-pipeline");
 });
 
 test("PipelineEngine: unified pipeline is the single pipeline file", () => {
@@ -249,6 +253,7 @@ test("PipelineEngine: filters internal-generated files from execution result cha
   (engine as unknown as {
     executePipeline: (
       pipeline: unknown,
+      pipelineId: string,
       ctx: ContextBag,
       deps: unknown,
       startIndex: number,
@@ -258,7 +263,7 @@ test("PipelineEngine: filters internal-generated files from execution result cha
       abortSignal?: AbortSignal,
       sandboxRef?: { handle?: unknown }
     ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
-  }).executePipeline = async (_pipeline, ctx) => {
+  }).executePipeline = async (_pipeline, _pipelineId, ctx) => {
     ctx.set("changedFiles", ["AGENTS.md", "src/index.ts"]);
     ctx.set("internalArtifacts", ["AGENTS.md"]);
     return {
@@ -488,6 +493,7 @@ test("PipelineEngine: auto-enables decide_recovery when browser_verify is enable
     pipelinePath,
     undefined,
     undefined,
+    undefined,
     ["browser_verify"]
   );
 
@@ -538,6 +544,7 @@ test("PipelineEngine: bypasses browser_verify fix loop for non-code failure clas
   };
 
   const loopResult = await (engine as any).handleLoopFailure(
+    "test-pipeline",
     failedNode,
     failedResult,
     ctx,

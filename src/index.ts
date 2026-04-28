@@ -843,6 +843,10 @@ function checkAgentDefault(config: { agentCommandTemplate: string }): void {
 }
 
 async function applyActiveAgentProfile(config: AppConfig, agentProfileStore: AgentProfileStore): Promise<void> {
+  const routingSnapshot = await agentProfileStore.getRoutingSnapshot();
+  config.agentProfileCatalog = routingSnapshot.profiles;
+  config.agentProfilePolicies = routingSnapshot.policies;
+
   const activeAgentProfile = await agentProfileStore.getActive();
   if (activeAgentProfile) {
     config.agentCommandTemplate = await agentProfileStore.getEffectiveCommandTemplate(

@@ -105,6 +105,7 @@ export function agentProfileListHtml(appName: string): string {
       </div>
       <div class="toolbar">
         <a class="btn ghost" href="/">Back</a>
+        <a class="btn" href="/agent-profiles/routing">Routing</a>
         <a class="btn primary" href="/agent-profiles/new">New Profile Wizard</a>
       </div>
     </div>

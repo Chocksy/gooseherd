@@ -47,6 +47,7 @@ import {
 } from "./browser-verify-routing.js";
 import { AuthCredentialStore } from "./auth-credential-store.js";
 import { getDb } from "../../db/index.js";
+import { describeAgentProfileSelection, resolveLLMProfileSelection } from "../../agent-profile-resolver.js";
 
 export async function browserVerifyNode(
   nodeConfig: NodeConfig,
@@ -61,6 +62,20 @@ export async function browserVerifyNode(
   if (!config.browserVerifyEnabled && nodeConfig.enabled !== true && repoEnabled !== true) {
     await appendLog(logFile, "\n[gate:browser_verify] skipped (disabled)\n");
     return { outcome: "skipped" };
+  }
+
+  const browserVerifySelection = resolveLLMProfileSelection(
+    config,
+    deps.agentProfileTarget,
+    "llm_vision",
+    config.browserVerifyModel,
+    30_000,
+  );
+  const routedBrowserVerifyModel = browserVerifySelection?.profile
+    ? browserVerifySelection.model
+    : config.browserVerifyModel;
+  if (browserVerifySelection) {
+    await appendLog(logFile, "\n[agent-profile] " + describeAgentProfileSelection(browserVerifySelection) + "\n");
   }
 
   // Resolve review app URL
@@ -163,7 +178,7 @@ export async function browserVerifyNode(
 
   if (smokeCheck.passed) {
     providerResolution = resolveStagehandProvider(
-      config.browserVerifyModel,
+      routedBrowserVerifyModel,
       config.browserVerifyExecutionModel,
       config
     );
@@ -249,7 +264,7 @@ export async function browserVerifyNode(
           ctx.get<string[]>("changedFiles") ?? [],
           runDir,
           providerResolution.apiKey,
-          config.browserVerifyModel,
+          routedBrowserVerifyModel,
           logFile,
           attemptCreds,
           ctx.get<string>("changeSummary"),
@@ -350,7 +365,7 @@ export async function browserVerifyNode(
         if (screenshotPath && providerResolution.apiKey) {
           const llmConfig: LLMCallerConfig = {
             apiKey: config.openrouterApiKey ?? providerResolution.apiKey,
-            defaultModel: config.browserVerifyModel,
+            defaultModel: routedBrowserVerifyModel,
             defaultTimeoutMs: 30_000,
             providerPreferences: config.openrouterProviderPreferences
           };
@@ -360,7 +375,7 @@ export async function browserVerifyNode(
               screenshotPath,
               deps.run.task,
               ctx.get<string[]>("changedFiles") ?? [],
-              config.browserVerifyModel
+              routedBrowserVerifyModel
             );
           } catch (visionError) {
             const visionMsg = visionError instanceof Error ? visionError.message : "Unknown error";
@@ -407,7 +422,7 @@ export async function browserVerifyNode(
   const reasons = result.errors;
 
   // Token usage from LLM verification
-  const browserModel = config.browserVerifyModel;
+  const browserModel = routedBrowserVerifyModel;
   const tokenUsage: Record<string, { input: number; output: number; model?: string }> = {};
   if (planTokenUsage) {
     tokenUsage._tokenUsage_browserVerifyPlan = { ...planTokenUsage, model: browserModel };

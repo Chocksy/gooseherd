@@ -6,6 +6,7 @@ import type { SetupStore } from "../../db/setup-store.js";
 import { wizardHtml } from "../wizard-html.js";
 import { agentProfileListHtml } from "../agent-profile-list-html.js";
 import { agentProfileWizardHtml } from "../agent-profile-wizard-html.js";
+import { agentProfileRoutingHtml } from "../agent-profile-routing-html.js";
 import { usersHtml } from "../users-html.js";
 import { modelPricesHtml } from "../model-prices-html.js";
 import type { DashboardActorPrincipal } from "../actor-principal.js";
@@ -50,6 +51,11 @@ export async function handleSetupRoutes(
 
   if (req.method === "GET" && pathname === "/agent-profiles/new") {
     sendText(res, 200, agentProfileWizardHtml(config.appName), "text/html");
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/agent-profiles/routing") {
+    sendText(res, 200, agentProfileRoutingHtml(config.appName), "text/html");
     return true;
   }
 

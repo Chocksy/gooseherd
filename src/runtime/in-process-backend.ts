@@ -13,6 +13,7 @@ export class InProcessExecutionBackend<Runtime extends "local" | "docker"> imple
       run,
       ctx.onPhase,
       ctx.pipelineFile,
+      ctx.pipelineId,
       ctx.onDetail,
       run.skipNodes,
       run.enableNodes,

@@ -10,6 +10,7 @@ export interface RunExecutionContext {
   recordTokenUsage?: (entry: TokenUsageIncrement) => Promise<void>;
   abortSignal?: AbortSignal;
   pipelineFile?: string;
+  pipelineId?: string;
 }
 
 export interface RunExecutionBackend<Runtime extends RunRecord["runtime"] = RunRecord["runtime"]> {

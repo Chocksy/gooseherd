@@ -34,7 +34,7 @@ interface KubernetesExecutionBackendDeps {
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
   namespace?: string;
-  runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile">;
+  runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile" | "agentProfileCatalog" | "agentProfilePolicies">;
   resourceClient?: Pick<KubernetesResourceClient, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret">;
   pollIntervalMs?: number;
   waitTimeoutMs?: number;
@@ -84,6 +84,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
         autoReviewSourceSubstate: payload.autoReviewSourceSubstate,
         intent: payload.intent,
         intentKind: payload.intentKind,
+        ...(ctx.pipelineId ? { pipelineId: ctx.pipelineId } : {}),
         ...(this.deps.runnerConfigSource ? { runnerConfig: buildRunnerConfigPayload(this.deps.runnerConfigSource) } : {}),
       },
       runtime: "kubernetes",

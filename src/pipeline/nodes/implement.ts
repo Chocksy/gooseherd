@@ -3,7 +3,8 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { appendLog, runShellCapture } from "../shell.js";
-import { buildAgentCommand } from "../agent-command.js";
+import { buildAgentCommandWithSelection } from "../agent-command.js";
+import { describeAgentProfileSelection } from "../../agent-profile-resolver.js";
 import { filterInternalGeneratedFiles, isInternalGeneratedFile, mergeInternalArtifacts } from "../internal-generated-files.js";
 import { logInfo, logWarn } from "../../logger.js";
 import { isFeatureDeliveryAutoReviewRun } from "../../runs/run-intent.js";
@@ -91,7 +92,15 @@ export async function implementNode(
 
   await deps.onPhase("agent");
 
-  const agentCommand = buildAgentCommand(config, run, repoDir, promptFile, isFollowUp);
+  const { command: agentCommand, selection: agentProfileSelection } = buildAgentCommandWithSelection(
+    config,
+    run,
+    repoDir,
+    promptFile,
+    isFollowUp,
+    deps.agentProfileTarget,
+  );
+  await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(agentProfileSelection) + "\n");
 
   await appendLog(
     logFile,

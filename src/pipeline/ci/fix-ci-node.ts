@@ -3,7 +3,8 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { runShell, runShellCapture, appendLog, shellEscape } from "../shell.js";
-import { buildAgentCommand } from "../agent-command.js";
+import { buildAgentCommandWithSelection } from "../agent-command.js";
+import { describeAgentProfileSelection } from "../../agent-profile-resolver.js";
 import { commitCaptureAndPush } from "../git-ops.js";
 import { buildCIFixPrompt, type CIAnnotation } from "./ci-monitor.js";
 import { buildGitAddPathspecs, filterInternalGeneratedFiles, mergeInternalArtifacts } from "../internal-generated-files.js";
@@ -59,7 +60,15 @@ export async function fixCiNode(
 
   // Run the coding agent with the fix prompt
   const isFollowUp = ctx.get<boolean>("isFollowUp") ?? false;
-  const agentCommand = buildAgentCommand(config, run, repoDir, fixPromptFile, isFollowUp);
+  const { command: agentCommand, selection: agentProfileSelection } = buildAgentCommandWithSelection(
+    config,
+    run,
+    repoDir,
+    fixPromptFile,
+    isFollowUp,
+    deps.agentProfileTarget,
+  );
+  await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(agentProfileSelection) + "\n");
 
   await runShell(agentCommand, {
     cwd: path.resolve("."),

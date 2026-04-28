@@ -10,7 +10,9 @@
 
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { callLLM, type LLMCallerConfig } from "../../llm/caller.js";
+import { callLLM } from "../../llm/caller.js";
+import { describeAgentProfileSelection, resolveLLMProfileSelection } from "../../agent-profile-resolver.js";
+import { appendLog } from "../shell.js";
 import { logInfo } from "../../logger.js";
 
 const PLAN_SYSTEM_PROMPT = [
@@ -37,11 +39,19 @@ export async function planTaskNode(
 ): Promise<NodeResult> {
   const config = deps.config;
 
-  // Skip if no API key
-  if (!config.openrouterApiKey) {
+  const llmSelection = resolveLLMProfileSelection(
+    config,
+    deps.agentProfileTarget,
+    "llm_text",
+    config.planTaskModel,
+    15_000,
+  );
+  if (!llmSelection) {
     logInfo("plan_task: skipped (no OPENROUTER_API_KEY)");
+    await appendLog(deps.logFile, "[agent-profile] plan_task skipped: no OpenRouter API key\n");
     return { outcome: "skipped" };
   }
+  await appendLog(deps.logFile, "[agent-profile] " + describeAgentProfileSelection(llmSelection) + "\n");
 
   const run = deps.run;
   const repoSummary = ctx.get<string>("repoSummary") ?? "";
@@ -55,15 +65,8 @@ export async function planTaskNode(
     repoSummary ? `Repository structure:\n${repoSummary}` : ""
   ].filter(Boolean).join("\n");
 
-  const llmConfig: LLMCallerConfig = {
-    apiKey: config.openrouterApiKey,
-    defaultModel: config.planTaskModel,
-    defaultTimeoutMs: 15_000,
-    providerPreferences: config.openrouterProviderPreferences
-  };
-
   try {
-    const response = await callLLM(llmConfig, {
+    const response = await callLLM(llmSelection.llmConfig, {
       system: PLAN_SYSTEM_PROMPT,
       userMessage,
       maxTokens: 512,

@@ -1,6 +1,7 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { callLLM, type LLMCallerConfig } from "../../llm/caller.js";
+import { callLLM } from "../../llm/caller.js";
+import { describeAgentProfileSelection, resolveLLMProfileSelection } from "../../agent-profile-resolver.js";
 import { runShellCapture, appendLog } from "../shell.js";
 import { logInfo } from "../../logger.js";
 import { filterInternalGeneratedFiles } from "../internal-generated-files.js";
@@ -35,7 +36,14 @@ export async function summarizeChangesNode(
   const logFile = deps.logFile;
   const run = deps.run;
 
-  if (!config.openrouterApiKey) {
+  const llmSelection = resolveLLMProfileSelection(
+    config,
+    deps.agentProfileTarget,
+    "llm_text",
+    config.defaultLlmModel,
+    15_000,
+  );
+  if (!llmSelection) {
     await appendLog(logFile, "\n[summarize_changes] skipped (no OpenRouter API key)\n");
     return { outcome: "skipped" };
   }
@@ -68,14 +76,8 @@ export async function summarizeChangesNode(
   ].join("\n");
 
   try {
-    const llmConfig: LLMCallerConfig = {
-      apiKey: config.openrouterApiKey,
-      defaultModel: config.defaultLlmModel,
-      defaultTimeoutMs: 15_000,
-      providerPreferences: config.openrouterProviderPreferences
-    };
-
-    const response = await callLLM(llmConfig, {
+    await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(llmSelection) + "\n");
+    const response = await callLLM(llmSelection.llmConfig, {
       system: SUMMARIZE_SYSTEM,
       userMessage,
       maxTokens: 400,

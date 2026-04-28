@@ -59,6 +59,7 @@ async function executeSharedPipeline(
       await emit("run.phase_changed", { phase });
     },
     services.config.pipelineFile,
+    typeof payload.payloadJson.pipelineId === "string" ? payload.payloadJson.pipelineId : undefined,
     async (detail) => {
       await emit("run.progress", { detail });
     },

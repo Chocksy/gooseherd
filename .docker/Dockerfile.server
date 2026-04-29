@@ -1,0 +1,7 @@
+ARG BASE_RUNNER_IMAGE
+FROM ${BASE_RUNNER_IMAGE}
+
+# Project-specific runner image for NetsoftHoldings/hubstaff-server.
+# Inherits everything from the default runner (sandbox base + dist + pipelines).
+# Add hubstaff-server tooling (ruby, bundler, libpq, node deps, etc.) below
+# so that pipeline shell commands inside the K8s job can run server tests.

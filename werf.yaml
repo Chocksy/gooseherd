@@ -16,3 +16,12 @@ dockerfile: .docker/Dockerfile
 target: runner
 args:
   SANDBOX_BASE_IMAGE: {{ $sandboxBaseImage | quote }}
+
+---
+image: runner/server
+dockerfile: .docker/Dockerfile.server
+dependencies:
+- image: runner
+  imports:
+  - type: ImageName
+    targetBuildArg: BASE_RUNNER_IMAGE

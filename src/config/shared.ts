@@ -164,6 +164,7 @@ export const envSchema = z.object({
   ENCRYPTION_KEY_FILE: z.string().optional(),
 
   KUBERNETES_RUNNER_IMAGE: z.string().optional(),
+  KUBERNETES_RUNNER_IMAGE_SERVER: z.string().optional(),
   KUBERNETES_INTERNAL_BASE_URL: z.string().optional(),
   KUBERNETES_NAMESPACE: z.string().optional(),
   KUBERNETES_RUNNER_ENV_SECRET: z.string().optional(),

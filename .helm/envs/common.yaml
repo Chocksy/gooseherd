@@ -48,6 +48,7 @@ configs:
       SANDBOX_RUNTIME: "kubernetes"
       KUBERNETES_NAMESPACE: '{{ .Release.Namespace }}'
       KUBERNETES_RUNNER_IMAGE: '{{ .Values.werf.image.runner | default "gooseherd/k8s-runner:dev" }}'
+      KUBERNETES_RUNNER_IMAGE_SERVER: '{{ index .Values.werf.image "runner/server" | default "" }}'
       KUBERNETES_INTERNAL_BASE_URL: 'http://gooseherd.{{ .Release.Namespace }}.svc.cluster.local:8787'
       KUBERNETES_RUNNER_ENV_SECRET: "gooseherd-env"
       KUBERNETES_RUNNER_ENV_CONFIGMAP: "gooseherd-config"

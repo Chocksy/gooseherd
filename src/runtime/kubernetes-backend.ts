@@ -20,6 +20,7 @@ import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
 import { readKubernetesTerminalFact } from "./kubernetes/runtime-facts.js";
 import { buildRunnerConfigPayload } from "./runner-config-payload.js";
+import { resolveRunnerImage } from "./runner-image-resolver.js";
 import { isRecord } from "../utils/type-guards.js";
 import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
 
@@ -103,7 +104,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
     const job = buildRunJobSpec({
       runId: run.id,
       namespace: this.namespace,
-      image: this.deps.runnerImage,
+      image: resolveRunnerImage(run.repoSlug, this.deps.runnerImage),
       secretName,
       internalBaseUrl: normalizeBaseUrl(this.deps.internalBaseUrl),
       pipelineFile: ctx.pipelineFile ?? "pipelines/pipeline.yml",

@@ -25,3 +25,6 @@ dependencies:
   imports:
   - type: ImageName
     targetBuildArg: BASE_RUNNER_IMAGE
+secrets:
+- id: bundle_token
+  env: BUNDLE_RUBYGEMS__PKG__GITHUB__COM

@@ -52,6 +52,7 @@ configs:
       KUBERNETES_INTERNAL_BASE_URL: 'http://gooseherd.{{ .Release.Namespace }}.svc.cluster.local:8787'
       KUBERNETES_RUNNER_ENV_SECRET: "gooseherd-env"
       KUBERNETES_RUNNER_ENV_CONFIGMAP: "gooseherd-config"
+      KUBERNETES_RUNNER_DB_POOL_SIZE: "16"
       AGENT_COMMAND_TEMPLATE: 'bash scripts/dummy-agent.sh {{ "{{repo_dir}}" }} {{ "{{prompt_file}}" }} {{ "{{run_id}}" }}'
       MAX_TASK_CHARS: "4000"
       AGENT_TIMEOUT_SECONDS: "1200"
@@ -73,3 +74,6 @@ secrets:
       DASHBOARD_TOKEN: "DASHBOARD_TOKEN"
       JIRA_USER: "JIRA_USER"
       JIRA_API_TOKEN: "JIRA_API_TOKEN"
+      RUNNER_DB_PG_ADMIN_URL_SERVER: "RUNNER_DB_PG_ADMIN_URL_SERVER"
+      RUNNER_DB_CH_ADMIN_URL_SERVER: "RUNNER_DB_CH_ADMIN_URL_SERVER"
+      RUNNER_DB_REDIS_URL_SERVER: "RUNNER_DB_REDIS_URL_SERVER"

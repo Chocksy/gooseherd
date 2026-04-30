@@ -17,6 +17,11 @@ import type { RunPrefetchContext } from "./runtime/run-context-types.js";
 import { isFeatureDeliveryAutoReviewOrRepairCiRun, selectPipelineIdForIntent } from "./runs/run-intent.js";
 import type { EmitRunCheckpointInput, RunCheckpointStore } from "./runs/run-checkpoint-store.js";
 import type { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
+import { resolveRunnerProfile } from "./runtime/runner-profile.js";
+import type { RunnerDbSlotManager } from "./runtime/runner-db-slot-manager.js";
+
+/** Delay before re-checking the runner DB slot pool when it was full. */
+const RUNNER_DB_SLOT_REQUEUE_DELAY_MS = 10_000;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -208,6 +213,7 @@ export class RunManager {
     runContextPrefetcher?: Pick<RunContextPrefetcher, "prefetch">,
     private readonly checkpointStore?: RunCheckpointStore,
     private readonly checkpointProcessor?: RunCheckpointProcessor,
+    private readonly runnerDbSlotManager?: RunnerDbSlotManager,
   ) {
     this.runContextPrefetcher = runContextPrefetcher ?? NOOP_RUN_CONTEXT_PREFETCHER;
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
@@ -621,6 +627,25 @@ export class RunManager {
     if (run.status === "cancelled" || run.status === "completed" || run.status === "failed") {
       return;
     }
+
+    // Per-Run isolated test DB: acquire slot before doing anything that
+    // would mark the Run as "running". On pool exhaustion, leave the
+    // Run in `queued` and re-enqueue after a delay — the existing
+    // PQueue picks it up like any other queued Run.
+    if (this.runnerDbSlotManager) {
+      const profile = resolveRunnerProfile(run.repoSlug);
+      if (profile.needsDbSlot) {
+        const existingSlot = await this.runnerDbSlotManager.getSlotForRun(stableRunId);
+        if (existingSlot === null) {
+          const slotId = await this.runnerDbSlotManager.acquireForRun(stableRunId, profile);
+          if (slotId === null) {
+            setTimeout(() => this.requeueExistingRun(stableRunId), RUNNER_DB_SLOT_REQUEUE_DELAY_MS).unref?.();
+            return;
+          }
+        }
+      }
+    }
+
     let statusMessageTs: string | undefined = run.statusMessageTs;
     let heartbeatTick = 0;
     let currentPhase = "cloning";

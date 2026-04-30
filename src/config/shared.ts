@@ -169,6 +169,11 @@ export const envSchema = z.object({
   KUBERNETES_NAMESPACE: z.string().optional(),
   KUBERNETES_RUNNER_ENV_SECRET: z.string().optional(),
   KUBERNETES_RUNNER_ENV_CONFIGMAP: z.string().optional(),
+
+  KUBERNETES_RUNNER_DB_POOL_SIZE: z.string().optional(),
+  RUNNER_DB_PG_ADMIN_URL_SERVER: z.string().optional(),
+  RUNNER_DB_CH_ADMIN_URL_SERVER: z.string().optional(),
+  RUNNER_DB_REDIS_URL_SERVER: z.string().optional(),
 });
 
 export type ParsedEnv = z.infer<typeof envSchema>;

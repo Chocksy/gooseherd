@@ -18,6 +18,8 @@ export interface KubernetesRunnerJobInput {
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
   jobName?: string;
+  /** Additional plain-value env vars merged into the runner container. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface SecretManifest {
@@ -208,6 +210,7 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
                 { name: "OBSERVER_ENABLED", value: "false" },
                 { name: "SUPERVISOR_ENABLED", value: "false" },
                 { name: "CI_WAIT_ENABLED", value: "false" },
+                ...Object.entries(input.extraEnv ?? {}).map(([name, value]) => ({ name, value })),
               ],
             },
           ],

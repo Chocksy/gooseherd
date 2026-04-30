@@ -40,6 +40,8 @@ import { FileArtifactStore } from "./runtime/file-artifact-store.js";
 import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { RuntimeReconciler } from "./runtime/reconciler.js";
 import { recoverRunsAfterRestart } from "./runtime/startup-recovery.js";
+import { RunnerDbSlotManager } from "./runtime/runner-db-slot-manager.js";
+import { resolveRunnerProfile } from "./runtime/runner-profile.js";
 import { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
 import { RunCheckpointStore } from "./runs/run-checkpoint-store.js";
 import { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
@@ -744,6 +746,9 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     publicBaseUrl,
     coreServices.controlPlaneStore,
   );
+  const runnerDbSlotManager = config.sandboxRuntime === "kubernetes"
+    ? new RunnerDbSlotManager(db)
+    : undefined;
   const kubernetesBackend = config.sandboxRuntime === "kubernetes"
     ? new (await import("./runtime/kubernetes-backend.js")).KubernetesExecutionBackend({
         controlPlaneStore: coreServices.controlPlaneStore,
@@ -757,6 +762,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
         namespace: resolveKubernetesNamespace(),
         runnerConfigSource: config,
+        runnerDbSlotManager,
       })
     : undefined;
   const runtimeRegistry: RuntimeRegistry = {
@@ -775,6 +781,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     runContextPrefetcher,
     runCheckpointStore,
     runCheckpointProcessor,
+    runnerDbSlotManager,
   );
   runManager.onRunTerminal((runId, _status, runtime) => {
     if (runtime !== "kubernetes") {
@@ -785,7 +792,37 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
       const message = error instanceof Error ? error.message : "unknown";
       logError("Failed to reconcile terminal kubernetes run", { runId, error: message });
     });
+
+    if (runnerDbSlotManager) {
+      // Best-effort teardown — Run already reached terminal state, slot
+      // residue is bounded and the orphan sweeper is the safety net.
+      coreServices.store.getRun(runId).then((run) => {
+        if (!run) return;
+        const profile = resolveRunnerProfile(run.repoSlug);
+        return runnerDbSlotManager.releaseForRun(runId, profile);
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : "unknown";
+        logError("Failed to release runner DB slot", { runId, error: message });
+      });
+    }
   });
+
+  if (runnerDbSlotManager) {
+    const SWEEP_INTERVAL_MS = 60_000;
+    const ORPHAN_MAX_AGE_MS = 30 * 60_000;
+    const sweepTimer = setInterval(() => {
+      const cutoff = new Date(Date.now() - ORPHAN_MAX_AGE_MS);
+      runnerDbSlotManager.sweepOrphans(cutoff, async (runId) => {
+        if (!runId) return null;
+        const run = await coreServices.store.getRun(runId);
+        return run ? resolveRunnerProfile(run.repoSlug) : null;
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : "unknown";
+        logError("Failed to sweep runner DB slot orphans", { error: message });
+      });
+    }, SWEEP_INTERVAL_MS);
+    sweepTimer.unref?.();
+  }
 
   const conversationStore = new ConversationStore({ db });
   await conversationStore.load();

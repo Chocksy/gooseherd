@@ -21,6 +21,7 @@ import {
   primaryKey,
   customType,
   foreignKey,
+  smallint,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { RunPrefetchContext } from "../runtime/run-context-types.js";
@@ -760,6 +761,24 @@ export const agentProfilePolicyMembers = pgTable(
     uniqueIndex("agent_profile_policy_members_policy_profile_idx").on(t.policyId, t.profileId, t.role),
     index("agent_profile_policy_members_policy_idx").on(t.policyId),
     index("agent_profile_policy_members_profile_idx").on(t.profileId),
+  ]
+);
+
+// ── runner_db_slots ──
+
+export const runnerDbSlots = pgTable(
+  "runner_db_slots",
+  {
+    id: smallint("id").primaryKey(),
+    status: text("status").notNull().default("free"),
+    runId: uuid("run_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("runner_db_slots_status_idx").on(t.status),
+    index("runner_db_slots_claimed_at_idx")
+      .on(t.claimedAt)
+      .where(sql`claimed_at IS NOT NULL`),
   ]
 );
 

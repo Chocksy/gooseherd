@@ -20,7 +20,14 @@ import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
 import { readKubernetesTerminalFact } from "./kubernetes/runtime-facts.js";
 import { buildRunnerConfigPayload } from "./runner-config-payload.js";
-import { resolveRunnerImage } from "./runner-image-resolver.js";
+import {
+  parseDbConnectionUrl,
+  resolveRunnerImage,
+  resolveRunnerProfile,
+  type RunnerDbHosts,
+} from "./runner-profile.js";
+import { resolveRunnerDbAdminUrls } from "./runner-db-env.js";
+import type { RunnerDbSlotManager } from "./runner-db-slot-manager.js";
 import { isRecord } from "../utils/type-guards.js";
 import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
 
@@ -40,6 +47,7 @@ interface KubernetesExecutionBackendDeps {
   pollIntervalMs?: number;
   waitTimeoutMs?: number;
   completionWaitMs?: number;
+  runnerDbSlotManager?: RunnerDbSlotManager;
 }
 
 export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernetes"> {
@@ -101,6 +109,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       secretName,
       runToken: token.token,
     });
+    const extraEnv = await this.buildExtraEnv(run);
     const job = buildRunJobSpec({
       runId: run.id,
       namespace: this.namespace,
@@ -112,6 +121,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       runnerEnvSecretName: this.deps.runnerEnvSecretName,
       runnerEnvConfigMapName: this.deps.runnerEnvConfigMapName,
       jobName,
+      extraEnv,
     });
     await writeFile(manifestPath, renderManifestYaml(redactSecretToken(secret), job), "utf8");
     let lastDrainedEventSequence = 0;
@@ -136,6 +146,29 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
   private get resourceClient(): Pick<KubernetesResourceClient, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret"> {
     this.resourceClientInstance ??= KubernetesResourceClient.fromDefaultConfig();
     return this.resourceClientInstance;
+  }
+
+  private async buildExtraEnv(run: RunRecord & { runtime: "kubernetes" }): Promise<Record<string, string> | undefined> {
+    const profile = resolveRunnerProfile(run.repoSlug);
+    if (!profile.needsDbSlot || !profile.envTemplate || !this.deps.runnerDbSlotManager) {
+      return undefined;
+    }
+    const slotId = await this.deps.runnerDbSlotManager.getSlotForRun(run.id);
+    if (slotId === null) {
+      return undefined;
+    }
+    const adminUrls = resolveRunnerDbAdminUrls(profile.adminUrlSuffix);
+    const hosts: RunnerDbHosts | null = (() => {
+      const pg = parseDbConnectionUrl(adminUrls.pg, 5432);
+      const ch = parseDbConnectionUrl(adminUrls.clickhouse, 8123);
+      const redis = parseDbConnectionUrl(adminUrls.redis, 6379);
+      if (!pg || !ch || !redis) return null;
+      return { pg, clickhouse: ch, redis };
+    })();
+    if (!hosts) {
+      return undefined;
+    }
+    return profile.envTemplate(slotId, hosts);
   }
 
   private async waitForTerminalFact(

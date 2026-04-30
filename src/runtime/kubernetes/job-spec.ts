@@ -63,7 +63,7 @@ export interface JobManifest {
       };
       spec: {
         restartPolicy: "Never";
-        volumes: Array<{ name: "work"; emptyDir: Record<string, never> }>;
+        volumes: Array<{ name: "work"; emptyDir: { sizeLimit: string } }>;
         containers: Array<{
           name: "runner";
           image: string;
@@ -191,7 +191,7 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
         },
         spec: {
           restartPolicy: "Never",
-          volumes: [{ name: "work", emptyDir: {} }],
+          volumes: [{ name: "work", emptyDir: { sizeLimit: "1.5Gi" } }],
           containers: [
             {
               name: "runner",

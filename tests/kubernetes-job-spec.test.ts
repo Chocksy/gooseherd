@@ -43,7 +43,7 @@ test("buildRunJobSpec uses one Job per run with emptyDir workspace and runner en
   assert.equal(spec.kind, "Job");
   assert.equal(spec.metadata.name, defaultJobName(runId));
   assert.equal(spec.spec.backoffLimit, 0);
-  assert.equal(spec.spec.template.spec.volumes[0]?.emptyDir != null, true);
+  assert.deepEqual(spec.spec.template.spec.volumes[0], { name: "work", emptyDir: { sizeLimit: "1.5Gi" } });
   assert.equal(spec.spec.template.spec.containers[0]?.image, "gooseherd/k8s-runner:dev");
   assert.deepEqual(spec.spec.template.spec.containers[0]?.envFrom, [
     { secretRef: { name: "gooseherd-env" } },

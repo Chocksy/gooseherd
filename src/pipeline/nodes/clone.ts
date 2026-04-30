@@ -6,7 +6,6 @@ import { runShell, runShellCapture, runShellWithProgress, shellEscape, appendLog
 import { buildAuthenticatedGitUrl } from "../../github.js";
 import { loadRepoConfig, applyRepoConfig } from "../repo-config.js";
 import { hasReusableBranch, isFollowUpRun } from "../branch-reuse.js";
-import { resolveCloneReference } from "../clone-reference-resolver.js";
 
 /**
  * Clone node: clone repo, checkout branch (or create new), set git config.
@@ -51,19 +50,11 @@ export async function cloneNode(
   const depthFlag = depth > 0 ? ` --depth ${String(depth)}` : "";
   const progressFlag = deps.onDetail ? " --progress" : "";
 
-  // If a baked seed clone is present (image-specific runner), reuse its git
-  // objects via --reference so the live clone is near-instant.
-  const referencePath = await resolveCloneReference();
-  const referenceFlag = referencePath ? ` --reference ${shellEscape(referencePath)}` : "";
-  if (referencePath) {
-    await appendLog(logFile, `\n[info] using seed clone at ${referencePath} as git --reference\n`);
-  }
-
   // Map repoDir for command string (no-op outside sandbox, maps to /work/repo in sandbox)
   const cloneTarget = mapToContainerPath(repoDir);
   const cloneProgressRe = /(Receiving|Resolving|Counting) objects:\s+(\d+)%/;
   await runShellWithProgress(
-    `git clone${depthFlag}${progressFlag}${referenceFlag} ${shellEscape(repoUrl)} ${shellEscape(cloneTarget)}`,
+    `git clone${depthFlag}${progressFlag} ${shellEscape(repoUrl)} ${shellEscape(cloneTarget)}`,
     {
       logFile,
       onStderr: deps.onDetail ? (chunk) => {

@@ -2,8 +2,9 @@
 #
 # Project-specific runner image for NetsoftHoldings/hubstaff-server.
 # Layered on top of the default runner image (= sandbox + gooseherd dist).
-# Adds Ruby, native build deps, a pre-baked clone of hubstaff-server,
-# and a warm bundle cache so RSpec runs inside the K8s job have everything ready.
+# Adds Ruby, native build deps, and a warm bundle cache so RSpec runs
+# inside the K8s job have all gems pre-installed. The hubstaff-server
+# repo itself is cloned at runtime by the orchestrator's clone node.
 
 ARG BASE_RUNNER_IMAGE
 ARG FULLSTAQ_RUBY_IMAGE=435747240845.dkr.ecr.us-east-1.amazonaws.com/quay/evl.ms/fullstaq-ruby:3.3.8-jemalloc-bookworm-slim
@@ -14,12 +15,18 @@ FROM ${FULLSTAQ_RUBY_IMAGE} AS ruby-source
 # Stage 2 — layer Ruby + project tooling on top of the gooseherd runner.
 FROM ${BASE_RUNNER_IMAGE}
 
+ARG BUNDLE_RUBYGEMS__PKG__GITHUB__COM
+# Workflow passes the sha256 of master's Gemfile.lock so this stage's cache
+# invalidates whenever it actually changes upstream.
+ARG GEMFILE_LOCK_SHA
+
 USER root
 
 ENV PATH="/usr/local/bundle/bin:/usr/lib/fullstaq-ruby/versions/3.3.8-jemalloc/bin:${PATH}" \
     BUNDLE_PATH=/usr/local/bundle \
     GEM_HOME=/usr/local/bundle/ruby/3.3.0 \
-    BUNDLE_WITHOUT="production:staging:review"
+    BUNDLE_WITHOUT="production:staging:review" \
+    BUNDLE_GITHUB__COM=${BUNDLE_RUBYGEMS__PKG__GITHUB__COM}
 
 # System packages — native gem build deps (build-essential, libpq, cmake) and runtime tooling (imagemagick).
 RUN apt-get update -qq \
@@ -41,29 +48,26 @@ COPY --from=ruby-source /usr/lib/fullstaq-ruby /usr/lib/fullstaq-ruby
 # Smoke check — ruby resolves its shared libs before we go further.
 RUN ruby --version
 
-# Hand the gem store and seed dir to the runtime user so bundle install
-# at build time, and again at runtime, doesn't trip on permissions.
-RUN mkdir -p /usr/local/bundle/ruby/3.3.0 /app/seed_repo \
-    && chown -R gooseherd:gooseherd /usr/local/bundle /app/seed_repo
+# Hand the gem store to the runtime user so bundle install at build time,
+# and again at runtime, doesn't trip on permissions.
+RUN mkdir -p /usr/local/bundle/ruby/3.3.0 \
+    && chown -R gooseherd:gooseherd /usr/local/bundle
 
 USER gooseherd
 WORKDIR /app
 
-# Most volatile layer — invalidated whenever hubstaff-server master moves
-# or Gemfile.lock changes. Kept last so all layers above stay cached.
-#
-# BuildKit secret carries BUNDLE_RUBYGEMS__PKG__GITHUB__COM (format "user:token").
-# Mounted only for this RUN — never embedded in any image layer.
-RUN --mount=type=secret,id=bundle_token,uid=1000,mode=0400 \
-    set -eu; \
-    GH_AUTH="$(cat /run/secrets/bundle_token)"; \
-    git clone "https://${GH_AUTH}@github.com/NetsoftHoldings/hubstaff-server.git" /app/seed_repo; \
-    cd /app/seed_repo; \
-    git remote set-url origin https://github.com/NetsoftHoldings/hubstaff-server.git; \
+# Sparse-checkouts Gemfile + Gemfile.lock from master, then bundle install.
+# insteadOf gives the clone an authenticated URL; cleared at the end.
+RUN set -eu; \
+    echo "Building with Gemfile.lock SHA: ${GEMFILE_LOCK_SHA}"; \
+    git config --global --add url."https://${BUNDLE_RUBYGEMS__PKG__GITHUB__COM}@github.com/".insteadOf "https://github.com/"; \
+    git config --global --add url."https://${BUNDLE_RUBYGEMS__PKG__GITHUB__COM}@github.com/".insteadOf "git@github.com:"; \
+    git clone --depth=1 --filter=blob:none --no-checkout --sparse \
+        https://github.com/NetsoftHoldings/hubstaff-server.git /app/bundle_seed; \
+    cd /app/bundle_seed; \
+    git sparse-checkout set --no-cone Gemfile Gemfile.lock; \
+    git checkout; \
     BUNDLER_VERSION="$(awk '/BUNDLED WITH/{getline;print}' Gemfile.lock | xargs)"; \
     gem install bundler -v "${BUNDLER_VERSION}" --no-document; \
-    BUNDLE_RUBYGEMS__PKG__GITHUB__COM="${GH_AUTH}" \
-    BUNDLE_GITHUB__COM="${GH_AUTH}" \
-        bundle install --jobs 4 --retry 3; \
-    node config/build/create-npmrc.js "${GH_AUTH##*:}"; \
-    mv .npmrc /home/gooseherd/.npmrc
+    bundle install --jobs 4 --retry 3; \
+    git config --global --unset-all url."https://${BUNDLE_RUBYGEMS__PKG__GITHUB__COM}@github.com/".insteadOf

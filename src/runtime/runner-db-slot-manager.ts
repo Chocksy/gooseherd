@@ -9,7 +9,7 @@ import type { Database } from "../db/index.js";
 import { RunnerDbSlotStore } from "./runner-db-slots.js";
 import { provisionRunnerDb, teardownRunnerDb } from "./runner-db-resources.js";
 import type { RunnerProfile } from "./runner-profile.js";
-import { resolveRunnerDbAdminUrls } from "./runner-db-env.js";
+import { resolveRunnerDbUrls } from "./runner-db-env.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 
 export class RunnerDbSlotManager {
@@ -34,7 +34,7 @@ export class RunnerDbSlotManager {
       return null;
     }
 
-    const urls = resolveRunnerDbAdminUrls(profile.adminUrlSuffix);
+    const urls = resolveRunnerDbUrls();
     try {
       await provisionRunnerDb(slotId, profile, urls);
     } catch (error) {
@@ -93,7 +93,7 @@ export class RunnerDbSlotManager {
   }
 
   private async tearDownAndRelease(slotId: number, profile: RunnerProfile): Promise<void> {
-    const urls = resolveRunnerDbAdminUrls(profile.adminUrlSuffix);
+    const urls = resolveRunnerDbUrls();
     try {
       await teardownRunnerDb(slotId, profile, urls);
     } catch (error) {

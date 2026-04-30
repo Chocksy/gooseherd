@@ -29,8 +29,6 @@ export interface RunnerProfile {
   cpuEnv?: string;
   /** Env-var name that holds the memory request/limit override (e.g. "3Gi"). */
   memoryEnv?: string;
-  /** Suffix used for `RUNNER_DB_*_ADMIN_URL_<SUFFIX>` env-var lookup. */
-  adminUrlSuffix: string;
   /** Whether the Run needs an isolated test-DB slot (PG/CH/Redis). */
   needsDbSlot: boolean;
   /** Builds env vars that the runner pod sees for this Run. */
@@ -39,7 +37,6 @@ export interface RunnerProfile {
 
 const DEFAULT_PROFILE: RunnerProfile = {
   imageEnv: "KUBERNETES_RUNNER_IMAGE",
-  adminUrlSuffix: "",
   needsDbSlot: false,
 };
 
@@ -47,7 +44,6 @@ const HUBSTAFF_SERVER_PROFILE: RunnerProfile = {
   imageEnv: "KUBERNETES_RUNNER_IMAGE_SERVER",
   cpuEnv: "KUBERNETES_RUNNER_CPU_SERVER",
   memoryEnv: "KUBERNETES_RUNNER_MEMORY_SERVER",
-  adminUrlSuffix: "SERVER",
   needsDbSlot: true,
   envTemplate: (slot, hosts) => {
     const dbName = `goose_${String(slot)}`;
@@ -131,7 +127,7 @@ function formatRedisUrl(info: DbConnectionInfo, slot: number): string {
 }
 
 /**
- * Parses an admin URL into a structured connection object. Supports:
+ * Parses a connection URL into a structured connection object. Supports:
  *  - postgres://user:pass@host:5432/dbname
  *  - http(s)://user:pass@host:8123
  *  - redis://[user:pass@]host:6379

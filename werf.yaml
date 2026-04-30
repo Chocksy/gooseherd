@@ -16,15 +16,3 @@ dockerfile: .docker/Dockerfile
 target: runner
 args:
   SANDBOX_BASE_IMAGE: {{ $sandboxBaseImage | quote }}
-
----
-image: runner/server
-dockerfile: .docker/Dockerfile.server
-dependencies:
-- image: runner
-  imports:
-  - type: ImageName
-    targetBuildArg: BASE_RUNNER_IMAGE
-secrets:
-- id: bundle_token
-  env: BUNDLE_RUBYGEMS__PKG__GITHUB__COM

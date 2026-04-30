@@ -27,7 +27,7 @@ import {
   resolveRunnerResources,
   type RunnerDbHosts,
 } from "./runner-profile.js";
-import { resolveRunnerDbAdminUrls } from "./runner-db-env.js";
+import { resolveRunnerDbUrls } from "./runner-db-env.js";
 import type { RunnerDbSlotManager } from "./runner-db-slot-manager.js";
 import { isRecord } from "../utils/type-guards.js";
 import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
@@ -159,11 +159,11 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
     if (slotId === null) {
       return undefined;
     }
-    const adminUrls = resolveRunnerDbAdminUrls(profile.adminUrlSuffix);
+    const dbUrls = resolveRunnerDbUrls();
     const hosts: RunnerDbHosts | null = (() => {
-      const pg = parseDbConnectionUrl(adminUrls.pg, 5432);
-      const ch = parseDbConnectionUrl(adminUrls.clickhouse, 8123);
-      const redis = parseDbConnectionUrl(adminUrls.redis, 6379);
+      const pg = parseDbConnectionUrl(dbUrls.pg, 5432);
+      const ch = parseDbConnectionUrl(dbUrls.clickhouse, 8123);
+      const redis = parseDbConnectionUrl(dbUrls.redis, 6379);
       if (!pg || !ch || !redis) return null;
       return { pg, clickhouse: ch, redis };
     })();

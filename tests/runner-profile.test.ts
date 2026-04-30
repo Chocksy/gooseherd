@@ -60,7 +60,6 @@ test("resolveRunnerProfile: hubstaff-server is db-slot enabled with envTemplate"
   assert.equal(profile.imageEnv, "KUBERNETES_RUNNER_IMAGE_SERVER");
   assert.equal(profile.cpuEnv, "KUBERNETES_RUNNER_CPU_SERVER");
   assert.equal(profile.memoryEnv, "KUBERNETES_RUNNER_MEMORY_SERVER");
-  assert.equal(profile.adminUrlSuffix, "SERVER");
   assert.ok(profile.envTemplate);
 });
 

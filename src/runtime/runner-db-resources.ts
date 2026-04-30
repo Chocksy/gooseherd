@@ -13,18 +13,13 @@
 import net from "node:net";
 import postgres from "postgres";
 import type { RunnerProfile } from "./runner-profile.js";
+import type { RunnerDbUrls } from "./runner-db-env.js";
 import { logInfo, logWarn } from "../logger.js";
-
-export interface RunnerDbAdminUrls {
-  pg?: string;
-  clickhouse?: string;
-  redis?: string;
-}
 
 export async function provisionRunnerDb(
   slotId: number,
   profile: RunnerProfile,
-  urls: RunnerDbAdminUrls,
+  urls: RunnerDbUrls,
 ): Promise<void> {
   if (!profile.needsDbSlot) return;
   const dbName = `goose_${String(slotId)}`;
@@ -39,7 +34,7 @@ export async function provisionRunnerDb(
 export async function teardownRunnerDb(
   slotId: number,
   profile: RunnerProfile,
-  urls: RunnerDbAdminUrls,
+  urls: RunnerDbUrls,
 ): Promise<void> {
   if (!profile.needsDbSlot) return;
   const dbName = `goose_${String(slotId)}`;
@@ -53,28 +48,28 @@ export async function teardownRunnerDb(
 
 // ── Postgres ──
 
-async function provisionPgDatabase(adminUrl: string | undefined, dbName: string): Promise<void> {
-  if (!adminUrl) {
-    logWarn("runner-db-resources: skip pg provision — no admin URL", { dbName });
+async function provisionPgDatabase(url: string | undefined, dbName: string): Promise<void> {
+  if (!url) {
+    logWarn("runner-db-resources: skip pg provision — no URL configured", { dbName });
     return;
   }
-  await withPgAdmin(adminUrl, async (sql) => {
+  await withPgConnection(url, async (sql) => {
     await sql.unsafe(`DROP DATABASE IF EXISTS "${dbName}"`);
     await sql.unsafe(`CREATE DATABASE "${dbName}"`);
   });
 }
 
-async function dropPgDatabase(adminUrl: string | undefined, dbName: string): Promise<void> {
-  if (!adminUrl) {
-    logWarn("runner-db-resources: skip pg drop — no admin URL", { dbName });
+async function dropPgDatabase(url: string | undefined, dbName: string): Promise<void> {
+  if (!url) {
+    logWarn("runner-db-resources: skip pg drop — no URL configured", { dbName });
     return;
   }
-  await withPgAdmin(adminUrl, async (sql) => {
+  await withPgConnection(url, async (sql) => {
     await sql.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
   });
 }
 
-async function withPgAdmin(
+async function withPgConnection(
   url: string,
   fn: (sql: ReturnType<typeof postgres>) => Promise<void>,
 ): Promise<void> {
@@ -88,25 +83,25 @@ async function withPgAdmin(
 
 // ── ClickHouse (raw HTTP) ──
 
-async function provisionClickhouseDatabase(adminUrl: string | undefined, dbName: string): Promise<void> {
-  if (!adminUrl) {
-    logWarn("runner-db-resources: skip ch provision — no admin URL", { dbName });
+async function provisionClickhouseDatabase(url: string | undefined, dbName: string): Promise<void> {
+  if (!url) {
+    logWarn("runner-db-resources: skip ch provision — no URL configured", { dbName });
     return;
   }
-  await runClickhouseStatement(adminUrl, `DROP DATABASE IF EXISTS \`${dbName}\``);
-  await runClickhouseStatement(adminUrl, `CREATE DATABASE \`${dbName}\``);
+  await runClickhouseStatement(url, `DROP DATABASE IF EXISTS \`${dbName}\``);
+  await runClickhouseStatement(url, `CREATE DATABASE \`${dbName}\``);
 }
 
-async function dropClickhouseDatabase(adminUrl: string | undefined, dbName: string): Promise<void> {
-  if (!adminUrl) {
-    logWarn("runner-db-resources: skip ch drop — no admin URL", { dbName });
+async function dropClickhouseDatabase(url: string | undefined, dbName: string): Promise<void> {
+  if (!url) {
+    logWarn("runner-db-resources: skip ch drop — no URL configured", { dbName });
     return;
   }
-  await runClickhouseStatement(adminUrl, `DROP DATABASE IF EXISTS \`${dbName}\` SYNC`);
+  await runClickhouseStatement(url, `DROP DATABASE IF EXISTS \`${dbName}\` SYNC`);
 }
 
-async function runClickhouseStatement(adminUrl: string, query: string): Promise<void> {
-  const u = new URL(adminUrl);
+async function runClickhouseStatement(url: string, query: string): Promise<void> {
+  const u = new URL(url);
   const headers: Record<string, string> = { "Content-Type": "text/plain" };
   if (u.username) {
     const auth = Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString("base64");
@@ -130,12 +125,12 @@ async function runClickhouseStatement(adminUrl: string, query: string): Promise<
 // Single FLUSHDB on a logical-DB index doesn't justify a client dep.
 // Plaintext RESP only — TLS is on the cluster boundary, not our concern.
 
-async function flushRedisDb(adminUrl: string | undefined, slotId: number): Promise<void> {
-  if (!adminUrl) {
-    logWarn("runner-db-resources: skip redis flush — no admin URL", { slotId });
+async function flushRedisDb(url: string | undefined, slotId: number): Promise<void> {
+  if (!url) {
+    logWarn("runner-db-resources: skip redis flush — no URL configured", { slotId });
     return;
   }
-  const u = new URL(adminUrl);
+  const u = new URL(url);
   const password = u.password ? decodeURIComponent(u.password) : undefined;
   const user = u.username ? decodeURIComponent(u.username) : undefined;
 

@@ -1,0 +1,60 @@
+name: Build Runner Server Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_runner_image:
+        description: "Base runner image to layer onto"
+        required: false
+        default: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner:latest"
+  push:
+    branches:
+      - master
+    paths:
+      - .docker/Dockerfile.server
+      - .github/workflows/build-runner-server-image.yml
+
+env:
+  AWS_REGION: us-east-1
+  ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner/server
+  BASE_RUNNER_IMAGE: ${{ inputs.base_runner_image || '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner:latest' }}
+
+jobs:
+  build-and-push:
+    runs-on: [self-hosted, linux, x64, medium]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Resolve hubstaff-server Gemfile.lock SHA
+        id: gemfile_lock
+        env:
+          GH_AUTH: ${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
+        run: |
+          SHA=$(curl -fsSL -u "${GH_AUTH}" \
+            -H "Accept: application/vnd.github.raw" \
+            https://api.github.com/repos/NetsoftHoldings/hubstaff-server/contents/Gemfile.lock?ref=master \
+            | sha256sum | cut -d' ' -f1)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push runner-server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: .docker/Dockerfile.server
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BASE_RUNNER_IMAGE=${{ env.BASE_RUNNER_IMAGE }}
+            BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
+            GEMFILE_LOCK_SHA=${{ steps.gemfile_lock.outputs.sha }}
+          tags: |
+            ${{ env.ECR_IMAGE }}:latest
+            ${{ env.ECR_IMAGE }}:${{ github.sha }}

@@ -114,3 +114,41 @@ test("buildRunJobSpec uses one Job per run with emptyDir workspace and runner en
     },
   );
 });
+
+test("buildRunJobSpec applies cpu/memory override as both request and limit (Guaranteed QoS)", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    resources: { cpu: "2", memory: "3Gi" },
+  });
+
+  assert.deepEqual(spec.spec.template.spec.containers[0]?.resources, {
+    requests: { cpu: "2", memory: "3Gi" },
+    limits: { cpu: "2", memory: "3Gi" },
+  });
+});
+
+test("buildRunJobSpec falls back to sandbox defaults per dimension when only one is overridden", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    resources: { memory: "6Gi" },
+  });
+
+  assert.deepEqual(spec.spec.template.spec.containers[0]?.resources, {
+    requests: { cpu: "250m", memory: "6Gi" },
+    limits: { cpu: "1", memory: "6Gi" },
+  });
+});

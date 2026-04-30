@@ -25,6 +25,10 @@ export interface RunnerDbHosts {
 export interface RunnerProfile {
   /** Env-var name that holds the image tag for this profile. */
   imageEnv: string;
+  /** Env-var name that holds the CPU request/limit override (e.g. "2"). */
+  cpuEnv?: string;
+  /** Env-var name that holds the memory request/limit override (e.g. "3Gi"). */
+  memoryEnv?: string;
   /** Suffix used for `RUNNER_DB_*_ADMIN_URL_<SUFFIX>` env-var lookup. */
   adminUrlSuffix: string;
   /** Whether the Run needs an isolated test-DB slot (PG/CH/Redis). */
@@ -41,6 +45,8 @@ const DEFAULT_PROFILE: RunnerProfile = {
 
 const HUBSTAFF_SERVER_PROFILE: RunnerProfile = {
   imageEnv: "KUBERNETES_RUNNER_IMAGE_SERVER",
+  cpuEnv: "KUBERNETES_RUNNER_CPU_SERVER",
+  memoryEnv: "KUBERNETES_RUNNER_MEMORY_SERVER",
   adminUrlSuffix: "SERVER",
   needsDbSlot: true,
   envTemplate: (slot, hosts) => {
@@ -67,6 +73,22 @@ const PROFILES: Record<string, RunnerProfile> = {
 
 export function resolveRunnerProfile(repoSlug: string): RunnerProfile {
   return PROFILES[repoSlug] ?? DEFAULT_PROFILE;
+}
+
+/**
+ * Resolves per-repo runner CPU/memory overrides from the profile's env vars.
+ * Returns `undefined` for either dimension when the profile has no override
+ * configured or the env var is unset/blank — call sites should fall back to
+ * built-in sandbox defaults in that case.
+ */
+export function resolveRunnerResources(repoSlug: string): { cpu?: string; memory?: string } {
+  const profile = resolveRunnerProfile(repoSlug);
+  const cpu = profile.cpuEnv ? process.env[profile.cpuEnv]?.trim() : undefined;
+  const memory = profile.memoryEnv ? process.env[profile.memoryEnv]?.trim() : undefined;
+  return {
+    cpu: cpu ? cpu : undefined,
+    memory: memory ? memory : undefined,
+  };
 }
 
 /**

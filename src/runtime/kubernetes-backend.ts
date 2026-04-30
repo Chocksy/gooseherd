@@ -24,6 +24,7 @@ import {
   parseDbConnectionUrl,
   resolveRunnerImage,
   resolveRunnerProfile,
+  resolveRunnerResources,
   type RunnerDbHosts,
 } from "./runner-profile.js";
 import { resolveRunnerDbAdminUrls } from "./runner-db-env.js";
@@ -122,6 +123,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       runnerEnvConfigMapName: this.deps.runnerEnvConfigMapName,
       jobName,
       extraEnv,
+      resources: resolveRunnerResources(run.repoSlug),
     });
     await writeFile(manifestPath, renderManifestYaml(redactSecretToken(secret), job), "utf8");
     let lastDrainedEventSequence = 0;

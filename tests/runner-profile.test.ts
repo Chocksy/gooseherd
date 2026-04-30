@@ -4,6 +4,7 @@ import {
   parseDbConnectionUrl,
   resolveRunnerImage,
   resolveRunnerProfile,
+  resolveRunnerResources,
 } from "../src/runtime/runner-profile.js";
 
 const DEFAULT_IMAGE = "gooseherd/k8s-runner:dev";
@@ -57,8 +58,77 @@ test("resolveRunnerProfile: hubstaff-server is db-slot enabled with envTemplate"
   const profile = resolveRunnerProfile("NetsoftHoldings/hubstaff-server");
   assert.equal(profile.needsDbSlot, true);
   assert.equal(profile.imageEnv, "KUBERNETES_RUNNER_IMAGE_SERVER");
+  assert.equal(profile.cpuEnv, "KUBERNETES_RUNNER_CPU_SERVER");
+  assert.equal(profile.memoryEnv, "KUBERNETES_RUNNER_MEMORY_SERVER");
   assert.equal(profile.adminUrlSuffix, "SERVER");
   assert.ok(profile.envTemplate);
+});
+
+test("resolveRunnerResources reads cpu/memory from profile-specific env vars", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      KUBERNETES_RUNNER_CPU_SERVER: "2",
+      KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi",
+    };
+    assert.deepEqual(
+      resolveRunnerResources("NetsoftHoldings/hubstaff-server"),
+      { cpu: "2", memory: "3Gi" },
+    );
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("resolveRunnerResources trims whitespace and treats blanks as unset", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      KUBERNETES_RUNNER_CPU_SERVER: "  2  ",
+      KUBERNETES_RUNNER_MEMORY_SERVER: "   ",
+    };
+    assert.deepEqual(
+      resolveRunnerResources("NetsoftHoldings/hubstaff-server"),
+      { cpu: "2", memory: undefined },
+    );
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("resolveRunnerResources returns no overrides when env vars are unset", () => {
+  const originalEnv = process.env;
+  try {
+    const next = { ...originalEnv };
+    delete next.KUBERNETES_RUNNER_CPU_SERVER;
+    delete next.KUBERNETES_RUNNER_MEMORY_SERVER;
+    process.env = next;
+    assert.deepEqual(
+      resolveRunnerResources("NetsoftHoldings/hubstaff-server"),
+      { cpu: undefined, memory: undefined },
+    );
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("resolveRunnerResources returns no overrides for repos without a profile", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      KUBERNETES_RUNNER_CPU_SERVER: "2",
+      KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi",
+    };
+    assert.deepEqual(
+      resolveRunnerResources("Some/other-repo"),
+      { cpu: undefined, memory: undefined },
+    );
+  } finally {
+    process.env = originalEnv;
+  }
 });
 
 test("resolveRunnerProfile: unknown repo returns default profile (no slot)", () => {

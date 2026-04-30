@@ -23,6 +23,7 @@ import { buildRunnerConfigPayload } from "./runner-config-payload.js";
 import {
   parseDbConnectionUrl,
   resolveRunnerImage,
+  resolveRunnerNodeHeapMb,
   resolveRunnerProfile,
   resolveRunnerResources,
   type RunnerDbHosts,
@@ -124,6 +125,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       jobName,
       extraEnv,
       resources: resolveRunnerResources(run.repoSlug),
+      nodeHeapMb: resolveRunnerNodeHeapMb(run.repoSlug),
     });
     await writeFile(manifestPath, renderManifestYaml(redactSecretToken(secret), job), "utf8");
     let lastDrainedEventSequence = 0;

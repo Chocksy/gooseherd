@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   parseDbConnectionUrl,
   resolveRunnerImage,
+  resolveRunnerNodeHeapMb,
   resolveRunnerProfile,
   resolveRunnerResources,
 } from "../src/runtime/runner-profile.js";
@@ -60,7 +61,50 @@ test("resolveRunnerProfile: hubstaff-server is db-slot enabled with envTemplate"
   assert.equal(profile.imageEnv, "KUBERNETES_RUNNER_IMAGE_SERVER");
   assert.equal(profile.cpuEnv, "KUBERNETES_RUNNER_CPU_SERVER");
   assert.equal(profile.memoryEnv, "KUBERNETES_RUNNER_MEMORY_SERVER");
+  assert.equal(profile.nodeHeapMbEnv, "KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER");
   assert.ok(profile.envTemplate);
+});
+
+test("resolveRunnerNodeHeapMb reads heap cap from profile-specific env var", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = { ...originalEnv, KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "1536" };
+    assert.equal(resolveRunnerNodeHeapMb("NetsoftHoldings/hubstaff-server"), "1536");
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("resolveRunnerNodeHeapMb trims whitespace and treats blanks as unset", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = { ...originalEnv, KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "   " };
+    assert.equal(resolveRunnerNodeHeapMb("NetsoftHoldings/hubstaff-server"), undefined);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("resolveRunnerNodeHeapMb returns undefined when env is unset", () => {
+  const originalEnv = process.env;
+  try {
+    const next = { ...originalEnv };
+    delete next.KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER;
+    process.env = next;
+    assert.equal(resolveRunnerNodeHeapMb("NetsoftHoldings/hubstaff-server"), undefined);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("resolveRunnerNodeHeapMb returns undefined for repos without a profile", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = { ...originalEnv, KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "1536" };
+    assert.equal(resolveRunnerNodeHeapMb("Some/other-repo"), undefined);
+  } finally {
+    process.env = originalEnv;
+  }
 });
 
 test("resolveRunnerResources reads cpu/memory from profile-specific env vars", () => {

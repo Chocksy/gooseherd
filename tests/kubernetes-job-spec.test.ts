@@ -134,6 +134,42 @@ test("buildRunJobSpec applies cpu/memory override as both request and limit (Gua
   });
 });
 
+test("buildRunJobSpec injects NODE_OPTIONS=--max-old-space-size when nodeHeapMb is set", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    nodeHeapMb: "1536",
+  });
+
+  const env = spec.spec.template.spec.containers[0]?.env ?? [];
+  assert.deepEqual(
+    env.find((entry) => entry.name === "NODE_OPTIONS"),
+    { name: "NODE_OPTIONS", value: "--max-old-space-size=1536" },
+  );
+});
+
+test("buildRunJobSpec omits NODE_OPTIONS when nodeHeapMb is not set", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+  });
+
+  const env = spec.spec.template.spec.containers[0]?.env ?? [];
+  assert.equal(env.some((entry) => entry.name === "NODE_OPTIONS"), false);
+});
+
 test("buildRunJobSpec falls back to sandbox defaults per dimension when only one is overridden", () => {
   const runId = "12345678-1234-5678-9abc-def012345678";
   const spec = buildRunJobSpec({

@@ -29,6 +29,13 @@ export interface RunnerProfile {
   cpuEnv?: string;
   /** Env-var name that holds the memory request/limit override (e.g. "3Gi"). */
   memoryEnv?: string;
+  /**
+   * Env-var name that holds the V8 old-space heap cap in MB (e.g. "1536").
+   * When set, the runner pod gets `NODE_OPTIONS=--max-old-space-size=<value>`
+   * so Node leaves room for sibling processes (Ruby/RSpec) sharing the
+   * container memory budget instead of auto-sizing to ~75% of the cgroup.
+   */
+  nodeHeapMbEnv?: string;
   /** Whether the Run needs an isolated test-DB slot (PG/CH/Redis). */
   needsDbSlot: boolean;
   /** Builds env vars that the runner pod sees for this Run. */
@@ -44,6 +51,7 @@ const HUBSTAFF_SERVER_PROFILE: RunnerProfile = {
   imageEnv: "KUBERNETES_RUNNER_IMAGE_SERVER",
   cpuEnv: "KUBERNETES_RUNNER_CPU_SERVER",
   memoryEnv: "KUBERNETES_RUNNER_MEMORY_SERVER",
+  nodeHeapMbEnv: "KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER",
   needsDbSlot: true,
   envTemplate: (slot, hosts) => {
     const dbName = `goose_${String(slot)}`;
@@ -85,6 +93,19 @@ export function resolveRunnerResources(repoSlug: string): { cpu?: string; memory
     cpu: cpu ? cpu : undefined,
     memory: memory ? memory : undefined,
   };
+}
+
+/**
+ * Resolves the per-repo Node.js heap cap (in MB) from the profile's env var.
+ * Returns `undefined` when the profile has no `nodeHeapMbEnv` or the env is
+ * unset/blank — call sites should leave Node's default cgroup-aware sizing
+ * alone in that case.
+ */
+export function resolveRunnerNodeHeapMb(repoSlug: string): string | undefined {
+  const profile = resolveRunnerProfile(repoSlug);
+  if (!profile.nodeHeapMbEnv) return undefined;
+  const raw = process.env[profile.nodeHeapMbEnv]?.trim();
+  return raw ? raw : undefined;
 }
 
 /**

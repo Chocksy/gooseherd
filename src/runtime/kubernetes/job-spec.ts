@@ -30,6 +30,13 @@ export interface KubernetesRunnerJobInput {
     cpu?: string;
     memory?: string;
   };
+  /**
+   * V8 old-space heap cap in MB for the runner Node.js process. When set,
+   * `NODE_OPTIONS=--max-old-space-size=<value>` is added to the runner
+   * pod's env so Node leaves headroom for sibling processes (e.g. Ruby
+   * test runners) sharing the container memory budget.
+   */
+  nodeHeapMb?: string;
 }
 
 export interface SecretManifest {
@@ -229,6 +236,9 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
                 { name: "OBSERVER_ENABLED", value: "false" },
                 { name: "SUPERVISOR_ENABLED", value: "false" },
                 { name: "CI_WAIT_ENABLED", value: "false" },
+                ...(input.nodeHeapMb
+                  ? [{ name: "NODE_OPTIONS", value: `--max-old-space-size=${input.nodeHeapMb}` }]
+                  : []),
                 ...Object.entries(input.extraEnv ?? {}).map(([name, value]) => ({ name, value })),
               ],
             },

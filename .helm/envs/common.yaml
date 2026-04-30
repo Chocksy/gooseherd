@@ -51,6 +51,7 @@ configs:
       KUBERNETES_RUNNER_IMAGE_SERVER: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server:latest'
       KUBERNETES_RUNNER_CPU_SERVER: "2"
       KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi"
+      KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "1536"
       KUBERNETES_INTERNAL_BASE_URL: 'http://gooseherd.{{ .Release.Namespace }}.svc.cluster.local:8787'
       KUBERNETES_RUNNER_ENV_SECRET: "gooseherd-env"
       KUBERNETES_RUNNER_ENV_CONFIGMAP: "gooseherd-config"

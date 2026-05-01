@@ -457,6 +457,9 @@ export class RunManager {
       return undefined;
     }
 
+    // Forward every run-defining field so the retry routes through the same
+    // pipeline and stays attached to the same work item. Intentionally omitted:
+    // - prefetchContext: refreshed on dispatch (see refreshRunForDispatch).
     return this.enqueueRun({
       repoSlug: original.repoSlug,
       task: original.task,
@@ -466,7 +469,14 @@ export class RunManager {
       threadTs: original.threadTs,
       runtime: this.config.sandboxRuntime,
       skipNodes: original.skipNodes,
-      enableNodes: original.enableNodes
+      enableNodes: original.enableNodes,
+      workItemId: original.workItemId,
+      intent: original.intent,
+      pipelineHint: original.pipelineHint,
+      prUrl: original.prUrl,
+      prNumber: original.prNumber,
+      autoReviewSourceSubstate: original.autoReviewSourceSubstate,
+      teamId: original.teamId,
     });
   }
 

@@ -807,6 +807,78 @@ test("retryRun creates a new run from a completed run", async () => {
   await testDb.cleanup();
 });
 
+test("retryRun preserves work-item routing fields from a failed CI-fix run", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  // Pin the mock execution result's PR metadata to the original run's PR so
+  // the eventual completion update (which races with the persisted-record
+  // read below) cannot overwrite prUrl/prNumber with mismatched values.
+  // This mirrors real CI-fix retries, which reuse the same PR.
+  const mockPipeline = makeMockPipelineEngine({
+    prUrl: "https://github.com/org/hubstaff-server/pull/18009",
+    prNumber: 18009,
+  });
+  const config = makeConfig();
+
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+
+  const workItemId = "22222222-2222-2222-2222-222222222222";
+  const teamId = "33333333-3333-3333-3333-333333333333";
+  const intent = {
+    version: 1,
+    kind: "feature_delivery.repair_ci",
+    source: "work_item",
+    workItemId,
+    repo: "org/hubstaff-server",
+    prNumber: 18009,
+    prUrl: "https://github.com/org/hubstaff-server/pull/18009",
+    sourceSubstate: "ci_failed",
+    triggerReason: "ci.failed",
+  } as const;
+
+  const original = await store.createRun({
+    repoSlug: "org/hubstaff-server",
+    task: "Investigate and fix CI for PR #18009",
+    baseBranch: "master",
+    requestedBy: "work-item:ci-fix",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: "local",
+    workItemId,
+    intent,
+    pipelineHint: "ci-fix",
+    prUrl: "https://github.com/org/hubstaff-server/pull/18009",
+    prNumber: 18009,
+    autoReviewSourceSubstate: "ci_failed",
+    teamId,
+    skipNodes: ["lint_fix"],
+    enableNodes: ["browser_verify"],
+  }, "testherd");
+
+  // Mark the original as failed so retry is allowed.
+  await store.updateRun(original.id, { status: "failed", phase: "failed", error: "completion missing" });
+
+  const retried = await manager.retryRun(original.id, "supervisor");
+  assert.ok(retried, "Retry should return a new run");
+
+  // Persisted DB record (not just the in-memory return value) must carry all fields.
+  const persisted = (await store.getRun(retried!.id))!;
+  assert.equal(persisted.workItemId, workItemId, "workItemId must survive retry");
+  assert.equal(persisted.intent?.kind, "feature_delivery.repair_ci", "intent must survive retry");
+  assert.equal(persisted.intentKind, "feature_delivery.repair_ci");
+  assert.equal(persisted.pipelineHint, "ci-fix");
+  assert.equal(persisted.prUrl, "https://github.com/org/hubstaff-server/pull/18009");
+  assert.equal(persisted.prNumber, 18009);
+  assert.equal(persisted.autoReviewSourceSubstate, "ci_failed");
+  assert.equal(persisted.teamId, teamId);
+  assert.deepEqual(persisted.skipNodes, ["lint_fix"]);
+  assert.deepEqual(persisted.enableNodes, ["browser_verify"]);
+  assert.equal(persisted.requestedBy, "supervisor");
+
+  await waitForRunDone(store, retried!.id);
+  await testDb.cleanup();
+});
+
 test("retryRun returns undefined for queued/running run", async () => {
   const { store, testDb } = await setupTestStore();
   const mockClient = makeMockSlackClient();

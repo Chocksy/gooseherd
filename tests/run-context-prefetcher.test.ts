@@ -378,7 +378,49 @@ test("RunContextPrefetcher fail-closes when GitHub fetch fails for a linked PR",
   );
 });
 
-test("RunContextPrefetcher soft-fails when Jira fetch fails and continues without Jira context", async () => {
+test("RunContextPrefetcher soft-fails Jira and surfaces a warning when GitHub context is available", async () => {
+  const prefetcher = new RunContextPrefetcher({
+    workItems: {
+      requireWorkItem: async () =>
+        makeWorkItem({
+          githubPrNumber: 17,
+          githubPrUrl: "https://github.com/owner/repo/pull/17",
+          jiraIssueKey: "HBL-17",
+        }),
+    },
+    github: {
+      getPullRequest: async () => ({
+        number: 17,
+        url: "https://github.com/owner/repo/pull/17",
+        title: "PR",
+        body: "PR body",
+        state: "open",
+        headSha: "sha-17",
+      }),
+      listPullRequestDiscussionComments: async () => [],
+      listPullRequestReviews: async () => [],
+      listUnresolvedReviewComments: async () => [],
+      getPullRequestCiSnapshot: async () => ({ headSha: "sha-17", conclusion: "success" }),
+    },
+    jira: {
+      getIssue: async () => {
+        throw new Error("404 Not Found");
+      },
+      getComments: async () => [],
+    },
+  });
+
+  const result = await prefetcher.prefetch(makeRun({ workItemId: "11111111-1111-1111-1111-111111111111" }));
+
+  assert.ok(result);
+  assert.equal(result.jira, undefined);
+  assert.ok(result.github);
+  assert.deepEqual(result.meta.sources.sort(), ["github_ci", "github_pr"]);
+  assert.equal(result.meta.warnings?.length, 1);
+  assert.match(result.meta.warnings![0]!, /Jira prefetch skipped for HBL-17.*404 Not Found/);
+});
+
+test("RunContextPrefetcher fail-closes when Jira fetch fails for a Jira-only work item", async () => {
   const prefetcher = new RunContextPrefetcher({
     workItems: {
       requireWorkItem: async () =>
@@ -394,12 +436,10 @@ test("RunContextPrefetcher soft-fails when Jira fetch fails and continues withou
     },
   });
 
-  const result = await prefetcher.prefetch(makeRun({ workItemId: "11111111-1111-1111-1111-111111111111" }));
-
-  assert.ok(result);
-  assert.equal(result.jira, undefined);
-  assert.deepEqual(result.meta.sources, []);
-  assert.equal(result.workItem.jiraIssueKey, "HBL-17");
+  await assert.rejects(
+    () => prefetcher.prefetch(makeRun({ workItemId: "11111111-1111-1111-1111-111111111111" })),
+    /Jira prefetch failed.*Jira API down/i
+  );
 });
 
 test("RunContextPrefetcher surfaces source aborts as run cancellation", async () => {

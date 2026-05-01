@@ -2,11 +2,6 @@ name: Build Runner Server Image
 
 on:
   workflow_dispatch:
-    inputs:
-      base_runner_image:
-        description: "Base runner image to layer onto"
-        required: false
-        default: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner:latest"
   push:
     branches:
       - master
@@ -17,7 +12,7 @@ on:
 env:
   AWS_REGION: us-east-1
   ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner/server
-  BASE_RUNNER_IMAGE: ${{ inputs.base_runner_image || '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner:latest' }}
+  BASE_RUNNER_IMAGE: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner:latest"
 
 jobs:
   build-and-push:

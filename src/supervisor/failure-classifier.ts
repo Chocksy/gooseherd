@@ -14,6 +14,7 @@ const RETRY_MAP: Record<string, { retryable: boolean; retryStrategy: ClassifiedF
   agent_crash: { retryable: true,  retryStrategy: "full" },
   push:        { retryable: true,  retryStrategy: "full" },
   pr:          { retryable: true,  retryStrategy: "full" },
+  prefetch:    { retryable: false, retryStrategy: "none" },
   unknown:     { retryable: false, retryStrategy: "none" }
 };
 

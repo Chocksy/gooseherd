@@ -57,7 +57,11 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
     result: { category: "push", friendly: "Push to remote was rejected", suggestion: "The branch may have conflicts or branch protection rules. Check repository settings." }
   },
   {
-    test: /pr.*failed|pull request.*failed|create_pr.*failed/i,
+    test: /\bprefetch\b.*\bfailed\b/i,
+    result: { category: "prefetch", friendly: "External context prefetch failed", suggestion: "Check GitHub/Jira integration configuration and permissions for the linked work item." }
+  },
+  {
+    test: /\bpull request\b.*failed|\bPR\b.*failed|create_pr.*failed|failed to create (?:a )?pull request/i,
     result: { category: "pr", friendly: "Failed to create pull request", suggestion: "Check that your GitHub credentials (GITHUB_TOKEN or GitHub App) have permission to create PRs on this repo." }
   },
 ];

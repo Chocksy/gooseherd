@@ -57,6 +57,15 @@ test("classifyFailureWithRetryability: pr errors are retryable (full)", () => {
   assert.equal(result.retryStrategy, "full");
 });
 
+test("classifyFailureWithRetryability: prefetch errors are NOT retryable", () => {
+  const result = classifyFailureWithRetryability(
+    "Jira prefetch failed for work item abc: 404 Not Found"
+  );
+  assert.equal(result.category, "prefetch");
+  assert.equal(result.retryable, false);
+  assert.equal(result.retryStrategy, "none");
+});
+
 test("classifyFailureWithRetryability: unknown errors are NOT retryable", () => {
   const result = classifyFailureWithRetryability("something completely unexpected happened");
   assert.equal(result.category, "unknown");

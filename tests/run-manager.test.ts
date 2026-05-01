@@ -1588,6 +1588,24 @@ test("classifyError matches PR creation failures", () => {
 
   const result2 = classifyError("create_pr node failed");
   assert.equal(result2.category, "pr");
+
+  const result3 = classifyError("Failed to create pull request: forbidden");
+  assert.equal(result3.category, "pr");
+
+  const result4 = classifyError("PR submission failed with 502");
+  assert.equal(result4.category, "pr");
+});
+
+test("classifyError matches prefetch failures and does not misclassify them as pr", () => {
+  const jiraPrefetch = classifyError(
+    "Jira prefetch failed for work item 7a9cc5b9-3a75-4e43-adff-a567f7f0e78b: Jira request failed for HUB-16224: 404 Not Found"
+  );
+  assert.equal(jiraPrefetch.category, "prefetch");
+
+  const githubPrefetch = classifyError(
+    "GitHub prefetch failed for work item abc: pull request head SHA is missing"
+  );
+  assert.equal(githubPrefetch.category, "prefetch");
 });
 
 test("classifyError returns unknown for unrecognized errors", () => {

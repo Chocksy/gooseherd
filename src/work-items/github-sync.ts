@@ -73,6 +73,7 @@ export interface GitHubWorkItemSyncOptions {
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
   skipProductReview?: boolean;
+  selfReviewEnabled?: boolean;
   reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
   resolveDeliveryContext: (input: {
     jiraIssueKey?: string;
@@ -179,6 +180,7 @@ export class GitHubWorkItemSync {
   private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot" | "updatePullRequestBody">;
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
   private readonly skipProductReview: boolean;
+  private readonly selfReviewEnabled: boolean;
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
   private readonly resetQaReviewOnNewCommits?: boolean;
   private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
@@ -214,6 +216,7 @@ export class GitHubWorkItemSync {
     this.readyForMergeHandler = options.readyForMergeHandler;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.skipProductReview = options.skipProductReview ?? false;
+    this.selfReviewEnabled = options.selfReviewEnabled ?? false;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
     this.reconcileWorkItem = options.reconcileWorkItem;
@@ -352,8 +355,9 @@ export class GitHubWorkItemSync {
           },
         });
         await this.appendWorkItemLinkToPullRequestBody(updated, payload);
-        await this.reconcileIfConfigured(updated.id, "github.pr_adopted");
-        return updated;
+        const advanced = await this.maybeBypassSelfReviewAfterAdoption(updated);
+        await this.reconcileIfConfigured(advanced.id, "github.pr_adopted");
+        return advanced;
       }
 
       if (adoptionCandidates.length > 1) {
@@ -466,8 +470,35 @@ export class GitHubWorkItemSync {
     });
 
     await this.appendWorkItemLinkToPullRequestBody(adopted, payload);
-    await this.reconcileIfConfigured(adopted.id, "github.pr_adopted");
-    return adopted;
+    const advancedAdopted = await this.maybeBypassSelfReviewAfterAdoption(adopted);
+    await this.reconcileIfConfigured(advancedAdopted.id, "github.pr_adopted");
+    return advancedAdopted;
+  }
+
+  private async maybeBypassSelfReviewAfterAdoption(
+    workItem: WorkItemRecord,
+  ): Promise<WorkItemRecord> {
+    if (this.selfReviewEnabled) return workItem;
+    if (workItem.workflow !== "feature_delivery") return workItem;
+    if (workItem.state !== "auto_review") return workItem;
+    if (workItem.substate !== "ci_green_pending_self_review") return workItem;
+
+    const decision = reduceFeatureDelivery(
+      workItem,
+      {
+        type: "github.ci_completed",
+        conclusion: "success",
+        hasActiveSystemRun: false,
+        automationEnabled: this.isAiAssistAutomationEnabled(workItem),
+      },
+      this.reducerPolicy(),
+    );
+    if (decision.patches.length === 0 && decision.commands.length === 0) {
+      return workItem;
+    }
+    const advanced = await applyWorkItemDecision(this.workItems, workItem, decision);
+    await this.executeFeatureDeliveryCommands(advanced, decision);
+    return advanced;
   }
 
   private async handleCheckSuite(payload: GitHubWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
@@ -984,6 +1015,7 @@ export class GitHubWorkItemSync {
       skipProductReview: this.skipProductReview,
       resetEngineeringReviewOnNewCommits: this.shouldResetEngineeringReviewOnNewCommits(),
       resetQaReviewOnNewCommits: this.shouldResetQaReviewOnNewCommits(),
+      selfReviewEnabled: this.selfReviewEnabled,
     };
   }
 

@@ -168,6 +168,7 @@ export interface AppConfig {
   featureDeliveryResetEngineeringReviewOnNewCommits: boolean;
   featureDeliveryResetQaReviewOnNewCommits: boolean;
   featureDeliverySkipProductReview: boolean;
+  featureDeliverySelfReviewEnabled: boolean;
   workItemGithubAdoptionLabels: string[];
   autoReviewBranchSyncEnabled: boolean;
   autoReviewBranchSyncMaxBehindCommits: number;

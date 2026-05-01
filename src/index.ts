@@ -382,6 +382,7 @@ async function createWorkItemServices(
       resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
       skipProductReview: config.featureDeliverySkipProductReview,
+      selfReviewEnabled: config.featureDeliverySelfReviewEnabled,
       reconcileWorkItem: async (workItemId, reason) => {
         await workItemOrchestratorRef.current?.reconcileWorkItem(workItemId, reason);
       },
@@ -659,6 +660,7 @@ async function createDashboardWorkItemsBundle(
       sandboxRuntime: config.sandboxRuntime,
       autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
       featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
+      featureDeliverySelfReviewEnabled: config.featureDeliverySelfReviewEnabled,
     },
     qaPreparationHandler,
     readyForMergeHandler,
@@ -721,6 +723,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
           sandboxRuntime: config.sandboxRuntime,
           autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
           featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
+          featureDeliverySelfReviewEnabled: config.featureDeliverySelfReviewEnabled,
         },
         qaPreparationHandler: workItemServices.qaPreparationHandler,
         readyForMergeHandler: workItemServices.readyForMergeHandler,

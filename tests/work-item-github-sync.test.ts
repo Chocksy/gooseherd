@@ -47,6 +47,7 @@ async function createGitHubSyncFixture(options: {
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
   skipProductReview?: boolean;
+  selfReviewEnabled?: boolean;
   qaPreparationHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
   readyForMergeHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
 } = {}) {
@@ -91,6 +92,7 @@ async function createGitHubSyncFixture(options: {
       resetEngineeringReviewOnNewCommits: options.resetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: options.resetQaReviewOnNewCommits,
       skipProductReview: options.skipProductReview,
+      selfReviewEnabled: options.selfReviewEnabled ?? true,
       dashboardPublicUrl: options.dashboardPublicUrl,
       ...(options.githubService ? ({ githubService: options.githubService } as never) : {}),
     } as never),
@@ -129,6 +131,7 @@ async function createGitHubSyncFixtureWithThrowingReconcile() {
     service: new WorkItemService(testDb.db),
     sync: new GitHubWorkItemSync(testDb.db, {
       resolveDeliveryContext,
+      selfReviewEnabled: true,
       reconcileWorkItem: async () => {
         throw new Error("reconcile exploded");
       },
@@ -241,7 +244,7 @@ async function createGitHubPrFirstFixture() {
     createdHomeThreads,
     identityStore,
     userDirectory,
-    sync: new GitHubWorkItemSync(testDb.db, { resolveDeliveryContext }),
+    sync: new GitHubWorkItemSync(testDb.db, { resolveDeliveryContext, selfReviewEnabled: true }),
   };
 }
 
@@ -1376,6 +1379,78 @@ test("github sync adopts a labeled PR with already green current CI into ci_gree
   assert.equal(adopted?.state, "auto_review");
   assert.equal(adopted?.substate, "ci_green_pending_self_review");
   assert.ok(adopted?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
+});
+
+test("github sync skips self review on green CI when self review is disabled", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: false,
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "skip-self-review-sha", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "CI green skips self review",
+    summary: "Self review is disabled by config",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.6055",
+    jiraIssueKey: "HBL-405SR",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 1880,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/1880",
+    githubPrHeadSha: "skip-self-review-sha",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "success",
+    status: "completed",
+    headSha: "skip-self-review-sha",
+    pullRequestNumbers: [1880],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "engineering_review");
+  assert.ok(updated?.flags.includes("ci_green"));
+  assert.ok(updated?.flags.includes("self_review_done"));
+  assert.deepEqual(reconcileCalls, []);
+});
+
+test("github sync adopts a labeled PR straight to engineering_review when self review is disabled and CI is green", async (t) => {
+  const { cleanup, sync, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: false,
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "feedfacedead", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1979,
+    prTitle: "Adopt without self review",
+    prBody: "Fixes HBL-406SR",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1979",
+    baseBranch: "main",
+    headBranch: "feature/hbl-406sr",
+    headSha: "feedfacedead",
+    labels: ["ai:assist"],
+  } as never);
+
+  assert.equal(adopted?.state, "engineering_review");
+  assert.ok(adopted?.flags.includes("ci_green"));
+  assert.ok(adopted?.flags.includes("self_review_done"));
   assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
 });
 

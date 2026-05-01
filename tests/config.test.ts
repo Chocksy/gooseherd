@@ -185,6 +185,34 @@ test("work item review reset flags respect env overrides", () => {
   }
 });
 
+test("feature delivery self review is disabled by default", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      FEATURE_DELIVERY_SELF_REVIEW_ENABLED: undefined,
+    };
+    const config = loadConfig();
+    assert.equal(config.featureDeliverySelfReviewEnabled, false);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("feature delivery self review honors env override", () => {
+  const originalEnv = process.env;
+  try {
+    process.env = {
+      ...originalEnv,
+      FEATURE_DELIVERY_SELF_REVIEW_ENABLED: "true",
+    };
+    const config = loadConfig();
+    assert.equal(config.featureDeliverySelfReviewEnabled, true);
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
 test("loadConfig does not expose removed QA preparation skip flag", () => {
   const config = loadConfig();
   const removedKey = "featureDelivery" + "SkipQaPreparation";

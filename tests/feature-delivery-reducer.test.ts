@@ -165,6 +165,7 @@ test("reducer turns green ci into pending self review when self review is still 
       hasActiveSystemRun: false,
       automationEnabled: false,
     },
+    { selfReviewEnabled: true },
   );
 
   assert.deepEqual(decision.patches, [{
@@ -187,12 +188,35 @@ test("reducer requests reconcile when green ci arrives for pending self review w
       hasActiveSystemRun: false,
       automationEnabled: true,
     },
+    { selfReviewEnabled: true },
   );
 
   assert.deepEqual(decision.commands, [{
     type: "reconcile_work_item",
     reason: "github.ci_green_pending_self_review",
   }]);
+});
+
+test("reducer skips self review and advances straight to engineering review when self review is disabled", () => {
+  const decision = reduceFeatureDelivery(
+    makeFeatureDeliveryWorkItem({
+      state: "auto_review",
+      substate: "waiting_ci",
+    }),
+    {
+      type: "github.ci_completed",
+      conclusion: "success",
+      hasActiveSystemRun: false,
+      automationEnabled: true,
+    },
+  );
+
+  assert.deepEqual(decision.patches, [{
+    state: "engineering_review",
+    substate: "waiting_engineering_review",
+    flagsToAdd: ["ci_green", "self_review_done"],
+  }]);
+  assert.deepEqual(decision.commands, []);
 });
 
 test("reducer suppresses duplicate reconcile when ci was already green before repeated success", () => {

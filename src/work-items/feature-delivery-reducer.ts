@@ -66,6 +66,7 @@ export interface FeatureDeliveryReducerPolicy {
   skipProductReview?: boolean;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
+  selfReviewEnabled?: boolean;
 }
 
 export type FeatureDeliveryCommand =
@@ -180,7 +181,13 @@ function reduceSuccessfulCi(
   event: FeatureDeliveryCiCompletedEvent,
   policy: FeatureDeliveryReducerPolicy,
 ): FeatureDeliveryDecision {
-  if (workItem.state === "auto_review" && !hasFlag(workItem, "self_review_done")) {
+  const selfReviewEnabled = policy.selfReviewEnabled ?? false;
+
+  if (
+    selfReviewEnabled
+    && workItem.state === "auto_review"
+    && !hasFlag(workItem, "self_review_done")
+  ) {
     const hadGreenCi = hasFlag(workItem, "ci_green");
     return {
       patches: [{
@@ -200,6 +207,9 @@ function reduceSuccessfulCi(
       selfReviewDone: true,
       policy,
     });
+    const firstPatchFlagsToAdd = !selfReviewEnabled && !hasFlag(workItem, "self_review_done")
+      ? ["ci_green", "self_review_done"]
+      : ["ci_green"];
 
     if (path.length === 0) {
       return {
@@ -209,14 +219,14 @@ function reduceSuccessfulCi(
             fallback: workItem.substate,
             defaultValue: "waiting_ci",
           }),
-          flagsToAdd: ["ci_green"],
+          flagsToAdd: firstPatchFlagsToAdd,
         }],
         commands: [],
       };
     }
 
     return decisionForStatePath(workItem.state, path, {
-      firstPatchFlagsToAdd: ["ci_green"],
+      firstPatchFlagsToAdd,
       fallbackSubstate: workItem.substate,
     });
   }

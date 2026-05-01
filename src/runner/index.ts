@@ -76,8 +76,18 @@ async function executeSharedPipeline(
 }
 
 export async function main(): Promise<void> {
+  logInfo("Runner: main starting", {
+    runId: process.env.RUN_ID ?? "unknown",
+    pid: process.pid,
+    nodeVersion: process.version,
+    mirrorStdout: process.env.RUN_LOG_MIRROR_STDOUT ?? "unset",
+    pipelineFile: process.env.PIPELINE_FILE ?? "unset",
+    internalBaseUrl: process.env.GOOSEHERD_INTERNAL_BASE_URL ?? "unset",
+  });
   const client = buildRunnerClientFromEnv();
+  logInfo("Runner: control-plane client built", { runId: process.env.RUN_ID ?? "unknown" });
   const services = buildRunnerServices();
+  logInfo("Runner: services built, entering runPipelineRunner", { runId: process.env.RUN_ID ?? "unknown" });
   await runPipelineRunner(client, (run, payload, emit, abortSignal) =>
     executeSharedPipeline(services, client, run, payload, emit, abortSignal),
   );

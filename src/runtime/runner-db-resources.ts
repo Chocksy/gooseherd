@@ -134,20 +134,32 @@ async function flushRedisDb(url: string | undefined, slotId: number): Promise<vo
   const password = u.password ? decodeURIComponent(u.password) : undefined;
   const user = u.username ? decodeURIComponent(u.username) : undefined;
 
+  const host = u.hostname;
+  const port = u.port ? Number.parseInt(u.port, 10) : 6379;
+
   const commands: string[][] = [];
   if (password) commands.push(user ? ["AUTH", user, password] : ["AUTH", password]);
   commands.push(["SELECT", String(slotId)]);
   commands.push(["FLUSHDB"]);
 
-  await runRedisCommands(u.hostname, u.port ? Number.parseInt(u.port, 10) : 6379, commands);
+  logInfo("runner-db-resources: redis flush starting", {
+    host,
+    port,
+    slotId,
+    authMode: password ? (user ? "user+password" : "password") : "none",
+  });
+  await runRedisCommands(host, port, commands);
+  logInfo("runner-db-resources: redis flush done", { host, port, slotId });
 }
 
 async function runRedisCommands(host: string, port: number, commands: string[][]): Promise<void> {
+  const target = `${host}:${String(port)}`;
   const socket = net.createConnection({ host, port });
   socket.setTimeout(5_000);
 
   let buffer = "";
   let pending: { resolve: (line: string) => void; reject: (err: Error) => void } | null = null;
+  let currentStep = "connect";
   const tryDeliver = (): void => {
     if (!pending) return;
     const idx = buffer.indexOf("\r\n");
@@ -163,26 +175,32 @@ async function runRedisCommands(host: string, port: number, commands: string[][]
     buffer += chunk.toString("utf8");
     tryDeliver();
   });
-  socket.on("error", (err) => pending?.reject(err));
+  socket.on("error", (err) =>
+    pending?.reject(new Error(`redis socket error (${target}, step=${currentStep}): ${err.message}`)),
+  );
   socket.on("timeout", () => {
-    pending?.reject(new Error("redis socket timeout"));
+    pending?.reject(new Error(`redis socket timeout (${target}, step=${currentStep})`));
     socket.destroy();
   });
 
   try {
     await new Promise<void>((resolve, reject) => {
       socket.once("connect", () => resolve());
-      socket.once("error", reject);
+      socket.once("error", (err) => reject(new Error(`redis connect failed (${target}): ${err.message}`)));
+      socket.once("timeout", () => reject(new Error(`redis connect timeout (${target})`)));
     });
 
     for (const cmd of commands) {
+      currentStep = cmd[0] ?? "unknown";
       socket.write(encodeRedisCommand(cmd));
       const reply = await new Promise<string>((resolve, reject) => {
         pending = { resolve, reject };
         tryDeliver();
       });
-      if (reply.startsWith("-")) throw new Error(`redis error: ${reply.slice(1)}`);
-      if (!reply.startsWith("+")) throw new Error(`redis unexpected reply: ${reply}`);
+      if (reply.startsWith("-")) throw new Error(`redis error (${target}, step=${currentStep}): ${reply.slice(1)}`);
+      if (!reply.startsWith("+")) {
+        throw new Error(`redis unexpected reply (${target}, step=${currentStep}): ${reply}`);
+      }
     }
   } finally {
     socket.destroy();

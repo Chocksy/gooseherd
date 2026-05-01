@@ -6,7 +6,7 @@
 # inside the K8s job have all gems pre-installed. The hubstaff-server
 # repo itself is cloned at runtime by the orchestrator's clone node.
 
-ARG BASE_RUNNER_IMAGE
+ARG BASE_RUNNER_IMAGE=435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest
 ARG FULLSTAQ_RUBY_IMAGE=435747240845.dkr.ecr.us-east-1.amazonaws.com/quay/evl.ms/fullstaq-ruby:3.3.8-jemalloc-bookworm-slim
 
 # Stage 1 — pull the fullstaq-ruby installation tree (debian-bookworm, glibc-linked).

@@ -11,8 +11,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner/server
-  BASE_RUNNER_IMAGE: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runner:latest"
+  ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server
+  BASE_RUNNER_IMAGE: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest"
 
 jobs:
   build-and-push:

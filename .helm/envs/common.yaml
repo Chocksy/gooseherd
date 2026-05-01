@@ -47,7 +47,7 @@ configs:
       AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS: "900000"
       SANDBOX_RUNTIME: "kubernetes"
       KUBERNETES_NAMESPACE: '{{ .Release.Namespace }}'
-      KUBERNETES_RUNNER_IMAGE: '{{ .Values.werf.image.runner | default "gooseherd/k8s-runner:dev" }}'
+      KUBERNETES_RUNNER_IMAGE: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest'
       KUBERNETES_RUNNER_IMAGE_SERVER: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server:latest'
       KUBERNETES_RUNNER_CPU_SERVER: "2"
       KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi"

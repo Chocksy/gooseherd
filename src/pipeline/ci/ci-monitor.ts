@@ -203,7 +203,20 @@ export function buildCIFixPrompt(
     "- Do not change test expectations unless the test is wrong",
     "- Do not create or switch to a new branch",
     "- Do not create a new PR or merge the existing one",
-    "- The runner will commit and push user changes after you finish"
+    "- After you finish, the runner will commit and push any working-tree changes automatically",
+    "",
+    "## History-level failures (commit-message lint, DCO, etc.)",
+    "",
+    "Some checks validate the commit history rather than file contents — for example",
+    "commitlint (`body must be sentence-case`, `subject-case`, `header-max-length`),",
+    "DCO sign-off, or lint-on-commits jobs. If the failure shown above is one of these,",
+    "fixing the working tree will not help. Instead:",
+    "",
+    "- Use `git log -n 5 --format=fuller` to inspect the recent commits on this branch",
+    "- Rewrite the offending commit(s) with `git commit --amend` (last commit) or",
+    "  `git rebase -i origin/<base-branch>` (older commits)",
+    "- Do **not** push yourself; leave HEAD updated. The runner detects HEAD movement",
+    "  without working-tree changes and force-pushes with `--force-with-lease` automatically."
   );
 
   return lines.join("\n");

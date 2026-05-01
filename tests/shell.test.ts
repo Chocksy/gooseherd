@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { shellEscape, renderTemplate, sanitizeForLogs, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
+import { appendLog, flushRunLogMirror, shellEscape, renderTemplate, sanitizeForLogs, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
+
+function captureStdout(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write;
+  return {
+    lines,
+    restore: () => {
+      process.stdout.write = original;
+    },
+  };
+}
+
+async function makeRunLogFile(t: { after: (fn: () => Promise<void> | void) => void }, runId: string): Promise<string> {
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "run-log-mirror-"));
+  const runDir = path.join(workRoot, runId);
+  await mkdir(runDir, { recursive: true });
+  const logFile = path.join(runDir, "run.log");
+  t.after(async () => { await rm(workRoot, { recursive: true, force: true }); });
+  return logFile;
+}
 
 // ── shellEscape ──
 
@@ -174,4 +198,133 @@ test("buildMcpFlags: multiple extensions", () => {
 test("buildMcpFlags: filters empty strings", () => {
   const result = buildMcpFlags(["npx @cems/mcp", "", "  ", "npx @other/ext"]);
   assert.equal(result, "--with-extension 'npx @cems/mcp' --with-extension 'npx @other/ext'");
+});
+
+// ── appendLog stdout mirror ──
+
+test("appendLog: does NOT mirror to stdout when RUN_LOG_MIRROR_STDOUT is unset", async (t) => {
+  const runId = "run-mirror-off";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  delete process.env.RUN_LOG_MIRROR_STDOUT;
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "secret line\n");
+  } finally {
+    captured.restore();
+  }
+  assert.equal(captured.lines.join(""), "");
+  assert.equal(await readFile(logFile, "utf8"), "secret line\n");
+});
+
+test("appendLog: mirrors complete lines with [run:<id>] prefix when flag is on", async (t) => {
+  const runId = "run-mirror-on";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "first line\nsecond line\n");
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(captured.lines, [
+    `[run:${runId}] first line\n`,
+    `[run:${runId}] second line\n`,
+  ]);
+});
+
+test("appendLog: buffers partial line until newline arrives", async (t) => {
+  const runId = "run-mirror-partial";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "hello ");
+    assert.equal(captured.lines.length, 0, "no emit until newline");
+    await appendLog(logFile, "world\nnext ");
+    assert.deepEqual(captured.lines, [`[run:${runId}] hello world\n`]);
+    flushRunLogMirror(runId);
+    assert.deepEqual(captured.lines, [
+      `[run:${runId}] hello world\n`,
+      `[run:${runId}] next \n`,
+    ]);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("appendLog: sanitizes secrets in the mirrored stream", async (t) => {
+  const runId = "run-mirror-sanitize";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "token=ghp_ABCdef123456789012345678901234567890\n");
+  } finally {
+    captured.restore();
+  }
+
+  const emitted = captured.lines.join("");
+  assert.match(emitted, new RegExp(`^\\[run:${runId}\\] `));
+  assert.ok(!emitted.includes("ghp_ABCdef"), `mirrored output must not contain raw token, got: ${emitted}`);
+  // Raw on-disk log preserves content verbatim — sanitization is mirror-only.
+  assert.match(await readFile(logFile, "utf8"), /ghp_ABCdef/);
+});
+
+test("appendLog: keeps separate buffers for concurrent runs", async (t) => {
+  const runIdA = "run-mirror-A";
+  const runIdB = "run-mirror-B";
+  const logFileA = await makeRunLogFile(t, runIdA);
+  const logFileB = await makeRunLogFile(t, runIdB);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runIdA);
+    flushRunLogMirror(runIdB);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFileA, "alpha-");
+    await appendLog(logFileB, "beta-");
+    await appendLog(logFileA, "one\n");
+    await appendLog(logFileB, "two\n");
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(captured.lines, [
+    `[run:${runIdA}] alpha-one\n`,
+    `[run:${runIdB}] beta-two\n`,
+  ]);
 });

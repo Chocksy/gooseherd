@@ -153,13 +153,21 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
   }
 
   private async buildExtraEnv(run: RunRecord & { runtime: "kubernetes" }): Promise<Record<string, string> | undefined> {
+    // Retry runs get full per-run logFile mirrored to pod stdout so the
+    // logs survive after the pod is reaped — see RunManager.retryMarkers
+    // and src/pipeline/shell.ts. Mirror is off by default for first attempts
+    // to keep Loki volume sane.
+    const retryEnv: Record<string, string> = run.retriedFromRunId
+      ? { RUN_LOG_MIRROR_STDOUT: "true" }
+      : {};
+
     const profile = resolveRunnerProfile(run.repoSlug);
     if (!profile.needsDbSlot || !profile.envTemplate || !this.deps.runnerDbSlotManager) {
-      return undefined;
+      return Object.keys(retryEnv).length > 0 ? retryEnv : undefined;
     }
     const slotId = await this.deps.runnerDbSlotManager.getSlotForRun(run.id);
     if (slotId === null) {
-      return undefined;
+      return Object.keys(retryEnv).length > 0 ? retryEnv : undefined;
     }
     const dbUrls = resolveRunnerDbUrls();
     const hosts: RunnerDbHosts | null = (() => {
@@ -170,9 +178,9 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       return { pg, clickhouse: ch, redis };
     })();
     if (!hosts) {
-      return undefined;
+      return Object.keys(retryEnv).length > 0 ? retryEnv : undefined;
     }
-    return profile.envTemplate(slotId, hosts);
+    return { ...profile.envTemplate(slotId, hosts), ...retryEnv };
   }
 
   private async waitForTerminalFact(

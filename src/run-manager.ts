@@ -204,6 +204,14 @@ export class RunManager {
   private readonly statusChangeCallbacks: RunStatusChangeCallback[] = [];
   /** AbortControllers for in-progress runs — enables cancellation. */
   private readonly runAbortControllers = new Map<string, AbortController>();
+  /**
+   * In-memory marker linking a freshly-enqueued retry run to the original
+   * runId. Lives only in this orchestrator process: processRun consumes it
+   * once and clears it. Used to flip on retry-only diagnostics (e.g.
+   * RUN_LOG_MIRROR_STDOUT in the runner pod env) without persisting a new
+   * column in the runs table.
+   */
+  private readonly retryMarkers = new Map<string, string>();
   private readonly runContextPrefetcher: Pick<RunContextPrefetcher, "prefetch">;
 
   constructor(
@@ -464,7 +472,7 @@ export class RunManager {
     // Forward every run-defining field so the retry routes through the same
     // pipeline and stays attached to the same work item. Intentionally omitted:
     // - prefetchContext: refreshed on dispatch (see refreshRunForDispatch).
-    return this.enqueueRun({
+    const newRun = await this.enqueueRun({
       repoSlug: original.repoSlug,
       task: original.task,
       baseBranch: original.baseBranch,
@@ -482,6 +490,8 @@ export class RunManager {
       autoReviewSourceSubstate: original.autoReviewSourceSubstate,
       teamId: original.teamId,
     });
+    this.retryMarkers.set(newRun.id, original.id);
+    return newRun;
   }
 
   async continueRun(
@@ -636,9 +646,13 @@ export class RunManager {
     if (!existingRun) {
       return;
     }
-    let run = existingRun;
+    const retriedFromRunId = this.retryMarkers.get(existingRun.id);
+    let run: RunRecord = retriedFromRunId
+      ? { ...existingRun, retriedFromRunId }
+      : existingRun;
     const stableRunId = run.id;
     if (run.status === "cancelled" || run.status === "completed" || run.status === "failed") {
+      this.retryMarkers.delete(stableRunId);
       return;
     }
 
@@ -659,6 +673,10 @@ export class RunManager {
         }
       }
     }
+
+    // Past the requeue path — the retry marker has done its job, drop it so
+    // the map can't grow unbounded across long-running orchestrator processes.
+    this.retryMarkers.delete(stableRunId);
 
     let statusMessageTs: string | undefined = run.statusMessageTs;
     let heartbeatTick = 0;

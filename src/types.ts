@@ -117,6 +117,13 @@ export interface RunRecord {
   autoReviewSourceSubstate?: string;
   intent?: RunIntent;
   intentKind?: RunIntentKind;
+  /**
+   * Original run that this run was retried from (set in-memory by RunManager
+   * for both user- and supervisor-triggered retries). Not persisted in the DB
+   * — flows through processRun → runtime backend so retry logs can be
+   * surfaced (e.g. RUN_LOG_MIRROR_STDOUT in Kubernetes).
+   */
+  retriedFromRunId?: string;
 }
 
 export interface NewRunInput {

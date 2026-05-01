@@ -117,8 +117,56 @@ export function buildPiExtensionFlags(extensions: string[]): string {
     .join(" ");
 }
 
+/**
+ * Per-runId line buffer for stdout mirroring. Agent stdout/stderr arrives in
+ * arbitrary chunks, so we accumulate a partial trailing line and emit only
+ * complete `\n`-terminated lines as `[run:<id>] <line>` to keep Loki/Grafana
+ * parsing clean.
+ */
+const runLogMirrorBuffers = new Map<string, string>();
+
+function shouldMirrorRunLog(): boolean {
+  return process.env.RUN_LOG_MIRROR_STDOUT === "true";
+}
+
+function deriveRunIdFromLogFile(logFile: string): string {
+  // Convention: <workRoot>/<runId>/run.log — see pipeline-engine.ts.
+  return path.basename(path.dirname(logFile));
+}
+
+function mirrorRunLogChunk(runId: string, content: string): void {
+  if (!content || !runId) return;
+  const sanitized = sanitizeForLogs(content);
+  const combined = (runLogMirrorBuffers.get(runId) ?? "") + sanitized;
+  const lines = combined.split("\n");
+  const tail = lines.pop() ?? "";
+  for (const line of lines) {
+    process.stdout.write(`[run:${runId}] ${line}\n`);
+  }
+  if (tail) {
+    runLogMirrorBuffers.set(runId, tail);
+  } else {
+    runLogMirrorBuffers.delete(runId);
+  }
+}
+
+/**
+ * Flush any buffered partial line for the given run. Call at end-of-run so
+ * trailing content without a final `\n` still reaches stdout.
+ */
+export function flushRunLogMirror(runId: string): void {
+  const tail = runLogMirrorBuffers.get(runId);
+  if (tail) {
+    process.stdout.write(`[run:${runId}] ${tail}\n`);
+    runLogMirrorBuffers.delete(runId);
+  }
+}
+
 export async function appendLog(logFile: string, content: string): Promise<void> {
   await writeFile(logFile, content, { flag: "a" });
+  if (shouldMirrorRunLog()) {
+    mirrorRunLogChunk(deriveRunIdFromLogFile(logFile), content);
+  }
 }
 
 export function sanitizeForLogs(input: string): string {

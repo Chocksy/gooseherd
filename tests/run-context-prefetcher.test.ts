@@ -378,7 +378,7 @@ test("RunContextPrefetcher fail-closes when GitHub fetch fails for a linked PR",
   );
 });
 
-test("RunContextPrefetcher fail-closes when Jira fetch fails for a linked Jira issue", async () => {
+test("RunContextPrefetcher soft-fails when Jira fetch fails and continues without Jira context", async () => {
   const prefetcher = new RunContextPrefetcher({
     workItems: {
       requireWorkItem: async () =>
@@ -394,10 +394,12 @@ test("RunContextPrefetcher fail-closes when Jira fetch fails for a linked Jira i
     },
   });
 
-  await assert.rejects(
-    () => prefetcher.prefetch(makeRun({ workItemId: "11111111-1111-1111-1111-111111111111" })),
-    /Jira prefetch failed/i
-  );
+  const result = await prefetcher.prefetch(makeRun({ workItemId: "11111111-1111-1111-1111-111111111111" }));
+
+  assert.ok(result);
+  assert.equal(result.jira, undefined);
+  assert.deepEqual(result.meta.sources, []);
+  assert.equal(result.workItem.jiraIssueKey, "HBL-17");
 });
 
 test("RunContextPrefetcher surfaces source aborts as run cancellation", async () => {

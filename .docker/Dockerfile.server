@@ -20,6 +20,7 @@ ARG BUNDLE_RUBYGEMS__PKG__GITHUB__COM
 # invalidates whenever it actually changes upstream.
 ARG GEMFILE_LOCK_SHA
 
+WORKDIR /app
 USER root
 
 ENV PATH="/usr/local/bundle/bin:/usr/lib/fullstaq-ruby/versions/3.3.8-jemalloc/bin:${PATH}" \
@@ -51,21 +52,23 @@ RUN ruby --version
 # Hand the gem store to the runtime user so bundle install at build time,
 # and again at runtime, doesn't trip on permissions.
 RUN mkdir -p /usr/local/bundle/ruby/3.3.0 \
-    && chown -R gooseherd:gooseherd /usr/local/bundle
+    && chown -R gooseherd:gooseherd /usr/local/bundle \
+    && chown -R gooseherd:gooseherd /app
 
 USER gooseherd
-WORKDIR /app
 
 # Sparse-checkouts Gemfile + Gemfile.lock from master, then bundle install.
 # insteadOf gives the clone an authenticated URL; cleared at the end.
 RUN set -eu; \
+    mkdir -p /app/bundle_seed; \
+    chown -R gooseherd:gooseherd /app/bundle_seed; \
     echo "Building with Gemfile.lock SHA: ${GEMFILE_LOCK_SHA}"; \
     git config --global --add url."https://${BUNDLE_RUBYGEMS__PKG__GITHUB__COM}@github.com/".insteadOf "https://github.com/"; \
     git config --global --add url."https://${BUNDLE_RUBYGEMS__PKG__GITHUB__COM}@github.com/".insteadOf "git@github.com:"; \
     git clone --depth=1 --filter=blob:none --no-checkout --sparse \
         https://github.com/NetsoftHoldings/hubstaff-server.git /app/bundle_seed; \
     cd /app/bundle_seed; \
-    git sparse-checkout set --no-cone Gemfile Gemfile.lock; \
+    git sparse-checkout set --no-cone Gemfile Gemfile.lock .ruby-version; \
     git checkout; \
     BUNDLER_VERSION="$(awk '/BUNDLED WITH/{getline;print}' Gemfile.lock | xargs)"; \
     gem install bundler -v "${BUNDLER_VERSION}" --no-document; \

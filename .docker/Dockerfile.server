@@ -40,6 +40,7 @@ RUN apt-get update -qq \
         tzdata \
         file \
         libyaml-dev \
+        zlib1g-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

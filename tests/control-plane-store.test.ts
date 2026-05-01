@@ -505,3 +505,52 @@ test("reconciler preserves success completion when kubernetes job is already mis
 
   await cleanup();
 });
+
+test("reconciler preserves an already-failed run with no completion (e.g. prefetch failure before runtime started)", async () => {
+  const { db, cleanup } = await createTestDb();
+  const controlPlaneStore = new ControlPlaneStore(db);
+  const runStore = new RunStore(db);
+  await runStore.init();
+
+  const run = await runStore.createRun(
+    {
+      repoSlug: "owner/repo",
+      task: "reconcile preserve-pre-runtime-failure",
+      baseBranch: "main",
+      requestedBy: "U1",
+      channelId: "C1",
+      threadTs: "1",
+      runtime: "kubernetes",
+    },
+    "gooseherd",
+  );
+
+  const finishedAt = new Date().toISOString();
+  const originalError = "Jira prefetch failed for work item abc: 404 Not Found";
+  await runStore.updateRun(run.id, {
+    status: "failed",
+    phase: "failed",
+    finishedAt,
+    error: originalError,
+  });
+
+  let factCalls = 0;
+  const fakeRuntimeFacts = {
+    getTerminalFact: async () => {
+      factCalls += 1;
+      return "missing" as const;
+    },
+  };
+
+  const reconciler = new RuntimeReconciler(controlPlaneStore, fakeRuntimeFacts, runStore);
+  await reconciler.reconcileRun(run.id);
+  const updated = await runStore.getRun(run.id);
+
+  assert.equal(updated?.status, "failed");
+  assert.equal(updated?.phase, "failed");
+  assert.equal(updated?.error, originalError);
+  assert.equal(updated?.finishedAt, finishedAt);
+  assert.equal(factCalls, 0);
+
+  await cleanup();
+});

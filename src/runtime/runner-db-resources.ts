@@ -11,6 +11,7 @@
  */
 
 import net from "node:net";
+import tls from "node:tls";
 import postgres from "postgres";
 import type { RunnerProfile } from "./runner-profile.js";
 import type { RunnerDbUrls } from "./runner-db-env.js";
@@ -120,10 +121,10 @@ async function runClickhouseStatement(url: string, query: string): Promise<void>
   }
 }
 
-// ── Redis (raw RESP over node:net) ──
+// ── Redis (raw RESP over node:net / node:tls) ──
 //
 // Single FLUSHDB on a logical-DB index doesn't justify a client dep.
-// Plaintext RESP only — TLS is on the cluster boundary, not our concern.
+// `redis://` opens plaintext TCP, `rediss://` opens TLS — same RESP loop on top.
 
 async function flushRedisDb(url: string | undefined, slotId: number): Promise<void> {
   if (!url) {
@@ -131,9 +132,13 @@ async function flushRedisDb(url: string | undefined, slotId: number): Promise<vo
     return;
   }
   const u = new URL(url);
+  if (u.protocol !== "redis:" && u.protocol !== "rediss:") {
+    throw new Error(`redis URL has unsupported scheme "${u.protocol}" (expected redis:// or rediss://)`);
+  }
   const password = u.password ? decodeURIComponent(u.password) : undefined;
   const user = u.username ? decodeURIComponent(u.username) : undefined;
 
+  const useTls = u.protocol === "rediss:";
   const host = u.hostname;
   const port = u.port ? Number.parseInt(u.port, 10) : 6379;
 
@@ -146,15 +151,23 @@ async function flushRedisDb(url: string | undefined, slotId: number): Promise<vo
     host,
     port,
     slotId,
+    tls: useTls,
     authMode: password ? (user ? "user+password" : "password") : "none",
   });
-  await runRedisCommands(host, port, commands);
+  await runRedisCommands(host, port, useTls, commands);
   logInfo("runner-db-resources: redis flush done", { host, port, slotId });
 }
 
-async function runRedisCommands(host: string, port: number, commands: string[][]): Promise<void> {
-  const target = `${host}:${String(port)}`;
-  const socket = net.createConnection({ host, port });
+async function runRedisCommands(
+  host: string,
+  port: number,
+  useTls: boolean,
+  commands: string[][],
+): Promise<void> {
+  const target = `${useTls ? "rediss" : "redis"}://${host}:${String(port)}`;
+  const socket: net.Socket = useTls
+    ? tls.connect({ host, port, servername: host })
+    : net.createConnection({ host, port });
   socket.setTimeout(5_000);
 
   let buffer = "";
@@ -185,7 +198,8 @@ async function runRedisCommands(host: string, port: number, commands: string[][]
 
   try {
     await new Promise<void>((resolve, reject) => {
-      socket.once("connect", () => resolve());
+      const readyEvent = useTls ? "secureConnect" : "connect";
+      socket.once(readyEvent, () => resolve());
       socket.once("error", (err) => reject(new Error(`redis connect failed (${target}): ${err.message}`)));
       socket.once("timeout", () => reject(new Error(`redis connect timeout (${target})`)));
     });

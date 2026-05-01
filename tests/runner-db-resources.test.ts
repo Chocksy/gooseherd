@@ -22,3 +22,11 @@ test("teardownRunnerDb: tolerates missing admin URLs (logs warning, no throw)", 
   const profile = resolveRunnerProfile("NetsoftHoldings/hubstaff-server");
   await teardownRunnerDb(7, profile, {});
 });
+
+test("provisionRunnerDb: rejects Redis URL with unsupported scheme", async () => {
+  const profile = resolveRunnerProfile("NetsoftHoldings/hubstaff-server");
+  await assert.rejects(
+    () => provisionRunnerDb(7, profile, { redis: "http://example.com:6379" }),
+    /unsupported scheme "http:"/,
+  );
+});

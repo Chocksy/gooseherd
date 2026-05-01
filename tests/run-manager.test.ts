@@ -807,6 +807,78 @@ test("retryRun creates a new run from a completed run", async () => {
   await testDb.cleanup();
 });
 
+test("retryRun delivers retriedFromRunId on the run record passed to backend.execute", async () => {
+  // Regression: retryRun used to set the marker AFTER enqueueRun (race vs.
+  // PQueue worker), and processRun's `run = store.updateRun(...) /
+  // refreshRunForDispatch(...)` re-fetches drop the in-memory field — so
+  // backend.execute saw a run without retriedFromRunId, defeating the
+  // RUN_LOG_MIRROR_STDOUT gate in the Kubernetes backend.
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const config = makeConfig();
+
+  const captured: { run?: RunRecord } = {};
+  const captureBackend: RuntimeRegistry = {
+    local: {
+      runtime: "local",
+      execute: async (run: RunRecord) => {
+        captured.run = run;
+        return {
+          branchName: run.branchName,
+          logsPath: "/tmp/run.log",
+          commitSha: "deadbeef",
+          changedFiles: [],
+        } as ExecutionResult;
+      },
+    },
+    docker: undefined,
+    kubernetes: undefined,
+  };
+
+  const manager = new RunManager(config, store, captureBackend, mockClient as any);
+
+  const original = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "first attempt",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+  await waitForRunDone(store, original.id);
+  // Mark as failed so retry is allowed.
+  await store.updateRun(original.id, { status: "failed", phase: "failed", error: "boom" });
+
+  captured.run = undefined;
+  const retried = await manager.retryRun(original.id, "supervisor");
+  assert.ok(retried);
+  await waitForRunDone(store, retried!.id);
+
+  assert.ok(captured.run, "backend.execute must be called for the retry");
+  assert.equal(
+    captured.run!.retriedFromRunId,
+    original.id,
+    "run record passed to backend.execute must carry retriedFromRunId",
+  );
+
+  // First-attempt baseline: a non-retry run must NOT carry the marker.
+  captured.run = undefined;
+  const firstAttempt = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "fresh run",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+  await waitForRunDone(store, firstAttempt.id);
+  assert.equal(captured.run?.retriedFromRunId, undefined, "first-attempt run must not carry retriedFromRunId");
+
+  await testDb.cleanup();
+});
+
 test("retryRun preserves work-item routing fields from a failed CI-fix run", async () => {
   const { store, testDb } = await setupTestStore();
   const mockClient = makeMockSlackClient();

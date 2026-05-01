@@ -437,21 +437,25 @@ export class RunManager {
   }
 
   async enqueueRun(input: EnqueueRunInput): Promise<RunRecord> {
-    const runtime = input.runtime ?? this.config.sandboxRuntime;
-    this.getBackend(runtime);
-    const record = await this.store.createRun({ ...input, runtime }, this.config.branchPrefix);
-
-    this.queue.add(async () => {
-      await this.processRun(record.id);
-    });
-
+    const record = await this.createRunRecord(input);
+    this.scheduleRunProcessing(record.id);
     return record;
   }
 
-  requeueExistingRun(runId: string): void {
+  private async createRunRecord(input: EnqueueRunInput): Promise<RunRecord> {
+    const runtime = input.runtime ?? this.config.sandboxRuntime;
+    this.getBackend(runtime);
+    return this.store.createRun({ ...input, runtime }, this.config.branchPrefix);
+  }
+
+  private scheduleRunProcessing(runId: string): void {
     this.queue.add(async () => {
       await this.processRun(runId);
     });
+  }
+
+  requeueExistingRun(runId: string): void {
+    this.scheduleRunProcessing(runId);
   }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
@@ -472,7 +476,11 @@ export class RunManager {
     // Forward every run-defining field so the retry routes through the same
     // pipeline and stays attached to the same work item. Intentionally omitted:
     // - prefetchContext: refreshed on dispatch (see refreshRunForDispatch).
-    const newRun = await this.enqueueRun({
+    //
+    // Set the retry marker BEFORE scheduling processRun: enqueueRun's
+    // PQueue can dispatch the worker before this function's continuation
+    // resumes, so doing the assignment after enqueueRun would race.
+    const newRun = await this.createRunRecord({
       repoSlug: original.repoSlug,
       task: original.task,
       baseBranch: original.baseBranch,
@@ -491,6 +499,7 @@ export class RunManager {
       teamId: original.teamId,
     });
     this.retryMarkers.set(newRun.id, original.id);
+    this.scheduleRunProcessing(newRun.id);
     return newRun;
   }
 
@@ -759,7 +768,14 @@ export class RunManager {
       const pipeline = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
       run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
       const backend = this.getBackend(run.runtime);
-      const result = await backend.execute(run, {
+      // retriedFromRunId is in-memory only; refreshRunForDispatch and the
+      // status updates above re-fetch from the DB and drop it. Re-attach
+      // here so the runtime backend can gate retry-only behavior on it
+      // (e.g. RUN_LOG_MIRROR_STDOUT in the runner pod env).
+      const runForBackend: RunRecord = retriedFromRunId
+        ? { ...run, retriedFromRunId }
+        : run;
+      const result = await backend.execute(runForBackend, {
         onPhase: phaseCallback,
         onCheckpoint: checkpointCallback,
         onDetail,

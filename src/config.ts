@@ -165,6 +165,7 @@ export interface AppConfig {
   ciMaxWaitSeconds: number;
   ciCheckFilter: string[];
   ciMaxFixRounds: number;
+  ciFixAgentBailEnabled: boolean;
   featureDeliveryResetEngineeringReviewOnNewCommits: boolean;
   featureDeliveryResetQaReviewOnNewCommits: boolean;
   featureDeliverySkipProductReview: boolean;

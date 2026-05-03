@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ContainerManager } from "../sandbox/container-manager.js";
@@ -383,10 +384,25 @@ export interface ShellCaptureOptions {
   sandboxId?: string;
 }
 
+/**
+ * Translate a signal-killed child into a shell-conventional exit code
+ * (128 + signo) so callers can distinguish "killed by SIGTERM/SIGKILL/
+ * SIGSEGV/timeout" from "process exited with code 1". Numbers come from
+ * `os.constants.signals` so we cover whatever this platform exposes
+ * without maintaining a hand-rolled map. If a signal is delivered but we
+ * can't resolve a number for it, fall back to a bare `128` rather than
+ * `1` — anything ≥128 is treated by callers as infra/non-test failure.
+ */
+function exitCodeForSignal(signal: NodeJS.Signals | null): number | null {
+  if (!signal) return null;
+  const num = (os.constants.signals as Record<string, number | undefined>)[signal];
+  return typeof num === "number" ? 128 + num : 128;
+}
+
 export async function runShellCapture(
   command: string,
   options: ShellCaptureOptions
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<{ code: number; stdout: string; stderr: string; signal: NodeJS.Signals | null }> {
   await appendLog(options.logFile, `\n$ ${sanitizeForLogs(command)}\n`);
 
   const effectiveSandbox = resolveSandbox(options.sandboxId);
@@ -404,11 +420,11 @@ export async function runShellCapture(
       onStderr: (chunk) => { appendLog(logFile, chunk).catch(() => {}); }
     });
 
-    return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+    return { code: result.code, stdout: result.stdout, stderr: result.stderr, signal: null };
   }
 
   // Local spawn path
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+  return new Promise<{ code: number; stdout: string; stderr: string; signal: NodeJS.Signals | null }>((resolve, reject) => {
     let settled = false;
     const bashFlags = options.login ? "-lc" : "-c";
     const child = spawn("bash", [bashFlags, command], {
@@ -450,11 +466,16 @@ export async function runShellCapture(
       await appendLog(options.logFile, text);
     });
 
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (settled) return;
       settled = true;
-      resolve({ code: code ?? 1, stdout, stderr });
+      // When the child is killed by a signal (incl. our own timeout SIGTERM),
+      // node delivers code=null and signal!=null. Translate to the standard
+      // shell convention (128 + signo) so callers can distinguish a real
+      // "exit 1" from a signal-kill rather than misclassifying timeouts.
+      const effectiveCode = code ?? exitCodeForSignal(signal) ?? 1;
+      resolve({ code: effectiveCode, stdout, stderr, signal });
     });
 
     child.on("error", (error) => {

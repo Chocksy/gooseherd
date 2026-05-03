@@ -155,7 +155,7 @@ test("runShellCapture: returns non-zero exit code", async (t) => {
   assert.equal(result.code, 42);
 });
 
-test("runShellCapture: timeout kills long-running process", async (t) => {
+test("runShellCapture: timeout kills long-running process and reports SIGTERM as 143", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "shell-test-"));
   const logFile = path.join(dir, "test.log");
   await writeFile(logFile, "", "utf8");
@@ -165,8 +165,22 @@ test("runShellCapture: timeout kills long-running process", async (t) => {
   const result = await runShellCapture("sleep 60", { logFile, timeoutMs: 200 });
   const elapsed = Date.now() - start;
 
-  assert.notEqual(result.code, 0);
+  // POSIX convention: 128 + signo. SIGTERM = 15 → 143.
+  // Critical: this code must NOT collide with [1, 2] which mean "real test failure".
+  assert.equal(result.code, 143, "timeout SIGTERM must surface as 128+15=143, not 1");
+  assert.equal(result.signal, "SIGTERM");
   assert.ok(elapsed < 10000, `Should complete quickly after timeout, took ${String(elapsed)}ms`);
+});
+
+test("runShellCapture: surfaces signal=null and full code for normal exits", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "shell-test-"));
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const result = await runShellCapture("exit 7", { logFile });
+  assert.equal(result.code, 7);
+  assert.equal(result.signal, null);
 });
 
 test("runShellCapture: no timeout when timeoutMs is undefined", async (t) => {

@@ -876,14 +876,16 @@ export class GitHubWorkItemSync {
     }
 
     if (payload.action === "labeled" && hasAdoptionLabel && workItem.state === "cancelled") {
+      const initial = await this.resolveInitialAutoReviewStatus(payload);
       const revived = await this.workItems.updateState(workItem.id, {
         state: "auto_review",
-        substate: "pr_adopted",
-        flagsToAdd: [AI_ASSIST_ENABLED_FLAG],
+        substate: initial.substate,
+        flagsToAdd: [AI_ASSIST_ENABLED_FLAG, ...initial.flagsToAdd],
         flagsToRemove: [AI_ASSIST_DISABLED_FLAG],
       });
-      await this.reconcileIfConfigured(revived.id, "github.automation_restored");
-      return revived;
+      const advanced = await this.maybeBypassSelfReviewAfterAdoption(revived);
+      await this.reconcileIfConfigured(advanced.id, "github.automation_restored");
+      return advanced;
     }
 
     return workItem;

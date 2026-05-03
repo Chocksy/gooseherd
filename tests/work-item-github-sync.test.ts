@@ -862,6 +862,180 @@ test("github sync revives a cancelled delivery work item into auto review when a
   assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.automation_restored" }]);
 });
 
+test("github sync revives a cancelled delivery into ci_green_pending_self_review when CI is already green", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: true,
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "revive-green-sha", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Revive with green CI",
+    summary: "Restored automation should observe pre-existing green CI",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.567",
+    jiraIssueKey: "HBL-567",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 567,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/567",
+    githubPrHeadSha: "revive-green-sha",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "unlabeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 567,
+    prTitle: "Revive with green CI",
+    prBody: "Refs HBL-567",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/567",
+    headSha: "revive-green-sha",
+    labelName: "ai:assist",
+    labels: [],
+  });
+
+  const revived = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 567,
+    prTitle: "Revive with green CI",
+    prBody: "Refs HBL-567",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/567",
+    headSha: "revive-green-sha",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(revived?.id, delivery.id);
+  assert.equal(revived?.state, "auto_review");
+  assert.equal(revived?.substate, "ci_green_pending_self_review");
+  assert.ok(revived?.flags.includes("ci_green"));
+  assert.ok(revived?.flags.includes("ai_assist_enabled"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.automation_restored" }]);
+});
+
+test("github sync revives straight to engineering_review when self review is disabled and CI is green", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: false,
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "revive-bypass-sha", conclusion: "success" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Revive bypassing self review",
+    summary: "Self review disabled, CI green at revive time",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.568",
+    jiraIssueKey: "HBL-568",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 568,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/568",
+    githubPrHeadSha: "revive-bypass-sha",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "unlabeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 568,
+    prTitle: "Revive bypassing self review",
+    prBody: "Refs HBL-568",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/568",
+    headSha: "revive-bypass-sha",
+    labelName: "ai:assist",
+    labels: [],
+  });
+
+  const revived = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 568,
+    prTitle: "Revive bypassing self review",
+    prBody: "Refs HBL-568",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/568",
+    headSha: "revive-bypass-sha",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(revived?.id, delivery.id);
+  assert.equal(revived?.state, "engineering_review");
+  assert.ok(revived?.flags.includes("ci_green"));
+  assert.ok(revived?.flags.includes("self_review_done"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.automation_restored" }]);
+});
+
+test("github sync revives into ci_failed when CI is already failing", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "revive-red-sha", conclusion: "failure" }),
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Revive with red CI",
+    summary: "Restored automation should observe failing CI",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.569",
+    jiraIssueKey: "HBL-569",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 569,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/569",
+    githubPrHeadSha: "revive-red-sha",
+    initialState: "auto_review",
+    initialSubstate: "waiting_ci",
+    flags: ["pr_opened", "github_pr_adopted", "ai_assist_enabled"],
+  });
+
+  await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "unlabeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 569,
+    prTitle: "Revive with red CI",
+    prBody: "Refs HBL-569",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/569",
+    headSha: "revive-red-sha",
+    labelName: "ai:assist",
+    labels: [],
+  });
+
+  const revived = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 569,
+    prTitle: "Revive with red CI",
+    prBody: "Refs HBL-569",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/569",
+    headSha: "revive-red-sha",
+    labels: ["ai:assist"],
+  });
+
+  assert.equal(revived?.id, delivery.id);
+  assert.equal(revived?.state, "auto_review");
+  assert.equal(revived?.substate, "ci_failed");
+  assert.ok(!revived?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.automation_restored" }]);
+});
+
 test("github sync creates a delivery for labeled PRs without a Jira issue key", async (t) => {
   const { cleanup, sync, db } = await createGitHubSyncFixture();
   t.after(cleanup);

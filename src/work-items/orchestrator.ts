@@ -56,6 +56,7 @@ export interface WorkItemOrchestratorDeps {
     autoReviewBranchSyncMaxBehindCommits?: number;
     featureDeliverySkipProductReview?: boolean;
     featureDeliverySelfReviewEnabled?: boolean;
+    featureDeliveryApplyReviewFeedbackEnabled?: boolean;
   };
   qaPreparationHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
   readyForMergeHandler?: (workItem: WorkItemRecord) => Promise<void> | void;
@@ -198,6 +199,7 @@ export class WorkItemOrchestrator {
       {
         skipProductReview: this.deps.config?.featureDeliverySkipProductReview ?? false,
         selfReviewEnabled: this.deps.config?.featureDeliverySelfReviewEnabled ?? false,
+        applyReviewFeedbackEnabled: this.deps.config?.featureDeliveryApplyReviewFeedbackEnabled ?? false,
       },
     );
     const updated = await applyWorkItemDecision(this.workItems, workItem, decision);

@@ -573,6 +573,7 @@ test("reducer requests reconcile when engineering review asks for changes with a
       reviewState: "changes_requested",
       automationEnabled: true,
     },
+    { applyReviewFeedbackEnabled: true },
   );
 
   assert.deepEqual(decision.patches, [{
@@ -583,6 +584,27 @@ test("reducer requests reconcile when engineering review asks for changes with a
     type: "reconcile_work_item",
     reason: "github.review_changes_requested",
   }]);
+});
+
+test("reducer parks engineering review changes_requested in waiting_ci when apply_review_feedback disabled", () => {
+  const decision = reduceFeatureDelivery(
+    makeFeatureDeliveryWorkItem({
+      state: "engineering_review",
+      substate: "waiting_engineering_review",
+      flags: ["ci_green", "self_review_done"],
+    }),
+    {
+      type: "github.review_submitted",
+      reviewState: "changes_requested",
+      automationEnabled: true,
+    },
+  );
+
+  assert.deepEqual(decision.patches, [{
+    state: "auto_review",
+    substate: "waiting_ci",
+  }]);
+  assert.deepEqual(decision.commands, []);
 });
 
 test("reducer advances product_review approvals into qa_review", () => {
@@ -653,6 +675,7 @@ test("reducer returns product_review to auto_review when changes are requested",
       reviewState: "changes_requested",
       automationEnabled: false,
     },
+    { applyReviewFeedbackEnabled: true },
   );
 
   assert.deepEqual(decision.patches, [{
@@ -692,9 +715,31 @@ test("reducer ignores qa_review change requests — qa_review only reacts to the
       reviewState: "changes_requested",
       automationEnabled: true,
     },
+    { applyReviewFeedbackEnabled: true },
   );
 
   assert.deepEqual(decision.patches, []);
+  assert.deepEqual(decision.commands, []);
+});
+
+test("reducer parks qa_review changes_requested in waiting_ci when apply_review_feedback disabled", () => {
+  const decision = reduceFeatureDelivery(
+    makeFeatureDeliveryWorkItem({
+      state: "qa_review",
+      substate: "waiting_qa_review",
+      flags: ["ci_green", "self_review_done", "engineering_review_done"],
+    }),
+    {
+      type: "github.review_submitted",
+      reviewState: "changes_requested",
+      automationEnabled: true,
+    },
+  );
+
+  assert.deepEqual(decision.patches, [{
+    state: "auto_review",
+    substate: "waiting_ci",
+  }]);
   assert.deepEqual(decision.commands, []);
 });
 

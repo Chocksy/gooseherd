@@ -70,6 +70,7 @@ type FeatureConfigSlice = Pick<
   | "featureDeliveryResetQaReviewOnNewCommits"
   | "featureDeliverySkipProductReview"
   | "featureDeliverySelfReviewEnabled"
+  | "featureDeliveryApplyReviewFeedbackEnabled"
   | "workItemGithubAdoptionLabels"
   | "autoReviewBranchSyncEnabled"
   | "autoReviewBranchSyncMaxBehindCommits"
@@ -164,6 +165,10 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     ),
     featureDeliverySelfReviewEnabled: parseBoolean(
       parsed.FEATURE_DELIVERY_SELF_REVIEW_ENABLED,
+      false,
+    ),
+    featureDeliveryApplyReviewFeedbackEnabled: parseBoolean(
+      parsed.FEATURE_DELIVERY_APPLY_REVIEW_FEEDBACK_ENABLED,
       false,
     ),
     workItemGithubAdoptionLabels: workItemGithubAdoptionLabels.length > 0

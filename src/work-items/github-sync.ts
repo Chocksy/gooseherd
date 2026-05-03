@@ -74,6 +74,7 @@ export interface GitHubWorkItemSyncOptions {
   resetQaReviewOnNewCommits?: boolean;
   skipProductReview?: boolean;
   selfReviewEnabled?: boolean;
+  applyReviewFeedbackEnabled?: boolean;
   reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
   resolveDeliveryContext: (input: {
     jiraIssueKey?: string;
@@ -181,6 +182,7 @@ export class GitHubWorkItemSync {
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
   private readonly skipProductReview: boolean;
   private readonly selfReviewEnabled: boolean;
+  private readonly applyReviewFeedbackEnabled: boolean;
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
   private readonly resetQaReviewOnNewCommits?: boolean;
   private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
@@ -217,6 +219,7 @@ export class GitHubWorkItemSync {
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.skipProductReview = options.skipProductReview ?? false;
     this.selfReviewEnabled = options.selfReviewEnabled ?? false;
+    this.applyReviewFeedbackEnabled = options.applyReviewFeedbackEnabled ?? false;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
     this.reconcileWorkItem = options.reconcileWorkItem;
@@ -1018,6 +1021,7 @@ export class GitHubWorkItemSync {
       resetEngineeringReviewOnNewCommits: this.shouldResetEngineeringReviewOnNewCommits(),
       resetQaReviewOnNewCommits: this.shouldResetQaReviewOnNewCommits(),
       selfReviewEnabled: this.selfReviewEnabled,
+      applyReviewFeedbackEnabled: this.applyReviewFeedbackEnabled,
     };
   }
 

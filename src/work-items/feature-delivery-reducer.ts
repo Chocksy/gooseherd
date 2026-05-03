@@ -67,6 +67,7 @@ export interface FeatureDeliveryReducerPolicy {
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
   selfReviewEnabled?: boolean;
+  applyReviewFeedbackEnabled?: boolean;
 }
 
 export type FeatureDeliveryCommand =
@@ -360,10 +361,12 @@ function reduceReviewSubmitted(
         qaReviewDone: hasFlag(workItem, "qa_review_done"),
       })
     : nextState;
+  const applyReviewFeedbackEnabled = policy.applyReviewFeedbackEnabled ?? false;
+  const changesRequestedSubstate = applyReviewFeedbackEnabled ? "applying_review_feedback" : "waiting_ci";
   const patches = [patchForState(nextState, {
     fallbackSubstate: workItem.substate,
     defaultSubstate: event.reviewState === "approved" ? "waiting_ci" : undefined,
-    explicitSubstate: event.reviewState === "approved" ? undefined : "applying_review_feedback",
+    explicitSubstate: event.reviewState === "approved" ? undefined : changesRequestedSubstate,
     flagsToAdd,
   })];
 
@@ -377,7 +380,7 @@ function reduceReviewSubmitted(
   return {
     patches,
     commands: [
-      ...(event.reviewState === "changes_requested" && event.automationEnabled
+      ...(event.reviewState === "changes_requested" && event.automationEnabled && applyReviewFeedbackEnabled
         ? [{ type: "reconcile_work_item", reason: "github.review_changes_requested" } as const]
         : []),
       ...commandsForEnteredStates(workItem.state, patches),

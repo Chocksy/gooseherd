@@ -48,6 +48,7 @@ async function createGitHubSyncFixture(options: {
   resetQaReviewOnNewCommits?: boolean;
   skipProductReview?: boolean;
   selfReviewEnabled?: boolean;
+  applyReviewFeedbackEnabled?: boolean;
   qaPreparationHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
   readyForMergeHandler?: (workItem: { id: string; state: string }) => Promise<void> | void;
 } = {}) {
@@ -93,6 +94,7 @@ async function createGitHubSyncFixture(options: {
       resetQaReviewOnNewCommits: options.resetQaReviewOnNewCommits,
       skipProductReview: options.skipProductReview,
       selfReviewEnabled: options.selfReviewEnabled ?? true,
+      applyReviewFeedbackEnabled: options.applyReviewFeedbackEnabled ?? true,
       dashboardPublicUrl: options.dashboardPublicUrl,
       ...(options.githubService ? ({ githubService: options.githubService } as never) : {}),
     } as never),
@@ -132,6 +134,7 @@ async function createGitHubSyncFixtureWithThrowingReconcile() {
     sync: new GitHubWorkItemSync(testDb.db, {
       resolveDeliveryContext,
       selfReviewEnabled: true,
+      applyReviewFeedbackEnabled: true,
       reconcileWorkItem: async () => {
         throw new Error("reconcile exploded");
       },

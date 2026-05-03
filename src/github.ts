@@ -463,13 +463,11 @@ export class GitHubService {
       return { headSha, conclusion: "no_ci" };
     }
 
-    const failedRuns = checkRuns.filter(run => isFailedCheckRun(run));
-    const hasPendingRuns = checkRuns.some(run =>
-      run.status !== "completed" ||
-      run.conclusion === null ||
-      run.conclusion === "cancelled"
-    );
+    if (checkRuns.some(isPendingCheckRun)) {
+      return { headSha, conclusion: "pending" };
+    }
 
+    const failedRuns = checkRuns.filter(run => isFailedCheckRun(run));
     if (failedRuns.length > 0) {
       return {
         headSha,
@@ -478,8 +476,8 @@ export class GitHubService {
       };
     }
 
-    if (hasPendingRuns) {
-      return { headSha, conclusion: "pending" };
+    if (!checkRuns.some(isPositiveCheckRun)) {
+      return { headSha, conclusion: "no_ci" };
     }
 
     return { headSha, conclusion: "success" };
@@ -986,6 +984,16 @@ function sortByCreatedAt<T extends { createdAt?: string }>(left: T, right: T): n
 
 function isFailedCheckRun(run: CICheckRun): boolean {
   return run.conclusion === "failure" || run.conclusion === "timed_out";
+}
+
+function isPendingCheckRun(run: CICheckRun): boolean {
+  return run.status !== "completed" || run.conclusion === null;
+}
+
+function isPositiveCheckRun(run: CICheckRun): boolean {
+  return run.conclusion === "success"
+    || run.conclusion === "neutral"
+    || run.conclusion === "skipped";
 }
 
 function normalizeFailedRun(run: CICheckRun): FailedCIRun {

@@ -331,10 +331,11 @@ function reduceReviewSubmitted(
   event: FeatureDeliveryReviewSubmittedEvent,
   policy: FeatureDeliveryReducerPolicy,
 ): FeatureDeliveryDecision {
+  // qa_review can only advance via the "qa passed" label — not via a PR review
+  // approval — until reviewer roles are tracked. See reduceReviewLabelsSynced.
   if (
     workItem.state !== "engineering_review"
     && workItem.state !== "product_review"
-    && workItem.state !== "qa_review"
   ) {
     return emptyDecision();
   }
@@ -347,22 +348,17 @@ function reduceReviewSubmitted(
     if (event.reviewState === "approved") {
       flagsToAdd = ["engineering_review_done"];
     }
-  } else if (workItem.state === "product_review") {
+  } else {
     nextState = nextFeatureDeliveryStateAfterProductReview(event.reviewState);
     if (event.reviewState === "approved") {
       flagsToAdd = ["product_review_done"];
     }
-  } else {
-    nextState = nextFeatureDeliveryStateAfterQaReview(event.reviewState);
-    if (event.reviewState === "approved") {
-      flagsToAdd = ["qa_review_done"];
-    }
   }
 
-  const qaReviewDone = event.reviewState === "approved"
-    && (hasFlag(workItem, "qa_review_done") || flagsToAdd.includes("qa_review_done"));
   const finalState = isManagedFeatureDeliveryState(nextState)
-    ? advanceFeatureDeliveryStateAfterQaEntry(nextState, { qaReviewDone })
+    ? advanceFeatureDeliveryStateAfterQaEntry(nextState, {
+        qaReviewDone: hasFlag(workItem, "qa_review_done"),
+      })
     : nextState;
   const patches = [patchForState(nextState, {
     fallbackSubstate: workItem.substate,

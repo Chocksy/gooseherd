@@ -607,6 +607,40 @@ test("reducer advances product_review approvals into qa_review", () => {
   assert.deepEqual(decision.commands, []);
 });
 
+test("reducer skips qa_review on product_review approval when qa_review_done flag is already set", () => {
+  const decision = reduceFeatureDelivery(
+    makeFeatureDeliveryWorkItem({
+      state: "product_review",
+      substate: "waiting_product_review",
+      flags: [
+        "ci_green",
+        "self_review_done",
+        "engineering_review_done",
+        "product_review_required",
+        "qa_review_done",
+      ],
+    }),
+    {
+      type: "github.review_submitted",
+      reviewState: "approved",
+      automationEnabled: false,
+    },
+  );
+
+  assert.deepEqual(decision.patches, [
+    {
+      state: "qa_review",
+      substate: "waiting_qa_review",
+      flagsToAdd: ["product_review_done"],
+    },
+    {
+      state: "ready_for_merge",
+      substate: "waiting_merge",
+    },
+  ]);
+  assert.deepEqual(decision.commands, [{ type: "ready_for_merge_entered" }]);
+});
+
 test("reducer returns product_review to auto_review when changes are requested", () => {
   const decision = reduceFeatureDelivery(
     makeFeatureDeliveryWorkItem({
@@ -628,7 +662,7 @@ test("reducer returns product_review to auto_review when changes are requested",
   assert.deepEqual(decision.commands, []);
 });
 
-test("reducer advances qa_review approvals into ready_for_merge", () => {
+test("reducer ignores qa_review approvals — only the qa passed label advances qa_review", () => {
   const decision = reduceFeatureDelivery(
     makeFeatureDeliveryWorkItem({
       state: "qa_review",
@@ -642,15 +676,11 @@ test("reducer advances qa_review approvals into ready_for_merge", () => {
     },
   );
 
-  assert.deepEqual(decision.patches, [{
-    state: "ready_for_merge",
-    substate: "waiting_merge",
-    flagsToAdd: ["qa_review_done"],
-  }]);
-  assert.deepEqual(decision.commands, [{ type: "ready_for_merge_entered" }]);
+  assert.deepEqual(decision.patches, []);
+  assert.deepEqual(decision.commands, []);
 });
 
-test("reducer requests reconcile when qa review asks for changes with automation enabled", () => {
+test("reducer ignores qa_review change requests — qa_review only reacts to the qa passed label", () => {
   const decision = reduceFeatureDelivery(
     makeFeatureDeliveryWorkItem({
       state: "qa_review",
@@ -664,14 +694,8 @@ test("reducer requests reconcile when qa review asks for changes with automation
     },
   );
 
-  assert.deepEqual(decision.patches, [{
-    state: "auto_review",
-    substate: "applying_review_feedback",
-  }]);
-  assert.deepEqual(decision.commands, [{
-    type: "reconcile_work_item",
-    reason: "github.review_changes_requested",
-  }]);
+  assert.deepEqual(decision.patches, []);
+  assert.deepEqual(decision.commands, []);
 });
 
 test("reducer ignores review submission outside review states", () => {

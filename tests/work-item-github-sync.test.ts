@@ -2184,7 +2184,7 @@ test("github sync routes product review approvals back into delivery flow", asyn
   assert.ok(updated?.flags.includes("product_review_done"));
 });
 
-test("github sync triggers ready_for_merge handler when qa review approval moves work item to ready_for_merge", async (t) => {
+test("github sync triggers ready_for_merge handler when qa passed label moves work item to ready_for_merge", async (t) => {
   const calls: Array<{ id: string; state: string }> = [];
   const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
     readyForMergeHandler: async (workItem) => {
@@ -2194,8 +2194,8 @@ test("github sync triggers ready_for_merge handler when qa review approval moves
   t.after(cleanup);
 
   const delivery = await service.createDeliveryFromJira({
-    title: "QA approval webhook handling",
-    summary: "QA approval should become merge-ready",
+    title: "QA passed label webhook handling",
+    summary: "qa passed label should become merge-ready",
     ownerTeamId,
     homeChannelId: "C_GROWTH",
     homeThreadTs: "1740000000.7013",
@@ -2210,12 +2210,12 @@ test("github sync triggers ready_for_merge handler when qa review approval moves
   });
 
   const updated = await sync.handleWebhookPayload({
-    eventType: "pull_request_review",
-    action: "submitted",
+    eventType: "pull_request",
+    action: "labeled",
     repo: "hubstaff/gooseherd",
     prNumber: 10001,
-    state: "approved",
-    reviewer: "reviewer-qa",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/10001",
+    labels: ["code review passed", "QA passed"],
   });
 
   assert.equal(updated?.id, delivery.id);
@@ -2223,6 +2223,49 @@ test("github sync triggers ready_for_merge handler when qa review approval moves
   assert.equal(updated?.substate, "waiting_merge");
   assert.ok(updated?.flags.includes("qa_review_done"));
   assert.deepEqual(calls, [{ id: delivery.id, state: "ready_for_merge" }]);
+});
+
+test("github sync ignores qa_review approval reviews — only the qa passed label advances qa_review", async (t) => {
+  const calls: Array<{ id: string; state: string }> = [];
+  const { cleanup, service, sync, ownerTeamId, pmUserId } = await createGitHubSyncFixture({
+    readyForMergeHandler: async (workItem) => {
+      calls.push({ id: workItem.id, state: workItem.state });
+    },
+  });
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "QA approval should not bypass label gate",
+    summary: "Approve reviews on qa_review must not move WI to ready_for_merge",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.7014",
+    jiraIssueKey: "HBL-407QB",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 10002,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/10002",
+    initialState: "qa_review",
+    initialSubstate: "waiting_qa_review",
+    flags: ["pr_opened", "ci_green", "self_review_done", "engineering_review_done"],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "pull_request_review",
+    action: "submitted",
+    repo: "hubstaff/gooseherd",
+    prNumber: 10002,
+    state: "approved",
+    reviewer: "reviewer-qa",
+  });
+
+  assert.equal(updated, undefined);
+  assert.deepEqual(calls, []);
+
+  const persisted = await service.getWorkItem(delivery.id);
+  assert.equal(persisted?.state, "qa_review");
+  assert.equal(persisted?.substate, "waiting_qa_review");
+  assert.ok(!persisted?.flags.includes("qa_review_done"));
 });
 
 test("github sync advances engineering review when code review passed label is present", async (t) => {

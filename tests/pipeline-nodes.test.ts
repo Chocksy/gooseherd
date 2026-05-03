@@ -66,6 +66,8 @@ function makeDeps(overrides: Partial<NodeDeps> & { configOverrides?: Partial<App
       localTestCommand: "",
       agentTimeoutSeconds: 60,
       openrouterApiKey: undefined,
+      mcpExtensions: [],
+      piAgentExtensions: [],
       ...configOverrides
     } as AppConfig,
     run: makeRun(),
@@ -375,7 +377,7 @@ nodes:
     assert.equal(oldHead, newHead);
   });
 
-  test("rebases stale branches and prefers feature content on auto-resolved conflicts", async (t) => {
+  test("aborts the rebase and returns failure when conflicts arise", async (t) => {
     const { originDir, repoDir, logFile, cleanup } = await makeGitRepoWithOrigin("sync-base-rebase-");
     t.after(cleanup);
 
@@ -405,12 +407,15 @@ nodes:
     const content = await readFile(path.join(repoDir, "conflict.txt"), "utf8");
     const status = await runShellCapture("git status --porcelain", { cwd: repoDir, logFile });
 
-    assert.equal(result.outcome, "success");
-    assert.equal(result.outputs?.rebasePerformed, true);
-    assert.equal(result.outputs?.requiresForcePush, true);
-    assert.notEqual(oldHead, newHead);
-    assert.equal(content.trim(), "feature-version");
-    assert.equal(status.stdout.trim(), "");
+    assert.equal(result.outcome, "failure");
+    assert.equal(result.outputs?.rebasePerformed, false);
+    assert.equal(result.outputs?.requiresForcePush, false);
+    assert.equal(result.outputs?.rebaseConflictBaseBranch, "main");
+    const conflictFiles = result.outputs?.rebaseConflictFiles as string[] | undefined;
+    assert.ok(Array.isArray(conflictFiles) && conflictFiles.includes("conflict.txt"));
+    assert.equal(oldHead, newHead, "abort must restore HEAD");
+    assert.equal(content.trim(), "feature-version", "abort must restore working tree");
+    assert.equal(status.stdout.trim(), "", "abort must leave working tree clean");
   });
 
   test("prefers the current PR base branch over a stale run base branch", async (t) => {
@@ -461,6 +466,45 @@ nodes:
     assert.equal(result.outputs?.rebasePerformed, true);
     assert.equal(result.outputs?.requiresForcePush, true);
     assert.equal(releaseOnlyFile.trim(), "release change");
+  });
+
+  test("preserves prior rebasePerformed state on the retry after agent conflict resolution", async (t) => {
+    const { originDir, repoDir, logFile, cleanup } = await makeGitRepoWithOrigin("sync-base-retry-");
+    t.after(cleanup);
+
+    await writeFile(path.join(originDir, "base-only.txt"), "main change\n", "utf8");
+    await runShellCapture("git add base-only.txt", { cwd: originDir, logFile });
+    await runShellCapture("git commit -m 'advance main once'", { cwd: originDir, logFile });
+
+    await runShellCapture("git pull --rebase origin main", { cwd: repoDir, logFile });
+
+    const rebasedHead = (await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile })).stdout.trim();
+    const { syncBaseBranchNode } = await import("../src/pipeline/nodes/sync-base-branch.js");
+    const ctx = new ContextBag({
+      repoDir,
+      resolvedBaseBranch: "main",
+      rebaseConflictBaseBranch: "main",
+      rebasePerformed: true,
+      forcePushWithLease: true,
+      commitSha: rebasedHead,
+    });
+    const deps = makeDeps({
+      logFile,
+      run: makeRun({
+        baseBranch: "main",
+        branchName: "feature/rebase-test",
+        prefetchContext: makeEligiblePrefetchContext(),
+      }),
+      configOverrides: { autoReviewBranchSyncMaxBehindCommits: 0 } as Partial<AppConfig>,
+    });
+
+    const result = await syncBaseBranchNode(makeNodeConfig("sync_base_branch"), ctx, deps);
+
+    assert.equal(result.outcome, "success");
+    assert.equal(result.outputs?.behindCount, 0);
+    assert.equal(result.outputs?.rebasePerformed, true);
+    assert.equal(result.outputs?.requiresForcePush, false);
+    assert.equal(ctx.get("rebasePerformed"), true);
   });
 
   test("does not rebase when engineering and QA reviews are not both complete", async (t) => {
@@ -789,6 +833,349 @@ describe("notifyNode", () => {
 
     mockFetch.mock.restore();
     await rm(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Resolve Rebase Conflicts Node
+// ═══════════════════════════════════════════════════════
+
+type FakeAgentMode = "clean" | "leave_markers" | "delete" | "touch_outside" | "create_extra";
+
+async function installFakeAgent(
+  t: { after: (fn: () => void | Promise<void>) => void },
+  opts: { mode: FakeAgentMode; repoDir: string; extraPath?: string },
+): Promise<{ template: string }> {
+  const binDir = await mkdtemp(path.join(os.tmpdir(), "fake-agent-bin-"));
+  const scriptPath = path.join(binDir, "fake-agent.sh");
+  // FAKE_AGENT_MODE selects the mutation:
+  //   clean         — strip conflict markers, keep the HEAD side
+  //   leave_markers — do nothing (markers remain)
+  //   delete        — rm each listed file
+  //   touch_outside — clean conflicts AND modify a file outside the list
+  //   create_extra  — clean conflicts AND create a new untracked file
+  await writeFile(
+    scriptPath,
+    `#!/bin/sh
+set -e
+prompt="$1"
+mode="\${FAKE_AGENT_MODE:-clean}"
+repo="\${FAKE_AGENT_REPO_DIR}"
+extra="\${FAKE_AGENT_EXTRA_PATH:-}"
+[ -z "$repo" ] && echo "FAKE_AGENT_REPO_DIR not set" >&2 && exit 99
+
+files=$(awk '/^- /{print substr($0, 3)}' "$prompt")
+
+clean_one() {
+  f="$1"
+  tmp=$(mktemp)
+  awk '
+    /^<<<<<<</ { state="head"; next }
+    /^\\|\\|\\|\\|\\|\\|\\|/ { state="ancestor"; next }
+    /^=======/ { state="other"; next }
+    /^>>>>>>>/ { state=""; next }
+    state == "head" || state == "" { print }
+  ' "$repo/$f" > "$tmp"
+  mv "$tmp" "$repo/$f"
+}
+
+clean_all() { for f in $files; do clean_one "$f"; done; }
+
+case "$mode" in
+  clean) clean_all ;;
+  leave_markers) : ;;
+  delete) for f in $files; do rm -f "$repo/$f"; done ;;
+  touch_outside) clean_all; [ -n "$extra" ] && echo "tampered" >> "$repo/$extra" ;;
+  create_extra) clean_all; mkdir -p "$repo/.unauthorised"; echo "evil" > "$repo/.unauthorised/payload.txt" ;;
+  *) echo "unknown FAKE_AGENT_MODE: $mode" >&2; exit 2 ;;
+esac
+`,
+    "utf8",
+  );
+  await chmod(scriptPath, 0o755);
+
+  if (opts.extraPath) {
+    process.env.FAKE_AGENT_EXTRA_PATH = opts.extraPath;
+  }
+  process.env.FAKE_AGENT_MODE = opts.mode;
+  process.env.FAKE_AGENT_REPO_DIR = opts.repoDir;
+
+  t.after(async () => {
+    delete process.env.FAKE_AGENT_MODE;
+    delete process.env.FAKE_AGENT_REPO_DIR;
+    delete process.env.FAKE_AGENT_EXTRA_PATH;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  return { template: `sh ${scriptPath} {{prompt_file}}` };
+}
+
+async function makeRebaseConflictRepo(prefix = "resolve-rebase-"): Promise<{
+  originDir: string;
+  repoDir: string;
+  runDir: string;
+  logFile: string;
+  branchName: string;
+  baseBranch: string;
+  cleanup: () => Promise<void>;
+}> {
+  const originRoot = await mkdtemp(path.join(os.tmpdir(), `${prefix}origin-`));
+  const originDir = path.join(originRoot, "origin.git");
+  const repoRoot = await mkdtemp(path.join(os.tmpdir(), `${prefix}repo-`));
+  const repoDir = path.join(repoRoot, "repo");
+  const runDir = path.join(repoRoot, "run");
+  const logFile = path.join(repoRoot, "test.log");
+  const seedDir = path.join(repoRoot, "seed");
+  await writeFile(logFile, "", "utf8");
+
+  // Bare origin so we can push/fetch arbitrary branches without checked-out
+  // working-tree complications.
+  await runShellCapture(`git init -b main --bare ${originDir}`, { cwd: originRoot, logFile });
+
+  // Seed the origin via a temporary clone so the branches we need exist remotely.
+  await runShellCapture(`git clone ${originDir} ${seedDir}`, { cwd: originRoot, logFile });
+  await runShellCapture("git config user.email 'test@test.com'", { cwd: seedDir, logFile });
+  await runShellCapture("git config user.name 'Test User'", { cwd: seedDir, logFile });
+  await runShellCapture("git checkout -b main", { cwd: seedDir, logFile });
+  await writeFile(path.join(seedDir, "conflict.txt"), "base\n", "utf8");
+  await runShellCapture("git add conflict.txt", { cwd: seedDir, logFile });
+  await runShellCapture("git commit -m 'init main'", { cwd: seedDir, logFile });
+  await runShellCapture("git push -u origin main", { cwd: seedDir, logFile });
+
+  // Branch + a feature commit that touches the same file → rebase conflict.
+  await runShellCapture("git checkout -b feature/rebase-test", { cwd: seedDir, logFile });
+  await writeFile(path.join(seedDir, "conflict.txt"), "feature-version\n", "utf8");
+  await runShellCapture("git add conflict.txt", { cwd: seedDir, logFile });
+  await runShellCapture("git commit -m 'feature change'", { cwd: seedDir, logFile });
+  await runShellCapture("git push -u origin feature/rebase-test", { cwd: seedDir, logFile });
+
+  // Advance main on origin with a conflicting change.
+  await runShellCapture("git checkout main", { cwd: seedDir, logFile });
+  await writeFile(path.join(seedDir, "conflict.txt"), "main-version\n", "utf8");
+  await runShellCapture("git add conflict.txt", { cwd: seedDir, logFile });
+  await runShellCapture("git commit -m 'main conflict change'", { cwd: seedDir, logFile });
+  await runShellCapture("git push origin main", { cwd: seedDir, logFile });
+  await rm(seedDir, { recursive: true, force: true });
+
+  // Final repo: clone, check out feature branch (which is behind main).
+  await runShellCapture(`git clone ${originDir} ${repoDir}`, { cwd: repoRoot, logFile });
+  await runShellCapture("git config user.email 'test@test.com'", { cwd: repoDir, logFile });
+  await runShellCapture("git config user.name 'Test User'", { cwd: repoDir, logFile });
+  await runShellCapture("git checkout feature/rebase-test", { cwd: repoDir, logFile });
+
+  await writeFile(logFile, "", "utf8");
+
+  // Run dir for prompt files.
+  await runShellCapture(`mkdir -p ${runDir}`, { cwd: repoRoot, logFile });
+
+  const cleanup = async () => {
+    await rm(originRoot, { recursive: true, force: true });
+    await rm(repoRoot, { recursive: true, force: true });
+  };
+
+  return {
+    originDir,
+    repoDir,
+    runDir,
+    logFile,
+    branchName: "feature/rebase-test",
+    baseBranch: "main",
+    cleanup,
+  };
+}
+
+function makeResolveCtx(opts: { repoDir: string; runDir: string; baseBranch: string }): ContextBag {
+  return new ContextBag({
+    repoDir: opts.repoDir,
+    runDir: opts.runDir,
+    rebaseConflictBaseBranch: opts.baseBranch,
+    resolvedBaseBranch: opts.baseBranch,
+  });
+}
+
+describe("resolveRebaseConflictsNode", () => {
+  test("containsConflictMarkers detects 7+ char standard markers", async () => {
+    const { containsConflictMarkers } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    assert.equal(containsConflictMarkers("clean file\n"), false);
+    assert.equal(containsConflictMarkers("<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> abc\n"), true);
+    // 8+ char marker (longer than spec)
+    assert.equal(containsConflictMarkers("<<<<<<<<\nfoo\n========\nbar\n>>>>>>>>\n"), true);
+    // diff3 ancestor marker
+    assert.equal(containsConflictMarkers("||||||| ancestor\n"), true);
+    // Tab after marker
+    assert.equal(containsConflictMarkers("<<<<<<<\tHEAD\n"), true);
+    // CRLF line ending
+    assert.equal(containsConflictMarkers("<<<<<<<\r\n"), true);
+    // Marker mid-line — must not match
+    assert.equal(containsConflictMarkers("note: <<<<<<< inside text\n"), false);
+  });
+
+  test("happy path: agent resolves conflict, node continues rebase and force-pushes", async (t) => {
+    const setup = await makeRebaseConflictRepo();
+    t.after(setup.cleanup);
+    const fake = await installFakeAgent(t, { mode: "clean", repoDir: setup.repoDir });
+
+    const { resolveRebaseConflictsNode } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    const ctx = makeResolveCtx(setup);
+    const deps = makeDeps({
+      logFile: setup.logFile,
+      run: makeRun({ baseBranch: setup.baseBranch, branchName: setup.branchName }),
+      configOverrides: { agentCommandTemplate: fake.template, agentTimeoutSeconds: 30 },
+    });
+
+    const result = await resolveRebaseConflictsNode(makeNodeConfig("resolve_rebase_conflicts"), ctx, deps);
+
+    assert.equal(result.outcome, "success", `error=${result.error ?? ""}`);
+    assert.equal(result.outputs?.rebasePerformed, true);
+    assert.equal(result.outputs?.requiresForcePush, true);
+    assert.equal(result.outputs?.forcePushWithLease, true);
+    assert.ok(typeof result.outputs?.commitSha === "string" && (result.outputs!.commitSha as string).length > 0);
+
+    // Origin should have advanced to the new HEAD.
+    const localHead = (await runShellCapture("git rev-parse HEAD", { cwd: setup.repoDir, logFile: setup.logFile })).stdout.trim();
+    const remoteHead = (await runShellCapture(
+      `git --git-dir=${setup.originDir} rev-parse refs/heads/${setup.branchName}`,
+      { cwd: setup.repoDir, logFile: setup.logFile },
+    )).stdout.trim();
+    assert.equal(remoteHead, localHead, "force-push should land the rebased SHA on origin");
+
+    // No conflict markers left in working tree.
+    const fileContent = await readFile(path.join(setup.repoDir, "conflict.txt"), "utf8");
+    assert.ok(!fileContent.includes("<<<<<<<"), "no conflict markers should remain");
+  });
+
+  test("agent leaves markers → abort", async (t) => {
+    const setup = await makeRebaseConflictRepo();
+    t.after(setup.cleanup);
+    const fake = await installFakeAgent(t, { mode: "leave_markers", repoDir: setup.repoDir });
+
+    const { resolveRebaseConflictsNode } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    const ctx = makeResolveCtx(setup);
+    const headBefore = (await runShellCapture("git rev-parse HEAD", { cwd: setup.repoDir, logFile: setup.logFile })).stdout.trim();
+    const deps = makeDeps({
+      logFile: setup.logFile,
+      run: makeRun({ baseBranch: setup.baseBranch, branchName: setup.branchName }),
+      configOverrides: { agentCommandTemplate: fake.template, agentTimeoutSeconds: 30 },
+    });
+
+    const result = await resolveRebaseConflictsNode(makeNodeConfig("resolve_rebase_conflicts"), ctx, deps);
+
+    assert.equal(result.outcome, "failure");
+    assert.match(result.error ?? "", /did not remove conflict markers/i);
+    const headAfter = (await runShellCapture("git rev-parse HEAD", { cwd: setup.repoDir, logFile: setup.logFile })).stdout.trim();
+    assert.equal(headBefore, headAfter, "abort must restore HEAD");
+    const inProgress = await runShellCapture("test -d .git/rebase-merge -o -d .git/rebase-apply", { cwd: setup.repoDir, logFile: setup.logFile });
+    assert.notEqual(inProgress.code, 0, "rebase must not be left in progress");
+  });
+
+  test("agent deletes the file → deletion is staged and rebase continues", async (t) => {
+    const setup = await makeRebaseConflictRepo();
+    t.after(setup.cleanup);
+    const fake = await installFakeAgent(t, { mode: "delete", repoDir: setup.repoDir });
+
+    const { resolveRebaseConflictsNode } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    const ctx = makeResolveCtx(setup);
+    const deps = makeDeps({
+      logFile: setup.logFile,
+      run: makeRun({ baseBranch: setup.baseBranch, branchName: setup.branchName }),
+      configOverrides: { agentCommandTemplate: fake.template, agentTimeoutSeconds: 30 },
+    });
+
+    const result = await resolveRebaseConflictsNode(makeNodeConfig("resolve_rebase_conflicts"), ctx, deps);
+
+    assert.equal(result.outcome, "success", `error=${result.error ?? ""}`);
+    // File should be absent in the working tree and removed in the new commit.
+    const stat = await runShellCapture("test -e conflict.txt", { cwd: setup.repoDir, logFile: setup.logFile });
+    assert.notEqual(stat.code, 0, "deleted conflict file should not exist on disk");
+    const lsFiles = await runShellCapture("git ls-files conflict.txt", { cwd: setup.repoDir, logFile: setup.logFile });
+    assert.equal(lsFiles.stdout.trim(), "", "deleted file should not be tracked in HEAD");
+  });
+
+  test("agent edits a file outside the conflict set → abort", async (t) => {
+    const setup = await makeRebaseConflictRepo();
+    t.after(setup.cleanup);
+    // Seed an existing file outside the conflict set so the agent can tamper.
+    await writeFile(path.join(setup.repoDir, "outside.txt"), "untouched\n", "utf8");
+    await runShellCapture("git add outside.txt && git commit -m 'add outside'", { cwd: setup.repoDir, logFile: setup.logFile });
+    await runShellCapture(`git push origin ${setup.branchName}`, { cwd: setup.repoDir, logFile: setup.logFile });
+
+    const fake = await installFakeAgent(t, { mode: "touch_outside", repoDir: setup.repoDir, extraPath: "outside.txt" });
+
+    const { resolveRebaseConflictsNode } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    const ctx = makeResolveCtx(setup);
+    const deps = makeDeps({
+      logFile: setup.logFile,
+      run: makeRun({ baseBranch: setup.baseBranch, branchName: setup.branchName }),
+      configOverrides: { agentCommandTemplate: fake.template, agentTimeoutSeconds: 30 },
+    });
+
+    const result = await resolveRebaseConflictsNode(makeNodeConfig("resolve_rebase_conflicts"), ctx, deps);
+
+    assert.equal(result.outcome, "failure");
+    assert.match(result.error ?? "", /outside conflict set/i);
+  });
+
+  test("conflict in a sensitive path is rejected before invoking the agent", async (t) => {
+    const setup = await makeRebaseConflictRepo();
+    t.after(setup.cleanup);
+    // Replace the conflict scenario: introduce a workflow file conflict.
+    // Seed via direct rewrite on the bare origin via temp clone.
+    const helper = await mkdtemp(path.join(os.tmpdir(), "sensitive-helper-"));
+    await runShellCapture(`git clone ${setup.originDir} ${helper}`, { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("git config user.email 'test@test.com'", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("git config user.name 'Test User'", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("git checkout main", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("mkdir -p .github/workflows", { cwd: helper, logFile: setup.logFile });
+    await writeFile(path.join(helper, ".github/workflows/ci.yml"), "name: ci\non: push\n", "utf8");
+    await runShellCapture("git add .github/workflows/ci.yml && git commit -m 'add workflow on main'", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("git push origin main", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("git checkout feature/rebase-test", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("mkdir -p .github/workflows", { cwd: helper, logFile: setup.logFile });
+    await writeFile(path.join(helper, ".github/workflows/ci.yml"), "name: ci\non: pull_request\n", "utf8");
+    await runShellCapture("git add .github/workflows/ci.yml && git commit -m 'add workflow on feature'", { cwd: helper, logFile: setup.logFile });
+    await runShellCapture("git push -f origin feature/rebase-test", { cwd: helper, logFile: setup.logFile });
+    await rm(helper, { recursive: true, force: true });
+
+    // Refresh the repoDir to mirror the new origin state.
+    await runShellCapture("git fetch origin && git reset --hard origin/feature/rebase-test", { cwd: setup.repoDir, logFile: setup.logFile });
+
+    const fake = await installFakeAgent(t, { mode: "clean", repoDir: setup.repoDir });
+
+    const { resolveRebaseConflictsNode } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    const ctx = makeResolveCtx(setup);
+    const deps = makeDeps({
+      logFile: setup.logFile,
+      run: makeRun({ baseBranch: setup.baseBranch, branchName: setup.branchName }),
+      configOverrides: { agentCommandTemplate: fake.template, agentTimeoutSeconds: 30 },
+    });
+
+    const result = await resolveRebaseConflictsNode(makeNodeConfig("resolve_rebase_conflicts"), ctx, deps);
+
+    assert.equal(result.outcome, "failure");
+    assert.match(result.error ?? "", /sensitive path|needs human/i);
+    assert.match(result.error ?? "", /\.github\/workflows\/ci\.yml/);
+  });
+
+  test("maxRebaseSteps from NodeConfig is read without throwing", async (t) => {
+    const setup = await makeRebaseConflictRepo();
+    t.after(setup.cleanup);
+    const fake = await installFakeAgent(t, { mode: "leave_markers", repoDir: setup.repoDir });
+    const { resolveRebaseConflictsNode } = await import("../src/pipeline/nodes/resolve-rebase-conflicts.js");
+    const ctx = makeResolveCtx(setup);
+    const deps = makeDeps({
+      logFile: setup.logFile,
+      run: makeRun({ baseBranch: setup.baseBranch, branchName: setup.branchName }),
+      configOverrides: { agentCommandTemplate: fake.template, agentTimeoutSeconds: 30 },
+    });
+    const nodeConfig: NodeConfig = {
+      id: "resolve_rebase_conflicts",
+      type: "agentic",
+      action: "resolve_rebase_conflicts",
+      config: { maxRebaseSteps: 1 },
+    };
+
+    const result = await resolveRebaseConflictsNode(nodeConfig, ctx, deps);
+    assert.equal(result.outcome, "failure");
   });
 });
 

@@ -87,7 +87,7 @@ export function buildBranchSyncTask(input: AutoReviewTaskInput): string {
   lines.push(`1. Check whether the current PR branch is behind its base branch by more than ${String(maxBehindCommits)} commits.`);
   lines.push("2. If it is not behind enough, make no changes and exit cleanly.");
   lines.push("3. If it is behind enough, rebase the existing PR branch onto the current base branch.");
-  lines.push("4. Resolve conflicts automatically, preferring the current PR branch content when a deterministic choice is needed.");
+  lines.push("4. If conflicts arise, resolve them based on the actual semantics of the changes.");
   lines.push("5. Push the rebased branch back with --force-with-lease.");
   lines.push("6. Do not create a new branch, new PR, or unrelated code changes.");
 

@@ -20,6 +20,7 @@ import { summarizeChangesNode } from "./nodes/summarize-changes.js";
 import { runNode } from "./nodes/run.js";
 import { setupSandboxNode } from "./nodes/setup-sandbox.js";
 import { syncBaseBranchNode } from "./nodes/sync-base-branch.js";
+import { resolveRebaseConflictsNode } from "./nodes/resolve-rebase-conflicts.js";
 import { squashReadyForMergeNode } from "./nodes/squash-ready-for-merge.js";
 import { generateQaUatNode } from "./nodes/generate-qa-uat.js";
 import { postQaUatCommentNode } from "./nodes/post-qa-uat-comment.js";
@@ -101,6 +102,7 @@ export const NODE_HANDLERS: Record<string, NodeHandler> = {
   run: runNode,
   setup_sandbox: setupSandboxNode,
   sync_base_branch: syncBaseBranchNode,
+  resolve_rebase_conflicts: resolveRebaseConflictsNode,
   squash_ready_for_merge: squashReadyForMergeNode,
   generate_qa_uat: generateQaUatNode,
   post_qa_uat_comment: postQaUatCommentNode,

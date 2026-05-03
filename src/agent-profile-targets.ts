@@ -135,6 +135,13 @@ export const AGENT_PROFILE_ACTION_CATALOG: Record<string, AgentProfileActionCata
     routable: true,
     requires: ["cli_agent"],
   },
+  resolve_rebase_conflicts: {
+    id: "resolve_rebase_conflicts",
+    label: "Resolve rebase conflicts",
+    group: "Code-writing agents",
+    routable: true,
+    requires: ["cli_agent"],
+  },
   plan_task: {
     id: "plan_task",
     label: "Plan task",

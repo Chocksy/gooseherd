@@ -449,8 +449,15 @@ export class RunManager {
   }
 
   private scheduleRunProcessing(runId: string): void {
+    // PQueue rethrows whatever the worker throws; not catching here turns
+    // any escape from processRun into an unhandled rejection that crashes
+    // the orchestrator. processRun owns its own error handling — this is
+    // last-resort logging.
     this.queue.add(async () => {
       await this.processRun(runId);
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logError("Unhandled error in processRun", { runId, error: message });
     });
   }
 
@@ -533,9 +540,7 @@ export class RunManager {
       parent.branchName
     );
 
-    this.queue.add(async () => {
-      await this.processRun(record.id);
-    });
+    this.scheduleRunProcessing(record.id);
 
     return record;
   }
@@ -668,13 +673,32 @@ export class RunManager {
     // Per-Run isolated test DB: acquire slot before doing anything that
     // would mark the Run as "running". On pool exhaustion, leave the
     // Run in `queued` and re-enqueue after a delay — the existing
-    // PQueue picks it up like any other queued Run.
+    // PQueue picks it up like any other queued Run. On a real
+    // provisioning error (e.g. ClickHouse permission denied) fail just
+    // this Run rather than letting the rejection escape PQueue and
+    // crash the orchestrator.
     if (this.runnerDbSlotManager) {
       const profile = resolveRunnerProfile(run.repoSlug);
       if (profile.needsDbSlot) {
         const existingSlot = await this.runnerDbSlotManager.getSlotForRun(stableRunId);
         if (existingSlot === null) {
-          const slotId = await this.runnerDbSlotManager.acquireForRun(stableRunId, profile);
+          let slotId: number | null;
+          try {
+            slotId = await this.runnerDbSlotManager.acquireForRun(stableRunId, profile);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Unknown error";
+            logError("Failed to acquire runner DB slot", { runId: stableRunId, error: message });
+            const failedRun = await this.store.updateRun(stableRunId, {
+              status: "failed",
+              phase: "failed",
+              finishedAt: new Date().toISOString(),
+              error: `DB slot provisioning failed: ${message}`,
+            });
+            this.retryMarkers.delete(stableRunId);
+            this.fireStatusChangeCallbacks(failedRun.id, "failed", failedRun.runtime);
+            this.fireTerminalCallbacks(failedRun.id, "failed", failedRun.runtime);
+            return;
+          }
           if (slotId === null) {
             setTimeout(() => this.requeueExistingRun(stableRunId), RUNNER_DB_SLOT_REQUEUE_DELAY_MS).unref?.();
             return;

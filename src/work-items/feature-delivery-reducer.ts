@@ -332,7 +332,23 @@ function reduceReviewSubmitted(
   event: FeatureDeliveryReviewSubmittedEvent,
   policy: FeatureDeliveryReducerPolicy,
 ): FeatureDeliveryDecision {
-  // qa_review can only advance via the "qa passed" label — not via a PR review
+  const applyReviewFeedbackEnabled = policy.applyReviewFeedbackEnabled ?? false;
+
+  if (workItem.state === "qa_review") {
+    if (event.reviewState !== "changes_requested" || applyReviewFeedbackEnabled) {
+      return emptyDecision();
+    }
+
+    return {
+      patches: [{
+        state: "auto_review",
+        substate: "waiting_ci",
+      }],
+      commands: [],
+    };
+  }
+
+  // qa_review approvals can only advance via the "qa passed" label — not via a PR review
   // approval — until reviewer roles are tracked. See reduceReviewLabelsSynced.
   if (
     workItem.state !== "engineering_review"
@@ -361,7 +377,6 @@ function reduceReviewSubmitted(
         qaReviewDone: hasFlag(workItem, "qa_review_done"),
       })
     : nextState;
-  const applyReviewFeedbackEnabled = policy.applyReviewFeedbackEnabled ?? false;
   const changesRequestedSubstate = applyReviewFeedbackEnabled ? "applying_review_feedback" : "waiting_ci";
   const patches = [patchForState(nextState, {
     fallbackSubstate: workItem.substate,

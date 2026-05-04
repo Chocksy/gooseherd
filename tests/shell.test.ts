@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { appendLog, flushRunLogMirror, shellEscape, renderTemplate, sanitizeForLogs, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
+import { appendLog, flushRunLogMirror, shellEscape, renderTemplate, sanitizeForLogs, runShell, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
 
 function captureStdout(): { lines: string[]; restore: () => void } {
   const lines: string[] = [];
@@ -192,6 +192,38 @@ test("runShellCapture: no timeout when timeoutMs is undefined", async (t) => {
   const result = await runShellCapture("echo fast", { logFile });
   assert.equal(result.code, 0);
   assert.match(result.stdout, /fast/);
+});
+
+test("runShell: includes a UTF-8-safe stderr tail capped to 1500 bytes", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "shell-test-"));
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  // 1 × 🙂 (4 bytes) + 499 × € (3 bytes each) = 1501 total bytes. Trimming to
+  // the trailing 1500 drops byte 0 (0xF0, the emoji's lead byte), so the kept
+  // window starts at byte 0x9F — a UTF-8 continuation byte — forcing
+  // decodeUtf8Tail's skip loop to advance past 3 continuation bytes to the
+  // next codepoint boundary. A purely-emoji or purely-ASCII+emoji input would
+  // always land the cut on a 4-byte boundary and skip this code path entirely.
+  const stderrChunk = "🙂" + "€".repeat(499);
+  const command = `node -e ${shellEscape(`process.stderr.write(${JSON.stringify(stderrChunk)}); process.exit(1);`)}`;
+
+  await assert.rejects(
+    () => runShell(command, { logFile }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stderrLine = error.message.match(/\nstderr: ([\s\S]*)$/);
+      assert.ok(stderrLine, `expected stderr tail in error message, got: ${error.message}`);
+      const tail = stderrLine[1];
+      assert.ok(Buffer.byteLength(tail, "utf8") <= 1500, `tail exceeded 1500 bytes: ${String(Buffer.byteLength(tail, "utf8"))}`);
+      assert.doesNotMatch(tail, /�/, "tail must not start mid-codepoint");
+      assert.ok(tail.length > 0, "tail should not be empty");
+      // Skipping the 3 partial-emoji bytes must leave exactly 499 × €.
+      assert.equal(tail, "€".repeat(499));
+      return true;
+    }
+  );
 });
 
 // ── buildMcpFlags ──

@@ -195,6 +195,36 @@ export function sleep(ms: number): Promise<void> {
 
 // ── Shell execution functions ──
 
+const COMMAND_FAILURE_STDERR_TAIL_BYTES = 1500;
+
+function trimUtf8Tail(buffer: Buffer, maxBytes: number): Buffer {
+  if (buffer.length <= maxBytes) return buffer;
+  return buffer.subarray(buffer.length - maxBytes);
+}
+
+function decodeUtf8Tail(buffer: Buffer): string {
+  let start = 0;
+  while (start < buffer.length && (buffer[start] & 0b1100_0000) === 0b1000_0000) {
+    start++;
+  }
+  return buffer.subarray(start).toString("utf8");
+}
+
+function formatCommandFailure(code: number | null, command: string, stderr: string): string {
+  const base = `Command failed with exit code ${String(code)}: ${sanitizeForLogs(command)}`;
+  const sanitizedStderr = sanitizeForLogs(stderr).trim();
+  if (!sanitizedStderr) return base;
+  // Skip the byte-trim allocation when the sanitized stderr already fits — sandbox
+  // callers can pass arbitrarily large logs (a 50MB build log shouldn't allocate
+  // a 50MB Buffer just to keep 1500 bytes).
+  if (Buffer.byteLength(sanitizedStderr, "utf8") <= COMMAND_FAILURE_STDERR_TAIL_BYTES) {
+    return `${base}\nstderr: ${sanitizedStderr}`;
+  }
+  const tail = decodeUtf8Tail(trimUtf8Tail(Buffer.from(sanitizedStderr), COMMAND_FAILURE_STDERR_TAIL_BYTES)).trim();
+  if (!tail) return base;
+  return `${base}\nstderr: ${tail}`;
+}
+
 export interface ShellOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -227,7 +257,7 @@ export async function runShell(
 
     if (result.code !== 0) {
       throw new Error(
-        `Command failed with exit code ${String(result.code)}: ${sanitizeForLogs(command)}`
+        formatCommandFailure(result.code, command, result.stderr)
       );
     }
     return;
@@ -236,6 +266,7 @@ export async function runShell(
   // Local spawn path (existing behavior)
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     const child = spawn("bash", ["-lc", command], {
       cwd: options.cwd,
       env: {
@@ -270,7 +301,10 @@ export async function runShell(
     });
 
     child.stderr.on("data", async (chunk) => {
-      await appendLog(options.logFile, chunk.toString());
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const text = buffer.toString();
+      stderrTail = trimUtf8Tail(Buffer.concat([stderrTail, buffer]), COMMAND_FAILURE_STDERR_TAIL_BYTES);
+      await appendLog(options.logFile, text);
     });
 
     child.on("exit", (code) => {
@@ -286,9 +320,7 @@ export async function runShell(
         return;
       }
       reject(
-        new Error(
-          `Command failed with exit code ${String(code)}: ${sanitizeForLogs(command)}`
-        )
+        new Error(formatCommandFailure(code, command, decodeUtf8Tail(stderrTail)))
       );
     });
 
@@ -333,7 +365,7 @@ export async function runShellWithProgress(
     });
 
     if (result.code !== 0) {
-      throw new Error(`Command failed with exit code ${String(result.code)}: ${sanitizeForLogs(command)}`);
+      throw new Error(formatCommandFailure(result.code, command, result.stderr));
     }
     return;
   }
@@ -341,6 +373,7 @@ export async function runShellWithProgress(
   // Local spawn path (existing behavior)
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     const child = spawn("bash", ["-lc", command], {
       cwd: options.cwd,
       env: process.env,
@@ -352,7 +385,9 @@ export async function runShellWithProgress(
     });
 
     child.stderr.on("data", async (chunk) => {
-      const text = chunk.toString();
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const text = buffer.toString();
+      stderrTail = trimUtf8Tail(Buffer.concat([stderrTail, buffer]), COMMAND_FAILURE_STDERR_TAIL_BYTES);
       await appendLog(options.logFile, text);
       options.onStderr?.(text);
     });
@@ -364,7 +399,7 @@ export async function runShellWithProgress(
         resolve();
         return;
       }
-      reject(new Error(`Command failed with exit code ${String(code)}: ${sanitizeForLogs(command)}`));
+      reject(new Error(formatCommandFailure(code, command, decodeUtf8Tail(stderrTail))));
     });
 
     child.on("error", (error) => {

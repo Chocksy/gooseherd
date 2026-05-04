@@ -269,6 +269,25 @@ test("orchestrator launches a self-review run for auto_review ci_green_pending_s
   assert.equal(runRows[0]?.runtime, "kubernetes");
 });
 
+test("orchestrator does not auto-launch runs when work item is in auto_review/waiting_ci with ai:assist enabled", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "auto_review",
+    substate: "waiting_ci",
+    flags: ["self_review_done"],
+  });
+  t.after(cleanup);
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await reconcileWorkItem(db, workItem.id, "github.pr_adopted");
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.state, "auto_review");
+  assert.equal(workItemRow?.substate, "waiting_ci");
+  assert.equal(runRows.length, 0);
+});
+
 test("orchestrator does not auto-launch runs when ai:assist automation is disabled", async (t) => {
   const { db, cleanup, workItem } = await createAutoReviewFixture("ci_failed");
   t.after(cleanup);

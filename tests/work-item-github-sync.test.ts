@@ -1656,6 +1656,125 @@ test("github sync adopts a labeled PR with pending current CI into pr_adopted", 
   assert.equal(adopted?.substate, "pr_adopted");
 });
 
+test("github sync adopts a labeled PR with pending CI straight into waiting_ci with self_review_done when self review is disabled", async (t) => {
+  const { cleanup, sync, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: false,
+    githubService: {
+      getPullRequestCiSnapshot: async () => ({ headSha: "cafef00d", conclusion: "pending" }),
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1981,
+    prTitle: "Adopt without self review (pending CI)",
+    prBody: "Fixes HBL-407SR",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1981",
+    baseBranch: "main",
+    headBranch: "feature/hbl-407sr",
+    headSha: "cafef00d",
+    labels: ["ai:assist"],
+  } as never);
+
+  assert.equal(adopted?.state, "auto_review");
+  assert.equal(adopted?.substate, "waiting_ci");
+  assert.ok(adopted?.flags.includes("self_review_done"));
+  assert.ok(!adopted?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
+});
+
+test("github sync adopts a labeled PR into waiting_ci+self_review_done when self review is disabled and githubService is omitted", async (t) => {
+  const { cleanup, sync, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: false,
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1982,
+    prTitle: "Adopt without self review (no CI snapshot)",
+    prBody: "Fixes HBL-407SX",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1982",
+    baseBranch: "main",
+    headBranch: "feature/hbl-407sx",
+    headSha: "deadbeef",
+    labels: ["ai:assist"],
+  } as never);
+
+  assert.equal(adopted?.state, "auto_review");
+  assert.equal(adopted?.substate, "waiting_ci");
+  assert.ok(adopted?.flags.includes("self_review_done"));
+  assert.ok(!adopted?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
+});
+
+test("github sync adopts a labeled PR into waiting_ci+self_review_done when self review is disabled and CI snapshot throws", async (t) => {
+  const { cleanup, sync, reconcileCalls } = await createGitHubSyncFixture({
+    selfReviewEnabled: false,
+    githubService: {
+      getPullRequestCiSnapshot: async () => {
+        throw new Error("rate-limited");
+      },
+    },
+  });
+  t.after(cleanup);
+
+  const adopted = await sync.handleWebhookPayload({
+    eventType: "pull_request",
+    action: "labeled",
+    repo: "hubstaff/gooseherd",
+    prNumber: 1983,
+    prTitle: "Adopt without self review (snapshot throws)",
+    prBody: "Fixes HBL-407SY",
+    prUrl: "https://github.com/hubstaff/gooseherd/pull/1983",
+    baseBranch: "main",
+    headBranch: "feature/hbl-407sy",
+    headSha: "feedbead",
+    labels: ["ai:assist"],
+  } as never);
+
+  assert.equal(adopted?.state, "auto_review");
+  assert.equal(adopted?.substate, "waiting_ci");
+  assert.ok(adopted?.flags.includes("self_review_done"));
+  assert.ok(!adopted?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: adopted!.id, reason: "github.pr_adopted" }]);
+});
+
+for (const conclusion of ["pending", "no_ci"] as const) {
+  test(`github sync treats CI conclusion '${conclusion}' as pending on adoption`, async (t) => {
+    const { cleanup, sync } = await createGitHubSyncFixture({
+      githubService: {
+        getPullRequestCiSnapshot: async () => ({ headSha: "edge-head-sha", conclusion }),
+      },
+    });
+    t.after(cleanup);
+
+    const adopted = await sync.handleWebhookPayload({
+      eventType: "pull_request",
+      action: "labeled",
+      repo: "hubstaff/gooseherd",
+      prNumber: 1990,
+      prTitle: `Adopt with conclusion=${conclusion}`,
+      prBody: "Fixes HBL-407EDGE",
+      prUrl: "https://github.com/hubstaff/gooseherd/pull/1990",
+      baseBranch: "main",
+      headBranch: "feature/hbl-407edge",
+      headSha: "edge-head-sha",
+      labels: ["ai:assist"],
+    } as never);
+
+    assert.equal(adopted?.state, "auto_review");
+    assert.equal(adopted?.substate, "pr_adopted");
+    assert.ok(!adopted?.flags.includes("ci_green"));
+    assert.ok(!adopted?.flags.includes("self_review_done"));
+  });
+}
+
 test("github sync returns auto_review items to ci_failed and reconciles on aggregate failed CI", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture({
     githubService: {

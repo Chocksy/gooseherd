@@ -569,11 +569,19 @@ export class GitHubWorkItemSync {
   private async resolveInitialAutoReviewStatus(
     payload: GitHubWorkItemWebhookPayload,
   ): Promise<{
-    substate: "pr_adopted" | "ci_failed" | "ci_green_pending_self_review";
+    substate: "pr_adopted" | "waiting_ci" | "ci_failed" | "ci_green_pending_self_review";
     flagsToAdd: string[];
   }> {
+    // When self-review is disabled, pre-stamp `self_review_done` and land in `waiting_ci` instead of
+    // `pr_adopted`: the latter is on `shouldAutoLaunchSystemRun`'s eligibility list and would trigger an
+    // unwanted self-review run, while `waiting_ci` lets `reduceSuccessfulCi` advance straight to
+    // `engineering_review` once CI turns green.
+    const pendingStatus = this.selfReviewEnabled
+      ? { substate: "pr_adopted" as const, flagsToAdd: [] }
+      : { substate: "waiting_ci" as const, flagsToAdd: ["self_review_done"] };
+
     if (!payload.repo || !payload.headSha || !this.githubService?.getPullRequestCiSnapshot) {
-      return { substate: "pr_adopted", flagsToAdd: [] };
+      return pendingStatus;
     }
 
     try {
@@ -590,14 +598,14 @@ export class GitHubWorkItemSync {
       if (snapshot.conclusion === "success") {
         return { substate: "ci_green_pending_self_review", flagsToAdd: ["ci_green"] };
       }
-      return { substate: "pr_adopted", flagsToAdd: [] };
+      return pendingStatus;
     } catch (error) {
       logError("Failed to resolve PR adoption CI snapshot", {
         repo: payload.repo,
         headSha: payload.headSha,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { substate: "pr_adopted", flagsToAdd: [] };
+      return pendingStatus;
     }
   }
 

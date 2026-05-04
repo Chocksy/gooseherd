@@ -803,3 +803,64 @@ test("orchestrator does not roll back superseded auto-review launches", async (t
   const updated = await (new WorkItemService(db)).getWorkItem(workItem.id);
   assert.equal(updated?.substate, "collecting_context");
 });
+
+test("orchestrator reconcileWorkItem launches a repair_ci run for ci_failed substate", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "auto_review",
+    substate: "ci_failed",
+    flags: ["pr_opened", "ai_assist_enabled", "engineering_review_done", "qa_review_done"],
+  });
+  t.after(cleanup);
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  const updated = await reconcileWorkItem(db, workItem.id, "periodic.ci_failed_recovery", {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(updated?.substate, "ci_failed");
+  assert.equal(workItemRow?.state, "auto_review");
+  assert.equal(workItemRow?.substate, "ci_failed");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:ci-fix");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.repair_ci");
+  assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_failed");
+
+  const events = await db
+    .select()
+    .from(workItemEvents)
+    .where(eq(workItemEvents.workItemId, workItem.id));
+  const launched = events.find((event) => event.eventType === "run.auto_launched");
+  assert.ok(launched, "run.auto_launched event should be appended");
+  assert.equal((launched!.payload as Record<string, unknown>).reason, "periodic.ci_failed_recovery");
+});
+
+test("orchestrator reconcileWorkItem is a no-op for ci_failed when an active system run already exists", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createFeatureDeliveryFixture({
+    state: "auto_review",
+    substate: "ci_failed",
+    flags: ["pr_opened", "ai_assist_enabled"],
+  });
+  t.after(cleanup);
+
+  await runStore.createRun({
+    repoSlug: workItem.repo!,
+    task: "stub",
+    baseBranch: "main",
+    requestedBy: "work-item:ci-fix",
+    channelId: workItem.homeChannelId,
+    threadTs: workItem.homeThreadTs,
+    runtime: "local",
+    workItemId: workItem.id,
+    autoReviewSourceSubstate: "ci_failed",
+    pipelineHint: "feature_delivery.ci_fix",
+  }, "gooseherd", workItem.githubPrHeadBranch);
+
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+  await reconcileWorkItem(db, workItem.id);
+
+  const runs = await runStore.listRunsForWorkItem(workItem.id);
+  assert.equal(runs.length, 1, "no new run should be queued while one is in flight");
+});

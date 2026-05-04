@@ -10,7 +10,6 @@ import {
   nextFeatureDeliveryStateAfterEngineeringReview,
   nextFeatureDeliveryStateAfterQaPreparation,
   nextFeatureDeliveryStateAfterQaReview,
-  nextFeatureDeliveryStateAfterReadyForMergeRecovery,
   shouldResetEngineeringReviewOnNewCommits,
   shouldResetQaReviewOnNewCommits,
 } from "../src/work-items/feature-delivery-policy.js";
@@ -175,12 +174,6 @@ test("feature delivery returns to auto_review when QA requests changes", () => {
 
 test("feature delivery advances to ready_for_merge when QA approves", () => {
   assert.equal(nextFeatureDeliveryStateAfterQaReview("approved"), "ready_for_merge");
-});
-
-test("feature delivery returns to auto_review for ready_for_merge recovery paths", () => {
-  assert.equal(nextFeatureDeliveryStateAfterReadyForMergeRecovery("branch_stale"), "auto_review");
-  assert.equal(nextFeatureDeliveryStateAfterReadyForMergeRecovery("conflicts"), "auto_review");
-  assert.equal(nextFeatureDeliveryStateAfterReadyForMergeRecovery("ci_failed_after_rebase"), "auto_review");
 });
 
 test("engineering review reset policy is controlled by env-like config", () => {

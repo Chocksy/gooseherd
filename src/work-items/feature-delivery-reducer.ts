@@ -5,7 +5,6 @@ import {
   nextFeatureDeliveryStateAfterProductReview,
   nextFeatureDeliveryStateAfterQaPreparation,
   nextFeatureDeliveryStateAfterQaReview,
-  nextFeatureDeliveryStateAfterReadyForMergeRecovery,
 } from "./feature-delivery-policy.js";
 import type { UpdateWorkItemStateInput, WorkItemRecord } from "./types.js";
 import type { FeatureDeliveryProgressCheckpointType } from "../runs/run-checkpoints.js";
@@ -287,43 +286,32 @@ function reduceFailedCi(
   workItem: WorkItemRecord,
   event: FeatureDeliveryCiCompletedEvent,
 ): FeatureDeliveryDecision {
-  if (workItem.state === "auto_review") {
+  if (workItem.state === "backlog" || workItem.state === "in_progress") {
     return {
       patches: [{
         state: "auto_review",
-        substate: event.hasActiveSystemRun ? workItem.substate : "ci_failed",
+        substate: "ci_failed",
         flagsToRemove: ["ci_green"],
       }],
-      commands: event.automationEnabled && !event.hasActiveSystemRun
-        ? [{ type: "reconcile_work_item", reason: "github.ci_failed" }]
-        : [],
+      commands: [],
     };
   }
 
   if (!isManagedFeatureDeliveryState(workItem.state)) {
-    if (workItem.state === "backlog" || workItem.state === "in_progress") {
-      return {
-        patches: [{
-          state: "auto_review",
-          substate: "waiting_ci",
-          flagsToRemove: ["ci_green"],
-        }],
-        commands: [],
-      };
-    }
-
     return emptyDecision();
   }
 
+  const preserveSubstate = workItem.state === "auto_review" && event.hasActiveSystemRun;
+
   return {
     patches: [{
-      state: workItem.state === "ready_for_merge"
-        ? nextFeatureDeliveryStateAfterReadyForMergeRecovery("ci_failed_after_rebase")
-        : "auto_review",
-      substate: workItem.state === "ready_for_merge" ? "revalidating_after_rebase" : "waiting_ci",
+      state: "auto_review",
+      substate: preserveSubstate ? workItem.substate : "ci_failed",
       flagsToRemove: ["ci_green"],
     }],
-    commands: [],
+    commands: event.automationEnabled && !event.hasActiveSystemRun
+      ? [{ type: "reconcile_work_item", reason: "github.ci_failed" }]
+      : [],
   };
 }
 

@@ -5,6 +5,7 @@ import type { RunRecord } from "../types.js";
 import type { FeatureDeliveryProgressCheckpointType, RunCheckpointRecord } from "../runs/run-checkpoints.js";
 import {
   canAutoRebaseFeatureDeliveryBranch,
+  isAiAssistAutomationEnabled,
 } from "./feature-delivery-policy.js";
 import { applyWorkItemDecision } from "./feature-delivery-decision.js";
 import { reduceFeatureDelivery } from "./feature-delivery-reducer.js";
@@ -34,9 +35,6 @@ import {
   type FeatureDeliveryRunIntent,
 } from "../runs/run-intent.js";
 import {
-  AI_ASSIST_DISABLED_FLAG,
-  AI_ASSIST_ENABLED_FLAG,
-  GITHUB_PR_ADOPTED_FLAG,
   type FeatureDeliveryAutoReviewSubstate,
   type WorkItemRecord,
 } from "./types.js";
@@ -46,7 +44,15 @@ const CI_FIX_REQUESTED_BY = "work-item:ci-fix";
 const BRANCH_SYNC_REQUESTED_BY = "work-item:branch-sync";
 const READY_FOR_MERGE_REQUESTED_BY = "work-item:ready-for-merge";
 const QA_PREPARATION_REQUESTED_BY = "work-item:qa-preparation";
-const ACTIVE_AUTO_REVIEW_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing"]);
+const ACTIVE_AUTO_REVIEW_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "validating",
+  "pushing",
+  "awaiting_ci",
+  "ci_fixing",
+  "cancel_requested",
+]);
 const PREFETCH_FAILURE_PATTERN = /prefetch/i;
 
 export interface WorkItemOrchestratorDeps {
@@ -267,7 +273,7 @@ export class WorkItemOrchestrator {
       }
 
       const existingRuns = await txRuns.listRunsForWorkItem(workItemId);
-      if (existingRuns.some((run) => ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status) || run.status === "cancel_requested")) {
+      if (existingRuns.some((run) => ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status))) {
         currentWorkItem = current;
         return;
       }
@@ -338,7 +344,7 @@ export class WorkItemOrchestrator {
       }
 
       const existingRuns = await txRuns.listRunsForWorkItem(workItemId);
-      if (existingRuns.some((run) => ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status) || run.status === "cancel_requested")) {
+      if (existingRuns.some((run) => ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status))) {
         currentWorkItem = current;
         return;
       }
@@ -406,7 +412,7 @@ export class WorkItemOrchestrator {
       }
 
       const existingRuns = await txRuns.listRunsForWorkItem(workItemId);
-      if (existingRuns.some((run) => isFeatureDeliverySystemRun(run) && (ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status) || run.status === "cancel_requested"))) {
+      if (existingRuns.some((run) => isFeatureDeliverySystemRun(run) && ACTIVE_AUTO_REVIEW_RUN_STATUSES.has(run.status))) {
         currentWorkItem = current;
         return;
       }
@@ -719,10 +725,3 @@ function isLatestRollbackCandidate(run: {
   );
 }
 
-function isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {
-  if (workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
-    return false;
-  }
-
-  return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
-}

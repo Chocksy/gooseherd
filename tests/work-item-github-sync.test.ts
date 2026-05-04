@@ -2172,13 +2172,57 @@ test("github sync handles check_suite using stored head sha without fetching the
   assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.ci_failed" }]);
 });
 
-test("github sync preserves ready_for_merge revalidation behavior on failed CI without reconciling", async (t) => {
+test("github sync demotes ready_for_merge to auto_review/ci_failed and reconciles on failed CI when automation is on", async (t) => {
+  const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
+  t.after(cleanup);
+
+  const delivery = await service.createDeliveryFromJira({
+    title: "Ready for merge CI failed with automation",
+    summary: "Should land in ci_failed and queue a repair_ci reconcile",
+    ownerTeamId,
+    homeChannelId: "C_GROWTH",
+    homeThreadTs: "1740000000.603",
+    jiraIssueKey: "HBL-405D",
+    createdByUserId: pmUserId,
+    repo: "hubstaff/gooseherd",
+    githubPrNumber: 92,
+    githubPrUrl: "https://github.com/hubstaff/gooseherd/pull/92",
+    initialState: "ready_for_merge",
+    initialSubstate: "waiting_merge",
+    flags: [
+      "pr_opened",
+      "ci_green",
+      "self_review_done",
+      "engineering_review_done",
+      "qa_review_done",
+      "github_pr_adopted",
+      "ai_assist_enabled",
+    ],
+  });
+
+  const updated = await sync.handleWebhookPayload({
+    eventType: "check_suite",
+    action: "completed",
+    repo: "hubstaff/gooseherd",
+    conclusion: "failure",
+    status: "completed",
+    pullRequestNumbers: [92],
+  });
+
+  assert.equal(updated?.id, delivery.id);
+  assert.equal(updated?.state, "auto_review");
+  assert.equal(updated?.substate, "ci_failed");
+  assert.ok(!updated?.flags.includes("ci_green"));
+  assert.deepEqual(reconcileCalls, [{ workItemId: delivery.id, reason: "github.ci_failed" }]);
+});
+
+test("github sync demotes ready_for_merge to auto_review/ci_failed on failed CI without reconciling when automation is off", async (t) => {
   const { cleanup, service, sync, ownerTeamId, pmUserId, reconcileCalls } = await createGitHubSyncFixture();
   t.after(cleanup);
 
   const delivery = await service.createDeliveryFromJira({
     title: "Ready for merge CI failed",
-    summary: "Should revalidate after rebase",
+    summary: "Should land in ci_failed for the next reconcile to repair",
     ownerTeamId,
     homeChannelId: "C_GROWTH",
     homeThreadTs: "1740000000.602",
@@ -2203,7 +2247,7 @@ test("github sync preserves ready_for_merge revalidation behavior on failed CI w
 
   assert.equal(updated?.id, delivery.id);
   assert.equal(updated?.state, "auto_review");
-  assert.equal(updated?.substate, "revalidating_after_rebase");
+  assert.equal(updated?.substate, "ci_failed");
   assert.ok(!updated?.flags.includes("ci_green"));
   assert.deepEqual(reconcileCalls, []);
 });

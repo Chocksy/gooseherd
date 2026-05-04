@@ -33,7 +33,6 @@ export const FEATURE_DELIVERY_AUTO_REVIEW_SUBSTATES = [
   "ci_green_pending_self_review",
   "applying_review_feedback",
   "ci_failed",
-  "revalidating_after_rebase",
 ] as const;
 
 export type FeatureDeliveryAutoReviewSubstate =

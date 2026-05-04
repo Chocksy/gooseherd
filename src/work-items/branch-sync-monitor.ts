@@ -1,7 +1,10 @@
-import { logError } from "../logger.js";
+import { logError, logInfo } from "../logger.js";
 import type { GitHubService, PullRequestDetails } from "../github.js";
 import { RunStore } from "../store.js";
-import { canAutoRebaseFeatureDeliveryBranch } from "./feature-delivery-policy.js";
+import {
+  canAutoRebaseFeatureDeliveryBranch,
+  isAiAssistAutomationEnabled,
+} from "./feature-delivery-policy.js";
 import { WorkItemStore } from "./store.js";
 import {
   AI_ASSIST_DISABLED_FLAG,
@@ -11,6 +14,9 @@ import {
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing", "cancel_requested"]);
 const DEFAULT_ADOPTION_LABELS = ["ai:assist"];
+const REPAIR_CI_INTENT_KIND = "feature_delivery.repair_ci";
+const DEFAULT_MAX_REPAIR_CI_ATTEMPTS = 3;
+const DEFAULT_CI_REPAIR_COOLDOWN_MS = 30 * 60 * 1000;
 
 export interface BranchSyncMonitorCycleDeps {
   workItems: Pick<WorkItemStore, "listBranchSyncCandidateWorkItems" | "listWorkItems" | "setFlagState" | "updateState">;
@@ -21,6 +27,9 @@ export interface BranchSyncMonitorCycleDeps {
   adoptionLabels?: string[];
   queueBranchSyncRun: (workItemId: string, reason: string) => Promise<void> | void;
   reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
+  ciRepairMaxAttempts?: number;
+  ciRepairCooldownMs?: number;
+  now?: () => number;
 }
 
 export interface BranchSyncCycleResult {
@@ -29,6 +38,8 @@ export interface BranchSyncCycleResult {
   restored: number;
   stale: number;
   queued: number;
+  ciRecovered: number;
+  ciRepairBudgetExhausted: number;
 }
 
 function isEligibleForPullRequestStateSync(workItem: WorkItemRecord): workItem is WorkItemRecord & {
@@ -84,6 +95,18 @@ function isAiAssistDisabledCancellation(workItem: WorkItemRecord): boolean {
   );
 }
 
+function isStuckOnCiFailure(workItem: WorkItemRecord): boolean {
+  if (
+    workItem.workflow !== "feature_delivery" ||
+    workItem.state !== "auto_review" ||
+    workItem.substate !== "ci_failed" ||
+    !isAiAssistAutomationEnabled(workItem)
+  ) {
+    return false;
+  }
+  return typeof workItem.githubPrHeadBranch === "string" && workItem.githubPrHeadBranch.length > 0;
+}
+
 export async function runBranchSyncMonitorCycle(
   deps: BranchSyncMonitorCycleDeps,
 ): Promise<BranchSyncCycleResult> {
@@ -91,11 +114,16 @@ export async function runBranchSyncMonitorCycle(
     ? await deps.workItems.listBranchSyncCandidateWorkItems()
     : await deps.workItems.listWorkItems();
   const adoptionLabels = normalizedAdoptionLabels(deps.adoptionLabels);
+  const maxRepairCiAttempts = deps.ciRepairMaxAttempts ?? DEFAULT_MAX_REPAIR_CI_ATTEMPTS;
+  const ciRepairCooldownMs = deps.ciRepairCooldownMs ?? DEFAULT_CI_REPAIR_COOLDOWN_MS;
+  const now = deps.now ?? Date.now;
   let checked = 0;
   let closed = 0;
   let restored = 0;
   let stale = 0;
   let queued = 0;
+  let ciRecovered = 0;
+  let ciRepairBudgetExhausted = 0;
 
   for (const workItem of workItems) {
     if (deps.getPullRequest && isEligibleForPullRequestStateSync(workItem)) {
@@ -137,6 +165,47 @@ export async function runBranchSyncMonitorCycle(
           workItemId: workItem.id,
           repo: workItem.repo,
           prNumber: workItem.githubPrNumber,
+          error: message,
+        });
+      }
+    }
+
+    if (deps.reconcileWorkItem && isStuckOnCiFailure(workItem)) {
+      try {
+        const runs = await deps.runs.listRunsForWorkItem(workItem.id);
+        if (!runs.some((run) => ACTIVE_RUN_STATUSES.has(run.status))) {
+          const repairAttempts = countRepairCiAttempts(runs);
+          const lastFinishedAt = lastRepairCiFinishedAt(runs);
+          const cooldownRemainingMs = lastFinishedAt === undefined
+            ? 0
+            : Math.max(0, ciRepairCooldownMs - (now() - lastFinishedAt));
+
+          if (repairAttempts >= maxRepairCiAttempts) {
+            ciRepairBudgetExhausted += 1;
+            logError("Branch sync monitor skipped CI recovery — repair_ci attempt budget exhausted", {
+              workItemId: workItem.id,
+              attempts: repairAttempts,
+              maxAttempts: maxRepairCiAttempts,
+            });
+          } else if (cooldownRemainingMs > 0) {
+            logInfo("Branch sync monitor deferring CI recovery — repair_ci cooldown active", {
+              workItemId: workItem.id,
+              attempts: repairAttempts,
+              cooldownRemainingMs,
+            });
+          } else {
+            await deps.reconcileWorkItem(workItem.id, "periodic.ci_failed_recovery");
+            ciRecovered += 1;
+            logInfo("Branch sync monitor recovered stuck CI failure", {
+              workItemId: workItem.id,
+              attempts: repairAttempts,
+            });
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "unknown";
+        logError("Branch sync monitor could not recover stuck CI failure", {
+          workItemId: workItem.id,
           error: message,
         });
       }
@@ -190,7 +259,46 @@ export async function runBranchSyncMonitorCycle(
     }
   }
 
-  return { checked, closed, restored, stale, queued };
+  if (ciRecovered > 0 || ciRepairBudgetExhausted > 0 || closed > 0 || restored > 0 || queued > 0) {
+    logInfo("Branch sync monitor cycle complete", {
+      checked,
+      closed,
+      restored,
+      stale,
+      queued,
+      ciRecovered,
+      ciRepairBudgetExhausted,
+    });
+  }
+
+  return { checked, closed, restored, stale, queued, ciRecovered, ciRepairBudgetExhausted };
+}
+
+function isRepairCiRun(run: { intentKind?: string; intent?: { kind?: string } }): boolean {
+  return run.intentKind === REPAIR_CI_INTENT_KIND || run.intent?.kind === REPAIR_CI_INTENT_KIND;
+}
+
+function countRepairCiAttempts(runs: Array<{ intentKind?: string; intent?: { kind?: string } }>): number {
+  return runs.filter(isRepairCiRun).length;
+}
+
+function lastRepairCiFinishedAt(
+  runs: Array<{ intentKind?: string; intent?: { kind?: string }; finishedAt?: string }>,
+): number | undefined {
+  let latest: number | undefined;
+  for (const run of runs) {
+    if (!isRepairCiRun(run) || !run.finishedAt) {
+      continue;
+    }
+    const finishedAt = Date.parse(run.finishedAt);
+    if (!Number.isFinite(finishedAt)) {
+      continue;
+    }
+    if (latest === undefined || finishedAt > latest) {
+      latest = finishedAt;
+    }
+  }
+  return latest;
 }
 
 export function startBranchSyncMonitor(input: BranchSyncMonitorCycleDeps & { intervalMs: number }): { stop(): void } {

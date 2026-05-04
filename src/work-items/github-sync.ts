@@ -1,6 +1,7 @@
 import type { Database } from "../db/index.js";
 import type { GitHubService } from "../github.js";
 import {
+  isAiAssistAutomationEnabled,
   shouldResetEngineeringReviewOnNewCommits,
   shouldResetQaReviewOnNewCommits,
 } from "./feature-delivery-policy.js";
@@ -246,7 +247,7 @@ export class GitHubWorkItemSync {
 
     const existing = await this.findExistingWorkItemForPullRequest(payload.repo, prNumber, payload.prUrl);
     if (existing) {
-      const automationWasEnabled = this.isAiAssistAutomationEnabled(existing);
+      const automationWasEnabled = isAiAssistAutomationEnabled(existing);
       let current = await this.syncStoredPullRequestContext(existing, {
         repo: payload.repo,
         githubPrUrl: payload.prUrl,
@@ -290,7 +291,7 @@ export class GitHubWorkItemSync {
       if (
         existing.state !== "cancelled" &&
         !automationWasEnabled &&
-        this.isAiAssistAutomationEnabled(current) &&
+        isAiAssistAutomationEnabled(current) &&
         current.state === "auto_review"
       ) {
         await this.reconcileIfConfigured(current.id, "github.automation_enabled");
@@ -492,7 +493,7 @@ export class GitHubWorkItemSync {
         type: "github.ci_completed",
         conclusion: "success",
         hasActiveSystemRun: false,
-        automationEnabled: this.isAiAssistAutomationEnabled(workItem),
+        automationEnabled: isAiAssistAutomationEnabled(workItem),
       },
       this.reducerPolicy(),
     );
@@ -532,7 +533,7 @@ export class GitHubWorkItemSync {
     }
 
     const conclusion = await this.resolveCheckSuiteConclusion(payload, workItem);
-    const automationEnabled = this.isAiAssistAutomationEnabled(workItem);
+    const automationEnabled = isAiAssistAutomationEnabled(workItem);
     if (conclusion === "success" || conclusion === "failure") {
       const hasActiveSystemRun = workItem.state === "auto_review"
         ? await this.hasActiveSystemRun(workItem.id)
@@ -642,7 +643,7 @@ export class GitHubWorkItemSync {
       {
         type: "github.review_submitted",
         reviewState,
-        automationEnabled: this.isAiAssistAutomationEnabled(workItem),
+        automationEnabled: isAiAssistAutomationEnabled(workItem),
       },
       this.reducerPolicy(),
     );
@@ -845,7 +846,7 @@ export class GitHubWorkItemSync {
     labels: string[] | undefined,
   ): Promise<WorkItemRecord> {
     const hasAdoptionLabel = this.hasAdoptionLabel(labels);
-    const automationEnabled = this.isAiAssistAutomationEnabled(workItem);
+    const automationEnabled = isAiAssistAutomationEnabled(workItem);
 
     if (hasAdoptionLabel && automationEnabled && !workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
       return workItem;
@@ -1087,14 +1088,6 @@ export class GitHubWorkItemSync {
       isFeatureDeliveryAutoReviewOrRepairCiRun(run) &&
       ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES.has(run.status)
     );
-  }
-
-  private isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {
-    if (workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
-      return false;
-    }
-
-    return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
   }
 
   private async resolveCheckSuiteConclusion(

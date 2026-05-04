@@ -320,7 +320,7 @@ test("reducer preserves ci_green writeback for backlog feature_delivery items on
   assert.deepEqual(decision.commands, []);
 });
 
-test("reducer returns in_progress feature_delivery items to auto_review on failed ci", () => {
+test("reducer demotes in_progress feature_delivery items to auto_review/ci_failed on failed ci", () => {
   const decision = reduceFeatureDelivery(
     makeFeatureDeliveryWorkItem({
       state: "in_progress",
@@ -337,10 +337,33 @@ test("reducer returns in_progress feature_delivery items to auto_review on faile
 
   assert.deepEqual(decision.patches, [{
     state: "auto_review",
-    substate: "waiting_ci",
+    substate: "ci_failed",
     flagsToRemove: ["ci_green"],
   }]);
   assert.deepEqual(decision.commands, []);
+});
+
+test("reducer demotes ready_for_merge to auto_review/ci_failed and requests reconcile on failed ci", () => {
+  const decision = reduceFeatureDelivery(
+    makeFeatureDeliveryWorkItem({
+      state: "ready_for_merge",
+      substate: "waiting_merge",
+      flags: ["ci_green", "engineering_review_done", "qa_review_done", "ai_assist_enabled"],
+    }),
+    {
+      type: "github.ci_completed",
+      conclusion: "failure",
+      hasActiveSystemRun: false,
+      automationEnabled: true,
+    },
+  );
+
+  assert.deepEqual(decision.patches, [{
+    state: "auto_review",
+    substate: "ci_failed",
+    flagsToRemove: ["ci_green"],
+  }]);
+  assert.deepEqual(decision.commands, [{ type: "reconcile_work_item", reason: "github.ci_failed" }]);
 });
 
 test("reducer ignores ci updates for done feature_delivery items", () => {
@@ -495,7 +518,37 @@ test("reducer preserves current auto_review substate on ci failure while an acti
   assert.deepEqual(decision.commands, []);
 });
 
-test("reducer moves ready_for_merge back to auto_review revalidation on failed ci", () => {
+for (const managedState of [
+  "engineering_review",
+  "qa_preparation",
+  "product_review",
+  "qa_review",
+] as const) {
+  test(`reducer demotes ${managedState} to auto_review/ci_failed and requests reconcile on failed ci`, () => {
+    const decision = reduceFeatureDelivery(
+      makeFeatureDeliveryWorkItem({
+        state: managedState,
+        substate: "review_pending",
+        flags: ["ci_green", "self_review_done"],
+      }),
+      {
+        type: "github.ci_completed",
+        conclusion: "failure",
+        hasActiveSystemRun: false,
+        automationEnabled: true,
+      },
+    );
+
+    assert.deepEqual(decision.patches, [{
+      state: "auto_review",
+      substate: "ci_failed",
+      flagsToRemove: ["ci_green"],
+    }]);
+    assert.deepEqual(decision.commands, [{ type: "reconcile_work_item", reason: "github.ci_failed" }]);
+  });
+}
+
+test("reducer skips reconcile command on failed ci when automation is disabled", () => {
   const decision = reduceFeatureDelivery(
     makeFeatureDeliveryWorkItem({
       state: "ready_for_merge",
@@ -506,37 +559,16 @@ test("reducer moves ready_for_merge back to auto_review revalidation on failed c
       type: "github.ci_completed",
       conclusion: "failure",
       hasActiveSystemRun: false,
-      automationEnabled: true,
+      automationEnabled: false,
     },
   );
 
   assert.deepEqual(decision.patches, [{
     state: "auto_review",
-    substate: "revalidating_after_rebase",
+    substate: "ci_failed",
     flagsToRemove: ["ci_green"],
   }]);
-});
-
-test("reducer returns review states back to auto_review waiting_ci on failed ci", () => {
-  const decision = reduceFeatureDelivery(
-    makeFeatureDeliveryWorkItem({
-      state: "engineering_review",
-      substate: "waiting_engineering_review",
-      flags: ["ci_green", "self_review_done"],
-    }),
-    {
-      type: "github.ci_completed",
-      conclusion: "failure",
-      hasActiveSystemRun: false,
-      automationEnabled: true,
-    },
-  );
-
-  assert.deepEqual(decision.patches, [{
-    state: "auto_review",
-    substate: "waiting_ci",
-    flagsToRemove: ["ci_green"],
-  }]);
+  assert.deepEqual(decision.commands, []);
 });
 
 test("reducer advances engineering_review approvals through qa preparation", () => {

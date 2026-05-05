@@ -946,6 +946,38 @@ test("retryRun preserves work-item routing fields from a failed CI-fix run", asy
   assert.deepEqual(persisted.skipNodes, ["lint_fix"]);
   assert.deepEqual(persisted.enableNodes, ["browser_verify"]);
   assert.equal(persisted.requestedBy, "supervisor");
+  assert.equal(
+    persisted.branchName,
+    original.branchName,
+    "branchName must survive retry — otherwise the retry pushes to a fresh branch instead of the PR head"
+  );
+
+  await waitForRunDone(store, retried!.id);
+  await testDb.cleanup();
+});
+
+test("retryRun preserves branchName for non-work-item runs too", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const mockPipeline = makeMockPipelineEngine();
+  const config = makeConfig();
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+
+  const original = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "task",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+  });
+  await waitForRunDone(store, original.id);
+  await store.updateRun(original.id, { status: "failed", phase: "failed", error: "boom" });
+
+  const retried = await manager.retryRun(original.id, "U5678");
+  assert.ok(retried);
+  assert.equal(retried!.branchName, original.branchName);
 
   await waitForRunDone(store, retried!.id);
   await testDb.cleanup();

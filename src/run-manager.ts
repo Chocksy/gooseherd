@@ -442,10 +442,13 @@ export class RunManager {
     return record;
   }
 
-  private async createRunRecord(input: EnqueueRunInput): Promise<RunRecord> {
+  private async createRunRecord(
+    input: EnqueueRunInput,
+    existingBranchName?: string
+  ): Promise<RunRecord> {
     const runtime = input.runtime ?? this.config.sandboxRuntime;
     this.getBackend(runtime);
-    return this.store.createRun({ ...input, runtime }, this.config.branchPrefix);
+    return this.store.createRun({ ...input, runtime }, this.config.branchPrefix, existingBranchName);
   }
 
   private scheduleRunProcessing(runId: string): void {
@@ -504,7 +507,7 @@ export class RunManager {
       prNumber: original.prNumber,
       autoReviewSourceSubstate: original.autoReviewSourceSubstate,
       teamId: original.teamId,
-    });
+    }, original.branchName);
     this.retryMarkers.set(newRun.id, original.id);
     this.scheduleRunProcessing(newRun.id);
     return newRun;

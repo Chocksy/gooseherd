@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,9 +48,36 @@ test("commitCaptureAndPush: excludes AGENTS.md from commit and changedFiles", as
   assert.equal(showResult.stdout.includes("AGENTS.md"), false);
   assert.equal(showResult.stdout.includes("src.ts"), true);
 
-  const statusResult = await runShellCapture("git status --short", { cwd: dir, logFile });
-  assert.equal(statusResult.code, 0);
-  assert.equal(statusResult.stdout.includes("AGENTS.md"), true, "AGENTS.md should remain uncommitted");
+  // Downstream agent nodes (fix_browser, ci-fix outer loop, decide_recovery)
+  // depend on pi-agent's AGENTS.md auto-discovery from cwd=repoDir.
+  const restored = await readFile(path.join(dir, "AGENTS.md"), "utf8");
+  assert.equal(restored, "# generated\n");
+});
+
+test("commitCaptureAndPush: succeeds when host repo's .gitignore lists AGENTS.md", async (t) => {
+  // Regression: hubstaff-server keeps AGENTS.md in .gitignore, which made
+  // `git add -A -- '.' ':(exclude)AGENTS.md'` exit 1 with the "you asked to
+  // add an ignored file" hint and broke ci-fix runs against that repo.
+  const { dir, logFile, cleanup } = await makeGitRepo();
+  t.after(cleanup);
+
+  await writeFile(path.join(dir, ".gitignore"), "AGENTS.md\n", "utf8");
+  await runShellCapture("git add .gitignore && git commit -m 'add gitignore'", { cwd: dir, logFile });
+
+  await writeFile(path.join(dir, "AGENTS.md"), "# generated\n", "utf8");
+  await writeFile(path.join(dir, "src.ts"), "export const value = 1;\n", "utf8");
+
+  const result = await commitCaptureAndPush(dir, "test commit", logFile);
+  assert.ok(result.commitSha.length > 0);
+  assert.deepEqual(result.changedFiles, ["src.ts"]);
+
+  const showResult = await runShellCapture("git show --name-only --pretty='' HEAD", { cwd: dir, logFile });
+  assert.equal(showResult.code, 0);
+  assert.equal(showResult.stdout.includes("AGENTS.md"), false);
+  assert.equal(showResult.stdout.includes("src.ts"), true);
+
+  const restored = await readFile(path.join(dir, "AGENTS.md"), "utf8");
+  assert.equal(restored, "# generated\n");
 });
 
 test("commitCaptureAndPush: fails clearly when only internal-generated files changed", async (t) => {

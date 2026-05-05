@@ -12,7 +12,8 @@ export type RunStatus =
   | "cancel_requested"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "conversation";
 
 export type RunPhase =
   | "queued"
@@ -26,7 +27,8 @@ export type RunPhase =
   | "cancel_requested"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "conversation";
 
 export interface TokenUsage {
   qualityGateInputTokens: number;
@@ -166,4 +168,6 @@ export interface ExecutionResult {
   prNumber?: number;
   tokenUsage?: TokenUsage;
   title?: string;
+  /** Markdown answer produced by the investigation pipeline (read-only research). */
+  answer?: string;
 }

@@ -267,7 +267,8 @@ export class PipelineEngine {
         prUrl,
         prNumber,
         tokenUsage: tokenUsage ?? undefined,
-        title: ctx.get<string>("generatedTitle")
+        title: ctx.get<string>("generatedTitle"),
+        answer: ctx.get<string>("answer")
       };
     } finally {
       flushRunLogMirror(run.id);

@@ -1166,6 +1166,59 @@ test("processRun posts status card and summary on success", async () => {
   await testDb.cleanup();
 });
 
+test("processRun: investigate run posts the answer instead of an empty PR/files card", async () => {
+  const { store, testDb } = await setupTestStore();
+  const mockClient = makeMockSlackClient();
+  const answerText = "# Answer\n\nDWS skipped for org 633609 — see app/jobs/work_summary_jobs/process_organization.rb:42 for the dispatch logic.";
+  // For investigate runs the pipeline doesn't produce a commit/PR/changedFiles.
+  const mockPipeline = makeMockPipelineEngine({
+    answer: answerText,
+    commitSha: "",
+    changedFiles: [],
+    prUrl: undefined,
+    prNumber: undefined
+  });
+  const config = makeConfig();
+
+  const manager = new RunManager(config, store, mockPipeline, mockClient as any);
+
+  const run = await manager.enqueueRun({
+    repoSlug: "org/repo",
+    task: "Why didn't DWS go out for org 633609?",
+    baseBranch: "main",
+    requestedBy: "U1234",
+    channelId: "C1234",
+    threadTs: "1234567890.000000",
+    runtime: config.sandboxRuntime,
+    intent: {
+      version: 1,
+      kind: "investigate",
+      source: "slack",
+      requestedBy: "U1234",
+      question: "Why didn't DWS go out for org 633609?"
+    }
+  });
+
+  await waitForRunDone(store, run.id);
+  await waitForManagerIdle(manager);
+
+  const postMessages = mockClient._calls.filter((c) => c.method === "chat.postMessage");
+  // The summary post should contain the answer text.
+  const summary = postMessages.findLast((c) => {
+    const text = c.args.text;
+    return typeof text === "string" && text.includes("DWS skipped for org 633609");
+  });
+  assert.ok(summary, `Investigate run summary should contain the answer text. postMessages=${JSON.stringify(postMessages.map(p => p.args.text))}`);
+
+  const summaryText = summary.args.text as string;
+  // It should NOT show the standard "Files changed" / "PR" lines for an investigate run.
+  assert.equal(summaryText.includes("Files changed:"), false, "Investigate summary must not show 'Files changed:'");
+  assert.equal(summaryText.includes("*Commit:*"), false, "Investigate summary must not show '*Commit:*'");
+  assert.equal(summaryText.includes("*PR:*"), false, "Investigate summary must not show '*PR:*'");
+
+  await testDb.cleanup();
+});
+
 test("processRun posts failure summary on error", async () => {
   const { store, testDb } = await setupTestStore();
   const mockClient = makeMockSlackClient();

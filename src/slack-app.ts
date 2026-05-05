@@ -8,6 +8,8 @@ import { parseSlackAlert, type SlackChannelAdapterConfig, type SlackMessageEvent
 import { handleMessage } from "./orchestrator/orchestrator.js";
 import { buildSystemContext } from "./orchestrator/system-context.js";
 import { ConversationStore } from "./orchestrator/conversation-store.js";
+import { wrapSearchCodeWithRateLimitNudge } from "./orchestrator/search-code-rate-limit.js";
+import { synthesizeTask } from "./orchestrator/synthesize-task.js";
 import type { HandleMessageDeps, HandleMessageRequest } from "./orchestrator/types.js";
 import type { LLMCallerConfig } from "./llm/caller.js";
 import type { MemoryProvider } from "./memory/provider.js";
@@ -111,7 +113,7 @@ async function gatherThreadContext(
 /**
  * Build HandleMessageDeps from the app's services.
  */
-function buildHandleMessageDeps(
+export function buildHandleMessageDeps(
   config: AppConfig,
   runManager: RunManager,
   memoryProvider?: MemoryProvider,
@@ -129,6 +131,19 @@ function buildHandleMessageDeps(
         return { id: continued.id, branchName: continued.branchName, repoSlug: continued.repoSlug };
       }
 
+      // Fallback path (no Slack event in scope). Real Slack mentions go through
+      // the depsWithContext override which knows the active conversation run.
+      const intent = opts.mode === "investigate"
+        ? {
+            version: 1 as const,
+            kind: "investigate" as const,
+            source: "unknown" as const,
+            requestedBy: "orchestrator",
+            question: task,
+            triggerReason: "orchestrator-default"
+          }
+        : undefined;
+
       const run = await runManager.enqueueRun({
         repoSlug: repo,
         task,
@@ -140,7 +155,8 @@ function buildHandleMessageDeps(
         skipNodes: opts.skipNodes,
         enableNodes: opts.enableNodes,
         pipelineHint: opts.pipeline,
-        teamId: undefined
+        teamId: undefined,
+        ...(intent ? { intent } : {})
       });
       return { id: run.id, branchName: run.branchName, repoSlug: run.repoSlug };
     },
@@ -181,10 +197,10 @@ function buildHandleMessageDeps(
   }
 
   if (githubService) {
-    deps.searchCode = async (query: string, repoSlug: string) => {
+    deps.searchCode = wrapSearchCodeWithRateLimitNudge(async (query: string, repoSlug: string) => {
       const results = await githubService.searchCode(query, repoSlug);
       return results.map(r => `${r.path}\n${r.textMatches.map(m => `  ${m}`).join("\n")}`).join("\n\n");
-    };
+    });
 
     deps.describeRepo = async (repoSlug: string) => {
       const info = await githubService.describeRepo(repoSlug);
@@ -684,8 +700,15 @@ export async function startSlackApp(
     }
 
     // ── Casual pre-filter (no LLM) ──
+    // Threads with an active conversation run skip this filter — short follow-ups
+    // ("yeah do it", "ok go", "wait, change X") need to reach the orchestrator
+    // which has the full thread context to interpret them.
     const stripped = stripMentions(event.text);
-    if (isCasualMessage(event.text)) {
+    const activeConversationRun = event.thread_ts && event.user
+      ? await runManager.findActiveConversationRunForThread(event.channel, event.thread_ts)
+      : undefined;
+
+    if (!activeConversationRun && isCasualMessage(event.text)) {
       // In threads with existing runs, save approval feedback
       if (event.thread_ts && event.user && APPROVAL_PATTERNS.test(stripped)) {
         const latestRun = await runManager.getLatestRunForThread(event.channel, event.thread_ts);
@@ -734,6 +757,16 @@ export async function startSlackApp(
       ? conversationStore.maskOldObservations(priorMessages, 12)
       : undefined;
 
+    // Get-or-create the thread's conversation run BEFORE calling the orchestrator.
+    // The same row accumulates token cost across turns and transitions to "queued"
+    // when the orchestrator decides (based on the user's natural agreement) to build.
+    const conversationRun = await runManager.getOrCreateConversationRun({
+      channelId: event.channel,
+      threadTs: replyThreadTs,
+      requestedBy: event.user,
+      firstMessage: stripped,
+    });
+
     // Build request with conversation history
     const request: HandleMessageRequest = {
       message: stripped,
@@ -757,20 +790,60 @@ export async function startSlackApp(
           return { id: continued.id, branchName: continued.branchName, repoSlug: continued.repoSlug };
         }
 
-        const run = await runManager.enqueueRun({
-          repoSlug: repo,
-          task,
-          baseBranch: config.defaultBaseBranch,
-          requestedBy: event.user!,
-          channelId: event.channel,
-          threadTs: replyThreadTs,
-          runtime: config.sandboxRuntime,
-          skipNodes: opts.skipNodes,
-          enableNodes: opts.enableNodes,
-          pipelineHint: opts.pipeline,
-          teamId: resolveTeamFromChannel(event.channel, config.teamChannelMap)
+        if (opts.mode === "investigate") {
+          // Investigate child runs link to the active conversation run via parentRunId.
+          const intent = {
+            version: 1 as const,
+            kind: "investigate" as const,
+            source: "slack" as const,
+            requestedBy: event.user!,
+            question: task,
+            triggerReason: "slack-mention"
+          };
+
+          const run = await runManager.enqueueRun({
+            repoSlug: repo,
+            task,
+            baseBranch: config.defaultBaseBranch,
+            requestedBy: event.user!,
+            channelId: event.channel,
+            threadTs: replyThreadTs,
+            runtime: config.sandboxRuntime,
+            skipNodes: opts.skipNodes,
+            enableNodes: opts.enableNodes,
+            pipelineHint: opts.pipeline,
+            teamId: resolveTeamFromChannel(event.channel, config.teamChannelMap),
+            parentRunId: conversationRun.id,
+            intent
+          });
+          return { id: run.id, branchName: run.branchName, repoSlug: run.repoSlug };
+        }
+
+        // code_change (default): the orchestrator has decided the user agreed —
+        // synthesize a clean task spec from the thread and PROMOTE the conversation
+        // run in place. Same row, lifecycle flips from conversation → queued.
+        const synthesis = await synthesizeTask({
+          llmConfig: llmConfig!,
+          model: config.orchestratorModel,
+          messages: priorMessages ?? [],
+          proposal: { repoSlug: repo, summary: task },
         });
-        return { id: run.id, branchName: run.branchName, repoSlug: run.repoSlug };
+
+        if (synthesis.tokenUsage.length > 0) {
+          await runManager.recordConversationTurn(conversationRun.id, synthesis.tokenUsage);
+        }
+
+        const promoted = await runManager.promoteConversationToBuild(conversationRun.id, {
+          repoSlug: repo,
+          synthesizedTask: synthesis.task,
+          intent: {
+            version: 1,
+            kind: "generic_task",
+            source: "slack",
+            requestedBy: event.user!,
+          },
+        });
+        return { id: promoted.id, branchName: promoted.branchName, repoSlug: promoted.repoSlug };
       }
     };
 
@@ -826,6 +899,11 @@ export async function startSlackApp(
 
     // Store the full conversation back for future messages in this thread
     await conversationStore.set(threadKey, result.messages);
+
+    // Record this turn's token cost on the conversation run.
+    if (result.tokenUsage && result.tokenUsage.length > 0) {
+      await runManager.recordConversationTurn(conversationRun.id, result.tokenUsage);
+    }
 
     // Replace thinking message with final response, or delete if empty
     if (result.response) {

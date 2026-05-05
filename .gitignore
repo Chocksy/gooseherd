@@ -15,3 +15,5 @@ task_plan.md
 findings.md
 progress.md
 tmp
+src/graphify-out/
+.claude/scheduled_tasks.lock

@@ -322,6 +322,8 @@ export interface LLMToolUseResponse {
   totalOutputTokens: number;
   turnsUsed: number;
   messages: ChatMessage[];
+  /** Per-model token usage across all turns of this tool-use loop. */
+  perModelUsage: Array<{ model: string; input: number; output: number }>;
 }
 
 /**
@@ -351,6 +353,7 @@ export async function callLLMWithTools(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let turnsUsed = 0;
+  const perModel = new Map<string, { input: number; output: number }>();
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (Date.now() > wallClockDeadline) {
@@ -408,8 +411,15 @@ export async function callLLMWithTools(
 
     data = await response.json() as typeof data;
 
-    totalInputTokens += data.usage?.prompt_tokens ?? 0;
-    totalOutputTokens += data.usage?.completion_tokens ?? 0;
+    const callInput = data.usage?.prompt_tokens ?? 0;
+    const callOutput = data.usage?.completion_tokens ?? 0;
+    totalInputTokens += callInput;
+    totalOutputTokens += callOutput;
+    const callModel = data.model ?? model;
+    const existing = perModel.get(callModel) ?? { input: 0, output: 0 };
+    existing.input += callInput;
+    existing.output += callOutput;
+    perModel.set(callModel, existing);
 
     const assistantMsg = data.choices?.[0]?.message;
     if (!assistantMsg) {
@@ -433,7 +443,8 @@ export async function callLLMWithTools(
         totalInputTokens,
         totalOutputTokens,
         turnsUsed,
-        messages
+        messages,
+        perModelUsage: Array.from(perModel.entries()).map(([m, v]) => ({ model: m, ...v })),
       };
     }
 
@@ -477,7 +488,8 @@ export async function callLLMWithTools(
     totalInputTokens,
     totalOutputTokens,
     turnsUsed,
-    messages
+    messages,
+    perModelUsage: Array.from(perModel.entries()).map(([m, v]) => ({ model: m, ...v })),
   };
 }
 

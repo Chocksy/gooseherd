@@ -14,7 +14,7 @@ import type { LearningStore } from "./observer/learning-store.js";
 import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
 import type { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
 import type { RunPrefetchContext } from "./runtime/run-context-types.js";
-import { isFeatureDeliveryAutoReviewOrRepairCiRun, selectPipelineIdForIntent } from "./runs/run-intent.js";
+import { isFeatureDeliveryAutoReviewOrRepairCiRun, isInvestigateRun, selectPipelineIdForIntent, type RunIntent } from "./runs/run-intent.js";
 import type { EmitRunCheckpointInput, RunCheckpointStore } from "./runs/run-checkpoint-store.js";
 import type { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
 import { resolveRunnerProfile } from "./runtime/runner-profile.js";
@@ -466,6 +466,67 @@ export class RunManager {
 
   requeueExistingRun(runId: string): void {
     this.scheduleRunProcessing(runId);
+  }
+
+  async getOrCreateConversationRun(input: {
+    channelId: string;
+    threadTs: string;
+    requestedBy: string;
+    firstMessage: string;
+  }): Promise<RunRecord> {
+    const existing = await this.store.findRunByThread(input.channelId, input.threadTs);
+    if (existing && existing.status === "conversation") {
+      return existing;
+    }
+    return this.store.createConversationRun({
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      requestedBy: input.requestedBy,
+      firstMessage: input.firstMessage,
+      defaultBaseBranch: this.config.defaultBaseBranch,
+      branchPrefix: this.config.branchPrefix,
+      parentRunId: existing?.id,
+    });
+  }
+
+  /** Returns the thread's run if it's currently in conversation status, else undefined. */
+  async findActiveConversationRunForThread(channelId: string, threadTs: string): Promise<RunRecord | undefined> {
+    const existing = await this.store.findRunByThread(channelId, threadTs);
+    return existing && existing.status === "conversation" ? existing : undefined;
+  }
+
+  async recordConversationTurn(
+    runId: string,
+    tokenUsages: Array<{ model: string; input: number; output: number }>,
+  ): Promise<void> {
+    for (const usage of tokenUsages) {
+      if (usage.input <= 0 && usage.output <= 0) continue;
+      await this.store.addTokenUsage(runId, {
+        model: usage.model,
+        input: usage.input,
+        output: usage.output,
+        source: "quality_gate",
+      });
+    }
+  }
+
+  async promoteConversationToBuild(
+    runId: string,
+    input: {
+      repoSlug: string;
+      synthesizedTask: string;
+      intent: RunIntent;
+      branchName?: string;
+    },
+  ): Promise<RunRecord> {
+    const promoted = await this.store.promoteConversationRun(runId, {
+      repoSlug: input.repoSlug,
+      task: input.synthesizedTask,
+      intent: input.intent,
+      branchName: input.branchName,
+    });
+    this.requeueExistingRun(runId);
+    return promoted;
   }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
@@ -943,7 +1004,36 @@ export class RunManager {
     try {
       const lines: string[] = [];
 
-      if (run.status === "completed") {
+      if (run.status === "completed" && isInvestigateRun(run)) {
+        lines.push(`*Investigation complete* for *${run.repoSlug}*`);
+
+        if (run.task) {
+          const taskPreview = (run.task.length > 120 ? run.task.slice(0, 120) + "..." : run.task)
+            .split("\n").map((l) => `> ${l}`).join("\n");
+          lines.push(taskPreview);
+        }
+
+        const answer = result?.answer?.trim();
+        if (answer) {
+          lines.push("");
+          lines.push(answer);
+        } else {
+          lines.push("");
+          lines.push("_The agent didn't produce an answer. Check the run logs for details._");
+        }
+
+        if (run.startedAt && run.finishedAt) {
+          const duration = formatDuration(run.startedAt, run.finishedAt);
+          if (duration) {
+            lines.push("");
+            lines.push(`*Duration:* ${duration}`);
+          }
+        }
+
+        lines.push("");
+        lines.push("---");
+        lines.push(`Reply in this thread to ask a follow-up.`);
+      } else if (run.status === "completed") {
         lines.push(`*Run complete* for *${run.repoSlug}*`);
 
         if (run.task) {

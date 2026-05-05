@@ -1,5 +1,18 @@
 # False positives: fake tokens used in security scan test fixtures
 tests/quality-gates.test.ts:slack-bot-token:226
+tests/quality-gates.test.ts:slack-bot-token:292
 tests/quality-gates.test.ts:github-pat:311
-tests/phase13.test.ts:generic-api-key:571
+tests/quality-gates.test.ts:github-pat:377
 tests/phase13.test.ts:slack-app-token:71
+tests/phase13.test.ts:slack-app-token:77
+tests/phase13.test.ts:generic-api-key:571
+tests/phase13.test.ts:generic-api-key:917
+
+# False positives: fake fixtures introduced by NetsoftHoldings master merge
+tests/setup-legacy-storage.test.ts:generic-api-key:77
+tests/setup-legacy-storage.test.ts:generic-api-key:133
+tests/control-plane-store.test.ts:generic-api-key:433
+tests/control-plane-store.test.ts:generic-api-key:479
+
+# False positive: example placeholder, not a real key
+kubernetes/local/gooseherd-secret.example.yaml:generic-api-key:9

@@ -3,7 +3,7 @@ import { eq, desc, and, sql, inArray, ne, getTableColumns } from "drizzle-orm";
 import type { NewRunInput, RunFeedback, RunRecord, RunStatus, TokenUsage, TokenUsageIncrement } from "./types.js";
 import type { Database } from "./db/index.js";
 import { modelPrices, runs, workItems } from "./db/schema.js";
-import { deriveRunIntentFromLegacy, isRunIntent } from "./runs/run-intent.js";
+import { deriveRunIntentFromLegacy, isRunIntent, type RunIntent } from "./runs/run-intent.js";
 import { MODEL_PRICES } from "./llm/model-prices.js";
 
 type RunRow = typeof runs.$inferSelect;
@@ -11,6 +11,16 @@ type RunQueryRow = RunRow & {
   linkedPrUrl: string | null;
   linkedPrNumber: number | null;
 };
+
+export interface CreateConversationRunInput {
+  channelId: string;
+  threadTs: string;
+  requestedBy: string;
+  firstMessage: string;
+  defaultBaseBranch: string;
+  branchPrefix: string;
+  parentRunId?: string;
+}
 const runColumns = getTableColumns(runs);
 const RECONCILABLE_RUN_STATUSES: RunStatus[] = [
   "queued",
@@ -283,6 +293,89 @@ export class RunStore {
       .orderBy(desc(runs.createdAt))
       .limit(1);
     return rows[0] ? rowToRecord(rows[0]) : undefined;
+  }
+
+  /** Most recent run for a Slack thread regardless of status. Used by the conversation flow. */
+  async findRunByThread(channelId: string, threadTs: string): Promise<RunRecord | undefined> {
+    return this.getLatestRunForThread(channelId, threadTs);
+  }
+
+  async createConversationRun(input: CreateConversationRunInput): Promise<RunRecord> {
+    const id = randomUUID();
+    const branchName = `${input.branchPrefix}/${id.slice(0, 8)}`;
+    let rootRunId: string | undefined;
+    let chainIndex = 0;
+    if (input.parentRunId) {
+      const parentRows = await this.db.select().from(runs).where(eq(runs.id, input.parentRunId));
+      const parent = parentRows[0];
+      if (parent) {
+        rootRunId = parent.rootRunId ?? parent.id;
+        chainIndex = (parent.chainIndex ?? 0) + 1;
+      }
+    }
+
+    const intent: RunIntent = {
+      version: 1,
+      kind: "conversation",
+      source: "slack",
+      question: input.firstMessage,
+      requestedBy: input.requestedBy,
+    };
+
+    await this.db.insert(runs).values({
+      id,
+      runtime: "local",
+      status: "conversation",
+      phase: "conversation",
+      repoSlug: "",
+      task: input.firstMessage,
+      baseBranch: input.defaultBaseBranch,
+      branchName,
+      requestedBy: input.requestedBy,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      createdAt: new Date(),
+      parentRunId: input.parentRunId,
+      rootRunId,
+      chainIndex,
+      intent,
+      intentKind: intent.kind,
+    });
+
+    const created = await this.getRun(id);
+    if (!created) throw new Error(`Failed to create conversation run ${id}`);
+    return created;
+  }
+
+  async promoteConversationRun(
+    id: string,
+    input: {
+      repoSlug: string;
+      task: string;
+      intent: RunIntent;
+      branchName?: string;
+    },
+  ): Promise<RunRecord> {
+    const current = await this.getRun(id);
+    if (!current) throw new Error(`Run not found: ${id}`);
+    if (current.status !== "conversation") {
+      throw new Error(`Run ${id} is not in conversation status (got ${current.status})`);
+    }
+    const update: Record<string, unknown> = {
+      status: "queued",
+      phase: "queued",
+      repoSlug: input.repoSlug,
+      task: input.task,
+      intent: input.intent,
+      intentKind: input.intent.kind,
+    };
+    if (input.branchName) {
+      update.branchName = input.branchName;
+    }
+    await this.db.update(runs).set(update).where(eq(runs.id, id));
+    const result = await this.getRun(id);
+    if (!result) throw new Error(`Run not found: ${id}`);
+    return result;
   }
 
   async getRunChain(channelId: string, threadTs: string): Promise<RunRecord[]> {

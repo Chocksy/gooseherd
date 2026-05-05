@@ -902,6 +902,11 @@ export function dashboardHtml(config: AppConfig): string {
       border-color: color-mix(in srgb, var(--err) 40%, var(--border));
       color: color-mix(in srgb, var(--err) 82%, var(--text));
     }
+    .status-pill.conversation {
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+      color: color-mix(in srgb, var(--accent) 80%, var(--text));
+    }
     .status-pill.running,
     .status-pill.validating,
     .status-pill.pushing,

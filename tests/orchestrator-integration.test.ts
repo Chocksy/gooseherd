@@ -246,6 +246,64 @@ describe("handleMessage integration", () => {
     assert.deepEqual(capturedArgs.skipNodes, ["diff_gate"]);
   });
 
+  test("execute_task with mode='investigate' forwards mode to enqueueRun", async () => {
+    let capturedOpts: { mode?: string; pipeline?: string } = {};
+    const deps = makeDeps({
+      enqueueRun: async (_repo, _task, opts) => {
+        capturedOpts = opts;
+        return { id: "run-investigate", branchName: "investigate/run-investigate", repoSlug: "test/repo" };
+      }
+    });
+
+    fetchResponses.push(toolCallResponse([{
+      name: "execute_task",
+      arguments: {
+        repo: "test/repo",
+        task: "Why didn't DWS go out for org 633609?",
+        mode: "investigate"
+      }
+    }]));
+    fetchResponses.push(textResponse("Queued an investigation run."));
+
+    const result = await handleMessage(llmConfig, model, systemContext, makeRequest(), deps);
+
+    assert.equal(result.runsQueued.length, 1);
+    assert.equal(capturedOpts.mode, "investigate");
+  });
+
+  test("execute_task default mode is 'code_change' when omitted", async () => {
+    let capturedOpts: { mode?: string } = {};
+    const deps = makeDeps({
+      enqueueRun: async (_repo, _task, opts) => {
+        capturedOpts = opts;
+        return { id: "run-cc", branchName: "gooseherd/cc", repoSlug: "test/repo" };
+      }
+    });
+
+    fetchResponses.push(toolCallResponse([{
+      name: "execute_task",
+      arguments: { repo: "test/repo", task: "add a button" }
+    }]));
+    fetchResponses.push(textResponse("Queued."));
+
+    await handleMessage(llmConfig, model, systemContext, makeRequest(), deps);
+
+    assert.equal(capturedOpts.mode, "code_change");
+  });
+
+  test("execute_task tool schema exposes mode parameter with two enum values", async () => {
+    fetchResponses.push(textResponse("hi"));
+
+    await handleMessage(llmConfig, model, systemContext, makeRequest(), makeDeps());
+
+    const tools = fetchCalls[0].body["tools"] as Array<{ function: { name: string; parameters: Record<string, unknown> } }>;
+    const exec = tools.find(t => t.function.name === "execute_task");
+    assert.ok(exec, "execute_task tool must be registered");
+    const props = (exec.function.parameters as { properties: Record<string, { enum?: string[] }> }).properties;
+    assert.ok(props.mode, "execute_task should expose a 'mode' parameter");
+    assert.deepEqual(props.mode.enum, ["code_change", "investigate"]);
+  });
+
   test("execute_task missing repo returns error", async () => {
     fetchResponses.push(toolCallResponse([{
       name: "execute_task",
@@ -537,32 +595,31 @@ describe("handleMessage integration", () => {
     assert.ok(result.response.includes("Ruby"));
   });
 
-  test("read-only repository questions are not enqueued even if LLM calls execute_task", async () => {
+  test("read-only-style execute_task calls now enqueue (fbcee51 guard removed)", async () => {
+    // Regression: commit fbcee51 added a regex block that returned
+    // "Error: this is a read-only question..." for tasks like "what is this
+    // repository about?". The orchestrator now lets the LLM decide via the
+    // `mode` parameter, so the call enqueues a run instead of being blocked.
     fetchResponses.push(toolCallResponse([{
       name: "execute_task",
       arguments: { repo: "test/repo", task: "what is this repository about?" }
     }]));
-    fetchResponses.push(textResponse("I'll answer that directly instead of starting a code-change run."));
-
-    let enqueueCalled = false;
-    const deps = makeDeps({
-      enqueueRun: async () => {
-        enqueueCalled = true;
-        throw new Error("should not enqueue");
-      }
-    });
+    fetchResponses.push(textResponse("Run queued for that question."));
 
     const result = await handleMessage(llmConfig, model, systemContext, makeRequest({
       message: "test/repo what is this repository about?"
-    }), deps);
+    }), makeDeps());
 
-    assert.equal(enqueueCalled, false);
-    assert.equal(result.runsQueued.length, 0);
+    assert.equal(result.runsQueued.length, 1);
+    assert.equal(result.runsQueued[0].repoSlug, "test/repo");
 
     const toolResult = (fetchCalls[1].body["messages"] as Array<{ role: string; content: string }>)
       .find(m => m.role === "tool");
-    assert.ok(toolResult?.content.includes("read-only question"));
-    assert.ok(toolResult?.content.includes("describe_repo"));
+    assert.ok(toolResult, "expected a tool result message");
+    // The success path returns a confirmation, not a "read-only question" error.
+    assert.equal(toolResult.content.includes("read-only question"), false,
+      "stale fbcee51 guard wording must not appear in tool result");
+    assert.ok(toolResult.content.includes("Run queued"));
   });
 
   test("describe_repo tool registered when dep provided", async () => {

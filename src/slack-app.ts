@@ -15,6 +15,7 @@ import type { LLMCallerConfig } from "./llm/caller.js";
 import type { MemoryProvider } from "./memory/provider.js";
 import type { GitHubService } from "./github.js";
 import { parseWorkItemSlackActionValue } from "./slack-review-actions.js";
+import { shouldIgnoreAppMention } from "./slack/app-mention-guard.js";
 import type { ReviewRequestRecord } from "./work-items/types.js";
 
 function isChannelAllowed(channelId: string, channelAllowlist: string[]): boolean {
@@ -666,6 +667,9 @@ export async function startSlackApp(
 
   // ── Main Message Handler ──────────────────────────────
   app.event("app_mention", async ({ event, say, client }) => {
+    if (shouldIgnoreAppMention(event as Parameters<typeof shouldIgnoreAppMention>[0])) {
+      return;
+    }
     const replyThreadTs = event.thread_ts ?? event.ts;
 
     if (!isChannelAllowed(event.channel, config.slackAllowedChannels)) {

@@ -39,8 +39,6 @@ export function resolveKubernetesInternalBaseUrl(
 
 export function resolveKubernetesRunWaitTimeoutMs(): number {
   const raw = process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS?.trim();
-  if (!raw) return DEFAULT_KUBERNETES_RUN_WAIT_TIMEOUT_MS;
-  const seconds = Number.parseInt(raw, 10);
-  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_KUBERNETES_RUN_WAIT_TIMEOUT_MS;
-  return seconds * 1_000;
+  if (!raw || !/^[1-9]\d*$/.test(raw)) return DEFAULT_KUBERNETES_RUN_WAIT_TIMEOUT_MS;
+  return Number.parseInt(raw, 10) * 1_000;
 }

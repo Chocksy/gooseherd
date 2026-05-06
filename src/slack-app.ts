@@ -667,7 +667,7 @@ export async function startSlackApp(
 
   // ── Main Message Handler ──────────────────────────────
   app.event("app_mention", async ({ event, say, client }) => {
-    if (shouldIgnoreAppMention(event as Parameters<typeof shouldIgnoreAppMention>[0])) {
+    if (shouldIgnoreAppMention(event)) {
       return;
     }
     const replyThreadTs = event.thread_ts ?? event.ts;

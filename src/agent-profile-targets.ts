@@ -8,6 +8,7 @@ import {
   FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
   FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
   FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
+  FEATURE_DELIVERY_TRIAGE_CI_PIPELINE_ID,
   GENERIC_PIPELINE_ID,
 } from "./pipeline/builtin-pipelines.js";
 
@@ -121,6 +122,13 @@ export const AGENT_PROFILE_ACTION_CATALOG: Record<string, AgentProfileActionCata
     routable: true,
     requires: ["cli_agent"],
   },
+  triage_ci: {
+    id: "triage_ci",
+    label: "Triage CI failure",
+    group: "Analysis agents",
+    routable: true,
+    requires: ["cli_agent"],
+  },
   fix_validation: {
     id: "fix_validation",
     label: "Fix validation/local tests",
@@ -212,6 +220,7 @@ export const AGENT_PROFILE_INTENT_CATALOG: AgentProfileIntentCatalogEntry[] = [
   { id: "feature_delivery.self_review", label: "Feature delivery: self-review", pipelineId: FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID },
   { id: "feature_delivery.apply_review_feedback", label: "Feature delivery: apply reviewer feedback", pipelineId: FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID },
   { id: "feature_delivery.repair_ci", label: "Feature delivery: repair CI", pipelineId: FEATURE_DELIVERY_CI_FIX_PIPELINE_ID },
+  { id: "feature_delivery.triage_ci", label: "Feature delivery: triage CI", pipelineId: FEATURE_DELIVERY_TRIAGE_CI_PIPELINE_ID },
   { id: "feature_delivery.sync_branch", label: "Feature delivery: sync branch", pipelineId: FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID },
   { id: "feature_delivery.finalize_pr", label: "Feature delivery: ready for merge", pipelineId: FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID },
 ];

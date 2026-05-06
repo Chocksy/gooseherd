@@ -641,6 +641,72 @@ export class GitHubService {
     return typeof response.data === "string" ? response.data : String(response.data);
   }
 
+  async resolveWorkflowRunIdsForJobIds(
+    repoSlug: string,
+    jobIds: number[],
+    signal?: AbortSignal,
+  ): Promise<{ runIds: number[]; unresolvedJobIds: number[] }> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const runIds = new Set<number>();
+    const unresolvedJobIds: number[] = [];
+    const settled = await Promise.allSettled(
+      jobIds.map((jobId) => this.octokit.actions.getJobForWorkflowRun({
+        owner,
+        repo,
+        job_id: jobId,
+        ...(signal ? { request: { signal } } : {}),
+      })),
+    );
+    for (let i = 0; i < settled.length; i += 1) {
+      const result = settled[i];
+      const jobId = jobIds[i]!;
+      if (result.status === "fulfilled") {
+        const runId = result.value.data.run_id;
+        if (typeof runId === "number" && Number.isFinite(runId)) {
+          runIds.add(runId);
+        } else {
+          unresolvedJobIds.push(jobId);
+        }
+      } else {
+        unresolvedJobIds.push(jobId);
+      }
+    }
+    return { runIds: Array.from(runIds), unresolvedJobIds };
+  }
+
+  async rerunWorkflowFailedJobs(
+    repoSlug: string,
+    runId: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    await this.octokit.actions.reRunWorkflowFailedJobs({
+      owner,
+      repo,
+      run_id: runId,
+      ...(signal ? { request: { signal } } : {}),
+    });
+  }
+
+  async rerunFailedJobsForCheckRuns(
+    repoSlug: string,
+    jobIds: number[],
+    signal?: AbortSignal,
+  ): Promise<{ rerunRunIds: number[]; unresolvedJobIds: number[]; failedRunIds: number[] }> {
+    const { runIds, unresolvedJobIds } = await this.resolveWorkflowRunIdsForJobIds(repoSlug, jobIds, signal);
+    const rerunRunIds: number[] = [];
+    const failedRunIds: number[] = [];
+    for (const runId of runIds) {
+      try {
+        await this.rerunWorkflowFailedJobs(repoSlug, runId, signal);
+        rerunRunIds.push(runId);
+      } catch {
+        failedRunIds.push(runId);
+      }
+    }
+    return { rerunRunIds, unresolvedJobIds, failedRunIds };
+  }
+
   private async resolveRepoCiIgnoreChecks(
     repoSlug: string,
     options?: PullRequestCiSnapshotOptions,

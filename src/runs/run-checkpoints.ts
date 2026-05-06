@@ -3,11 +3,22 @@ import type { RunIntentKind } from "./run-intent.js";
 export type RunCheckpointType =
   | "run.waiting_external_ci"
   | "run.completed_without_external_wait"
-  | "run.ci_concluded";
+  | "run.ci_concluded"
+  | "run.ci_triage_decided";
 
 export type FeatureDeliveryProgressCheckpointType =
   | "run.waiting_external_ci"
   | "run.completed_without_external_wait";
+
+export type CiTriageVerdict = "fix_needed" | "rerun";
+
+export interface CiTriageCheckpointPayload {
+  verdict: CiTriageVerdict;
+  reason?: string;
+  evidence?: string[];
+  headSha?: string;
+  failedJobIds?: number[];
+}
 
 export interface RunCheckpointPayload {
   runId: string;
@@ -30,7 +41,8 @@ export function isRunCheckpointType(value: string): value is RunCheckpointType {
   return (
     value === "run.waiting_external_ci" ||
     value === "run.completed_without_external_wait" ||
-    value === "run.ci_concluded"
+    value === "run.ci_concluded" ||
+    value === "run.ci_triage_decided"
   );
 }
 
@@ -38,6 +50,14 @@ export function isFeatureDeliveryProgressCheckpointType(
   type: string,
 ): type is FeatureDeliveryProgressCheckpointType {
   return type === "run.waiting_external_ci" || type === "run.completed_without_external_wait";
+}
+
+export function isCiTriageCheckpointType(type: string): type is "run.ci_triage_decided" {
+  return type === "run.ci_triage_decided";
+}
+
+export function isCiTriageVerdict(value: unknown): value is CiTriageVerdict {
+  return value === "fix_needed" || value === "rerun";
 }
 
 export function normalizeRunCheckpointEmittedAt(emittedAt: unknown, fallback?: unknown): string | undefined {

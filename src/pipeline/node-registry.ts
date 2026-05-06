@@ -85,6 +85,7 @@ export const NODE_HANDLERS: Record<string, NodeHandler> = {
   security_scan: securityScanNode,
   wait_ci: lazyNodeHandler("./ci/wait-ci-node.js", "waitCiNode"),
   fix_ci: lazyNodeHandler("./ci/fix-ci-node.js", "fixCiNode"),
+  triage_ci: lazyNodeHandler("./ci/triage-ci-node.js", "triageCiNode"),
   fix_browser: lazyNodeHandler("./nodes/fix-browser.js", "fixBrowserNode"),
   scope_judge: scopeJudgeNode,
   deploy_preview: lazyNodeHandler("./nodes/deploy-preview.js", "deployPreviewNode"),

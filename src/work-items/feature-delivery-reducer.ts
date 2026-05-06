@@ -453,7 +453,7 @@ function reducePullRequestSynchronized(
     return emptyDecision();
   }
 
-  const flagsToRemove = new Set<string>(["ci_green"]);
+  const flagsToRemove = new Set<string>(["ci_green", "ci_rerun_exhausted", "ci_triage_fix_decided"]);
   if (workItem.state === "ready_for_merge" && policy.resetEngineeringReviewOnNewCommits) {
     flagsToRemove.add("engineering_review_done");
     flagsToRemove.add("product_review_done");

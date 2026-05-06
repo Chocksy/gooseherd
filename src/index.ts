@@ -664,6 +664,7 @@ async function createDashboardWorkItemsBundle(
       featureDeliverySelfReviewEnabled: config.featureDeliverySelfReviewEnabled,
       featureDeliveryApplyReviewFeedbackEnabled: config.featureDeliveryApplyReviewFeedbackEnabled,
     },
+    githubService,
     qaPreparationHandler,
     readyForMergeHandler,
     runManager,
@@ -730,6 +731,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         },
         qaPreparationHandler: workItemServices.qaPreparationHandler,
         readyForMergeHandler: workItemServices.readyForMergeHandler,
+        githubService: coreServices.githubService,
       }, runCheckpointStore)
     : undefined;
   const runtimeFactsReader = config.sandboxRuntime === "kubernetes"
@@ -929,6 +931,11 @@ function wireWorkItemLifecycleHandlers(runManager: RunManager, workItemOrchestra
     workItemOrchestrator.handlePrefetchFailure(runId).catch((error) => {
       const message = error instanceof Error ? error.message : "unknown";
       logError("Failed to roll back auto-review work item after prefetch failure", { runId, error: message });
+    });
+
+    workItemOrchestrator.handleCiTriageRunFailure(runId).catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown";
+      logError("Failed to apply CI triage fallback after triage run failed", { runId, error: message });
     });
   });
 }

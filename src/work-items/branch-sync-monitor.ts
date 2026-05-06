@@ -14,7 +14,10 @@ import {
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "validating", "pushing", "awaiting_ci", "ci_fixing", "cancel_requested"]);
 const DEFAULT_ADOPTION_LABELS = ["ai:assist"];
-const REPAIR_CI_INTENT_KIND = "feature_delivery.repair_ci";
+const CI_INTERVENTION_INTENT_KINDS = new Set([
+  "feature_delivery.repair_ci",
+  "feature_delivery.triage_ci",
+]);
 const DEFAULT_MAX_REPAIR_CI_ATTEMPTS = 3;
 const DEFAULT_CI_REPAIR_COOLDOWN_MS = 30 * 60 * 1000;
 
@@ -174,23 +177,23 @@ export async function runBranchSyncMonitorCycle(
       try {
         const runs = await deps.runs.listRunsForWorkItem(workItem.id);
         if (!runs.some((run) => ACTIVE_RUN_STATUSES.has(run.status))) {
-          const repairAttempts = countRepairCiAttempts(runs);
-          const lastFinishedAt = lastRepairCiFinishedAt(runs);
+          const interventionAttempts = countCiInterventionAttempts(runs);
+          const lastFinishedAt = lastCiInterventionFinishedAt(runs);
           const cooldownRemainingMs = lastFinishedAt === undefined
             ? 0
             : Math.max(0, ciRepairCooldownMs - (now() - lastFinishedAt));
 
-          if (repairAttempts >= maxRepairCiAttempts) {
+          if (interventionAttempts >= maxRepairCiAttempts) {
             ciRepairBudgetExhausted += 1;
-            logError("Branch sync monitor skipped CI recovery — repair_ci attempt budget exhausted", {
+            logError("Branch sync monitor skipped CI recovery — automated CI intervention budget exhausted", {
               workItemId: workItem.id,
-              attempts: repairAttempts,
+              attempts: interventionAttempts,
               maxAttempts: maxRepairCiAttempts,
             });
           } else if (cooldownRemainingMs > 0) {
-            logInfo("Branch sync monitor deferring CI recovery — repair_ci cooldown active", {
+            logInfo("Branch sync monitor deferring CI recovery — CI intervention cooldown active", {
               workItemId: workItem.id,
-              attempts: repairAttempts,
+              attempts: interventionAttempts,
               cooldownRemainingMs,
             });
           } else {
@@ -198,7 +201,7 @@ export async function runBranchSyncMonitorCycle(
             ciRecovered += 1;
             logInfo("Branch sync monitor recovered stuck CI failure", {
               workItemId: workItem.id,
-              attempts: repairAttempts,
+              attempts: interventionAttempts,
             });
           }
         }
@@ -274,20 +277,25 @@ export async function runBranchSyncMonitorCycle(
   return { checked, closed, restored, stale, queued, ciRecovered, ciRepairBudgetExhausted };
 }
 
-function isRepairCiRun(run: { intentKind?: string; intent?: { kind?: string } }): boolean {
-  return run.intentKind === REPAIR_CI_INTENT_KIND || run.intent?.kind === REPAIR_CI_INTENT_KIND;
+function isCiInterventionRun(run: { intentKind?: string; intent?: { kind?: string } }): boolean {
+  return (
+    (typeof run.intentKind === "string" && CI_INTERVENTION_INTENT_KINDS.has(run.intentKind))
+    || (typeof run.intent?.kind === "string" && CI_INTERVENTION_INTENT_KINDS.has(run.intent.kind))
+  );
 }
 
-function countRepairCiAttempts(runs: Array<{ intentKind?: string; intent?: { kind?: string } }>): number {
-  return runs.filter(isRepairCiRun).length;
+function countCiInterventionAttempts(
+  runs: Array<{ intentKind?: string; intent?: { kind?: string } }>,
+): number {
+  return runs.filter(isCiInterventionRun).length;
 }
 
-function lastRepairCiFinishedAt(
+function lastCiInterventionFinishedAt(
   runs: Array<{ intentKind?: string; intent?: { kind?: string }; finishedAt?: string }>,
 ): number | undefined {
   let latest: number | undefined;
   for (const run of runs) {
-    if (!isRepairCiRun(run) || !run.finishedAt) {
+    if (!isCiInterventionRun(run) || !run.finishedAt) {
       continue;
     }
     const finishedAt = Date.parse(run.finishedAt);

@@ -570,11 +570,24 @@ test("runBranchSyncMonitorCycle skips CI recovery when githubPrHeadBranch is mis
   assert.equal(result.ciRecovered, 0);
 });
 
-test("runBranchSyncMonitorCycle skips CI recovery when repair_ci attempt budget is exhausted", async () => {
+test("runBranchSyncMonitorCycle skips CI recovery when CI intervention attempt budget is exhausted", async () => {
   const result = await runRecoveryWithItem(makeStuckCiWorkItem(), {
     runs: [
       { status: "failed", intentKind: "feature_delivery.repair_ci", finishedAt: new Date(0).toISOString() },
       { status: "failed", intentKind: "feature_delivery.repair_ci", finishedAt: new Date(0).toISOString() },
+      { status: "failed", intentKind: "feature_delivery.repair_ci", finishedAt: new Date(0).toISOString() },
+    ],
+    ciRepairMaxAttempts: 3,
+  });
+  assert.equal(result.ciRecovered, 0);
+  assert.equal(result.ciRepairBudgetExhausted, 1);
+});
+
+test("runBranchSyncMonitorCycle counts triage_ci runs toward the CI intervention budget", async () => {
+  const result = await runRecoveryWithItem(makeStuckCiWorkItem(), {
+    runs: [
+      { status: "failed", intentKind: "feature_delivery.triage_ci", finishedAt: new Date(0).toISOString() },
+      { status: "failed", intentKind: "feature_delivery.triage_ci", finishedAt: new Date(0).toISOString() },
       { status: "failed", intentKind: "feature_delivery.repair_ci", finishedAt: new Date(0).toISOString() },
     ],
     ciRepairMaxAttempts: 3,

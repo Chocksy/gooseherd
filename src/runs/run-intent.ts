@@ -7,6 +7,7 @@ import {
   FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
   FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
   FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
+  FEATURE_DELIVERY_TRIAGE_CI_PIPELINE_ID,
 } from "../pipeline/builtin-pipelines.js";
 
 export type RunIntent =
@@ -54,6 +55,10 @@ export type FeatureDeliveryRunIntent =
       sourceSubstate: "ci_failed";
     })
   | (BaseFeatureDeliveryRunIntent & {
+      kind: "feature_delivery.triage_ci";
+      sourceSubstate: "ci_failed" | "ci_rerunning";
+    })
+  | (BaseFeatureDeliveryRunIntent & {
       kind: "feature_delivery.sync_branch";
       maxBehindCommits: number;
     })
@@ -69,6 +74,7 @@ const FEATURE_DELIVERY_INTENT_KINDS = new Set([
   "feature_delivery.self_review",
   "feature_delivery.apply_review_feedback",
   "feature_delivery.repair_ci",
+  "feature_delivery.triage_ci",
   "feature_delivery.sync_branch",
   "feature_delivery.finalize_pr",
   "feature_delivery.qa_preparation",
@@ -78,6 +84,7 @@ const FEATURE_DELIVERY_PROGRESS_KINDS = new Set([
   "feature_delivery.self_review",
   "feature_delivery.apply_review_feedback",
   "feature_delivery.repair_ci",
+  "feature_delivery.triage_ci",
 ]);
 
 const FEATURE_DELIVERY_AUTO_REVIEW_KINDS = new Set([
@@ -89,6 +96,7 @@ const PIPELINE_BY_INTENT_KIND: Partial<Record<RunIntentKind, string>> = {
   "feature_delivery.self_review": FEATURE_DELIVERY_SELF_REVIEW_PIPELINE_ID,
   "feature_delivery.apply_review_feedback": FEATURE_DELIVERY_REVIEW_FEEDBACK_PIPELINE_ID,
   "feature_delivery.repair_ci": FEATURE_DELIVERY_CI_FIX_PIPELINE_ID,
+  "feature_delivery.triage_ci": FEATURE_DELIVERY_TRIAGE_CI_PIPELINE_ID,
   "feature_delivery.sync_branch": FEATURE_DELIVERY_BRANCH_SYNC_PIPELINE_ID,
   "feature_delivery.finalize_pr": FEATURE_DELIVERY_READY_FOR_MERGE_PIPELINE_ID,
   "feature_delivery.qa_preparation": FEATURE_DELIVERY_QA_PREPARATION_PIPELINE_ID,
@@ -97,6 +105,7 @@ const PIPELINE_BY_INTENT_KIND: Partial<Record<RunIntentKind, string>> = {
 const LEGACY_WORK_ITEM_SYSTEM_REQUESTERS = new Set([
   "work-item:auto-review",
   "work-item:ci-fix",
+  "work-item:ci-triage",
   "work-item:branch-sync",
   "work-item:ready-for-merge",
   "work-item:qa-preparation",
@@ -105,6 +114,7 @@ const LEGACY_WORK_ITEM_SYSTEM_REQUESTERS = new Set([
 const LEGACY_WORK_ITEM_PROGRESS_REQUESTERS = new Set([
   "work-item:auto-review",
   "work-item:ci-fix",
+  "work-item:ci-triage",
 ]);
 
 const RUN_INTENT_SOURCES = new Set([
@@ -143,6 +153,8 @@ export function isRunIntent(value: unknown): value is RunIntent {
       return intent.sourceSubstate === "applying_review_feedback";
     case "feature_delivery.repair_ci":
       return intent.sourceSubstate === "ci_failed";
+    case "feature_delivery.triage_ci":
+      return intent.sourceSubstate === "ci_failed" || intent.sourceSubstate === "ci_rerunning";
     case "feature_delivery.sync_branch": {
       const maxBehindCommits = intent.maxBehindCommits;
       return Number.isInteger(maxBehindCommits) && typeof maxBehindCommits === "number" && maxBehindCommits >= 0;
@@ -232,6 +244,14 @@ export function deriveRunIntentFromLegacy(input: {
       sourceSubstate: "ci_failed",
     };
   }
+  if (baseFeature && input.requestedBy === "work-item:ci-triage") {
+    return {
+      ...baseFeature,
+      kind: "feature_delivery.triage_ci",
+      sourceSubstate:
+        input.autoReviewSourceSubstate === "ci_rerunning" ? "ci_rerunning" : "ci_failed",
+    };
+  }
   if (baseFeature && input.requestedBy === "work-item:branch-sync") {
     return {
       ...baseFeature,
@@ -294,6 +314,17 @@ export function buildFeatureDeliveryRepairCiIntent(
     ...buildFeatureDeliveryBaseIntent(workItem, input.triggerReason),
     kind: "feature_delivery.repair_ci",
     sourceSubstate: "ci_failed",
+  };
+}
+
+export function buildFeatureDeliveryTriageCiIntent(
+  workItem: WorkItemRecord,
+  input: { sourceSubstate: "ci_failed" | "ci_rerunning"; triggerReason?: string },
+): FeatureDeliveryRunIntent {
+  return {
+    ...buildFeatureDeliveryBaseIntent(workItem, input.triggerReason),
+    kind: "feature_delivery.triage_ci",
+    sourceSubstate: input.sourceSubstate,
   };
 }
 

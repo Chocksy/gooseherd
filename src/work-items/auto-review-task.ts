@@ -66,6 +66,95 @@ export function buildCiFixTask(input: AutoReviewTaskInput): string {
   return lines.join("\n");
 }
 
+export function buildCiTriageTask(input: AutoReviewTaskInput): string {
+  const lines = [
+    `Investigate why CI is currently failing for pull request #${String(input.prNumber)} in ${input.repo}.`,
+    `PR URL: ${input.prUrl}`,
+    `Work item title: ${input.title}`,
+  ];
+
+  if (input.jiraIssueKey) {
+    lines.push(`Jira issue: ${input.jiraIssueKey}`);
+  }
+
+  if (input.summary?.trim()) {
+    lines.push(`Context: ${input.summary.trim()}`);
+  }
+
+  lines.push("");
+  lines.push("Required workflow:");
+  lines.push("1. Read the prefetched \"CI Snapshot\" section in the context above (failed checks, annotations, log tail).");
+  lines.push("2. Inspect the PR diff against the base branch (git diff origin/<base>...HEAD).");
+  lines.push("3. Decide whether the failure is caused by code in this PR's diff, or by something unrelated (infrastructure, flaky/unrelated test, broken main branch, network, runner, DB setup, etc.).");
+  lines.push("4. Do NOT modify any code. Do NOT push commits. Do NOT comment on the PR. Do NOT update labels.");
+  lines.push("5. Before exiting, print exactly one line that starts with GOOSEHERD_CI_TRIAGE: followed by compact JSON: {\"verdict\":\"fix_needed\"|\"rerun\",\"reason\":\"...\",\"evidence\":[\"...\"]}");
+  lines.push("");
+  lines.push("Verdict rules:");
+  lines.push("- \"fix_needed\" — the failure is plausibly caused by the PR's diff: the failing test/build references files in the diff, the error matches a behavior change in the diff, a new lint rule the diff introduced, etc.");
+  lines.push("- \"rerun\" — the failure is unrelated to the diff: infra/runner problem, DB connection refused, timeout, OOM, image pull failed, flaky test that doesn't touch any file in the diff, broken main branch (failure exists on base too), etc.");
+  lines.push("");
+  lines.push("Examples:");
+  lines.push("");
+  lines.push("Example 1 — UNRELATED (verdict: rerun):");
+  lines.push("");
+  lines.push("  Tests / RSpec (40, 7) (pull_request) Failing after 16m");
+  lines.push("  \"Run RSpec\" tail:");
+  lines.push("    Failures:");
+  lines.push("      1) OvertimePolicies::RestoreAction#call when policy is Archived ...");
+  lines.push("         Failure/Error: before { OvertimePolicy.where(id: policy.id).update_all(policy_type: nil) }");
+  lines.push("         ActiveRecord::NotNullViolation:");
+  lines.push("           PG::NotNullViolation: ERROR:  null value in column \"policy_type\"");
+  lines.push("           of relation \"overtime_policies\" violates not-null constraint");
+  lines.push("");
+  lines.push("  PR diff (only):");
+  lines.push("    # app/controllers/user_invoices_controller.rb");
+  lines.push("    -    redirect_url = request.referer.match?(index_path) || invoice.nil? ?");
+  lines.push("    -      index_path : polymorphic_path(invoice)");
+  lines.push("    +    redirect_url =");
+  lines.push("    +      if invoice.nil? || request.referer.blank? || request.referer.match?(index_path)");
+  lines.push("    +        index_path");
+  lines.push("    +      else");
+  lines.push("    +        polymorphic_path(invoice)");
+  lines.push("    +      end");
+  lines.push("");
+  lines.push("  Reasoning: failing spec is in OvertimePolicies, PR only touches user_invoices_controller. No overlap.");
+  lines.push("");
+  lines.push("  GOOSEHERD_CI_TRIAGE: {\"verdict\":\"rerun\",\"reason\":\"Failing OvertimePolicies spec is unrelated to PR diff (only user_invoices_controller.rb changed)\",\"evidence\":[\"spec: OvertimePolicies::RestoreAction#call\",\"diff files: app/controllers/user_invoices_controller.rb\"]}");
+  lines.push("");
+  lines.push("Example 2 — UNRELATED INFRA (verdict: rerun):");
+  lines.push("");
+  lines.push("  Tests / Build Failing after 1m");
+  lines.push("  \"Setup PostgreSQL\" tail:");
+  lines.push("    psql: error: connection to server at \"localhost\" (127.0.0.1),");
+  lines.push("    port 5432 failed: Connection refused");
+  lines.push("    Is the server running on that host and accepting TCP/IP connections?");
+  lines.push("");
+  lines.push("  Reasoning: DB never started — pure infra. No diff inspection needed.");
+  lines.push("");
+  lines.push("  GOOSEHERD_CI_TRIAGE: {\"verdict\":\"rerun\",\"reason\":\"PostgreSQL service failed to start in CI runner\",\"evidence\":[\"psql: connection refused before any spec ran\"]}");
+  lines.push("");
+  lines.push("Example 3 — RELATED (verdict: fix_needed):");
+  lines.push("");
+  lines.push("  Tests / RSpec (12, 4) (pull_request) Failing after 8m");
+  lines.push("  \"Run RSpec\" tail:");
+  lines.push("    Failures:");
+  lines.push("      1) UserInvoicesController#redirect_after_save when referer is blank");
+  lines.push("         expected: index_path");
+  lines.push("         got:      polymorphic_path(invoice)");
+  lines.push("");
+  lines.push("  PR diff:");
+  lines.push("    # app/controllers/user_invoices_controller.rb");
+  lines.push("    -    redirect_url = request.referer.match?(index_path) || invoice.nil? ? ...");
+  lines.push("    +    redirect_url =");
+  lines.push("    +      if invoice.nil? || request.referer.blank? || ...");
+  lines.push("");
+  lines.push("  Reasoning: failing spec is for UserInvoicesController#redirect_after_save, which is exactly the method modified in the diff.");
+  lines.push("");
+  lines.push("  GOOSEHERD_CI_TRIAGE: {\"verdict\":\"fix_needed\",\"reason\":\"Spec for UserInvoicesController#redirect_after_save fails; method changed in diff\",\"evidence\":[\"spec: UserInvoicesController#redirect_after_save when referer is blank\",\"diff file: app/controllers/user_invoices_controller.rb (same method)\"]}");
+
+  return lines.join("\n");
+}
+
 export function buildBranchSyncTask(input: AutoReviewTaskInput): string {
   const maxBehindCommits = input.maxBehindCommits ?? 5;
   const lines = [

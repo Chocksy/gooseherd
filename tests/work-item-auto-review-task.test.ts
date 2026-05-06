@@ -62,3 +62,34 @@ test("ci fix task renderer includes repo, PR metadata, Jira key, and branch reus
   assert.match(rendered, /do not create .* new PR/i);
   assert.match(rendered, /do not merge the PR/i);
 });
+
+test("ci triage task renderer instructs the agent to classify, not to modify", async () => {
+  const { buildCiTriageTask } = await import("../src/work-items/auto-review-task.js");
+  const prNumber = 4079;
+  const prUrl = `https://github.com/hubstaff/gooseherd/pull/${prNumber}`;
+
+  const rendered = buildCiTriageTask({
+    repo: "hubstaff/gooseherd",
+    prNumber,
+    prUrl,
+    jiraIssueKey: "HBL-406",
+    title: "Triage failing CI",
+  });
+
+  assert.ok(rendered.includes("hubstaff/gooseherd"));
+  assert.ok(rendered.includes(prUrl));
+  assert.ok(rendered.includes("HBL-406"));
+  assert.match(rendered, /investigate why ci is currently failing/i);
+  assert.match(rendered, /CI Snapshot/);
+  assert.match(rendered, /git diff origin/);
+  assert.match(rendered, /do not modify any code/i);
+  assert.match(rendered, /do not push commits/i);
+  assert.match(rendered, /GOOSEHERD_CI_TRIAGE/);
+  assert.match(rendered, /"verdict"/);
+  assert.match(rendered, /fix_needed/);
+  assert.match(rendered, /"rerun"/);
+  // Examples present
+  assert.match(rendered, /Example 1.*UNRELATED.*rerun/i);
+  assert.match(rendered, /Example 2.*INFRA.*rerun/i);
+  assert.match(rendered, /Example 3.*RELATED.*fix_needed/i);
+});

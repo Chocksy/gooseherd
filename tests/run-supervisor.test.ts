@@ -29,6 +29,29 @@ test("classifyFailureWithRetryability: no_changes errors are NOT retryable", () 
   assert.equal(result.retryStrategy, "none");
 });
 
+test("classifyFailureWithRetryability: 'CI fix agent made no changes' is no_changes", () => {
+  const result = classifyFailureWithRetryability("CI fix agent made no changes");
+  assert.equal(result.category, "no_changes");
+  assert.equal(result.retryable, false);
+  assert.equal(result.retryStrategy, "none");
+});
+
+test("classifyFailureWithRetryability: 'made no further changes' (round-2 variant) is no_changes", () => {
+  const result = classifyFailureWithRetryability(
+    "CI fix agent made no further changes after local test failed in round 1"
+  );
+  assert.equal(result.category, "no_changes");
+  assert.equal(result.retryable, false);
+});
+
+test("classifyFailureWithRetryability: 'no candidate changes to push' (bail variant) is no_changes", () => {
+  const result = classifyFailureWithRetryability(
+    "CI fix agent requested local-test bail but produced no candidate changes to push"
+  );
+  assert.equal(result.category, "no_changes");
+  assert.equal(result.retryable, false);
+});
+
 test("classifyFailureWithRetryability: validation errors are NOT retryable", () => {
   const result = classifyFailureWithRetryability("Validation failed after 2 retry rounds");
   assert.equal(result.category, "validation");

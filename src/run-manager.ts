@@ -41,7 +41,7 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
     result: { category: "timeout", friendly: "Agent timed out", suggestion: "The task may be too complex. Try breaking it into smaller steps or increase AGENT_TIMEOUT_SECONDS." }
   },
   {
-    test: /no meaningful changes|no file changes|whitespace-only|mass deletion detected/i,
+    test: /no meaningful changes|no file changes|whitespace-only|mass deletion detected|made no (?:further )?changes|no candidate changes to push/i,
     result: { category: "no_changes", friendly: "Agent produced no useful changes", suggestion: "Try rephrasing the task with more specific instructions." }
   },
   {

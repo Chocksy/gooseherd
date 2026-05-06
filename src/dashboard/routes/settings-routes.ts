@@ -603,7 +603,12 @@ async function computeRunStats(store: RunStore) {
   const avgCostUsd = totalRuns > 0 ? totalCostUsd / totalRuns : 0;
   const oneDayAgo = Date.now() - 86400_000;
   const runsLast24h = allRuns.filter((run) => new Date(run.createdAt).getTime() > oneDayAgo).length;
-  return { totalRuns, completedRuns, failedRuns, successRate, totalCostUsd, avgCostUsd, runsLast24h };
+  // Derived from the global top-500 window above, so a repo whose runs are all older
+  // than the 500th most recent run won't show up in the dashboard dropdown.
+  const repositories = Array.from(
+    new Set(allRuns.map((run) => run.repoSlug).filter((slug): slug is string => Boolean(slug))),
+  ).sort();
+  return { totalRuns, completedRuns, failedRuns, successRate, totalCostUsd, avgCostUsd, runsLast24h, repositories };
 }
 
 async function syncActiveAgentProfileConfig(config: AppConfig, agentProfileStore: AgentProfileStore): Promise<void> {

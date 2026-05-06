@@ -255,13 +255,18 @@ export class RunStore {
     return rows[0] ? rowToRecord(rows[0]) : undefined;
   }
 
-  async listRuns(filter: { limit?: number; teamId?: string } | number = 100): Promise<RunRecord[]> {
+  async listRuns(
+    filter: { limit?: number; teamId?: string; repoSlug?: string } | number = 100,
+  ): Promise<RunRecord[]> {
     const opts = typeof filter === "number" ? { limit: filter } : filter;
     const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
 
     const conditions = [];
     if (opts.teamId) {
       conditions.push(eq(runs.teamId, opts.teamId));
+    }
+    if (opts.repoSlug) {
+      conditions.push(eq(runs.repoSlug, opts.repoSlug));
     }
 
     const rows = await this.selectRunRows()

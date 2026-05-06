@@ -203,6 +203,25 @@ describe("Dashboard Work Item API routes", () => {
   const tmpDirs: string[] = [];
   const cleanups: Array<() => Promise<void>> = [];
 
+  const runsFixture = [
+    {
+      id: "run-a",
+      repoSlug: "hubstaff/gooseherd",
+      baseBranch: "main",
+      task: "First",
+      status: "completed",
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: "run-b",
+      repoSlug: "hubstaff/other",
+      baseBranch: "main",
+      task: "Second",
+      status: "completed",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+
   afterEach(async () => {
     for (const server of servers) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -560,24 +579,8 @@ describe("Dashboard Work Item API routes", () => {
 
   test("GET /api/runs lists runs filtered by repository", async () => {
     const runStore = {
-      listRuns: async () => [
-        {
-          id: "run-a",
-          repoSlug: "hubstaff/gooseherd",
-          baseBranch: "main",
-          task: "First",
-          status: "completed",
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: "run-b",
-          repoSlug: "hubstaff/other",
-          baseBranch: "main",
-          task: "Second",
-          status: "completed",
-          createdAt: new Date().toISOString(),
-        },
-      ],
+      listRuns: async (filter?: { repoSlug?: string }) =>
+        filter?.repoSlug ? runsFixture.filter((run) => run.repoSlug === filter.repoSlug) : runsFixture,
     };
     const port = getPort();
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gooseherd-dash-runs-"));
@@ -594,24 +597,8 @@ describe("Dashboard Work Item API routes", () => {
 
   test("GET /api/repo/:owner/:name/runs lists repository-scoped runs", async () => {
     const runStore = {
-      listRuns: async () => [
-        {
-          id: "run-a",
-          repoSlug: "hubstaff/gooseherd",
-          baseBranch: "main",
-          task: "First",
-          status: "completed",
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: "run-b",
-          repoSlug: "hubstaff/other",
-          baseBranch: "main",
-          task: "Second",
-          status: "completed",
-          createdAt: new Date().toISOString(),
-        },
-      ],
+      listRuns: async (filter?: { repoSlug?: string }) =>
+        filter?.repoSlug ? runsFixture.filter((run) => run.repoSlug === filter.repoSlug) : runsFixture,
     };
     const port = getPort();
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gooseherd-dash-runs-"));

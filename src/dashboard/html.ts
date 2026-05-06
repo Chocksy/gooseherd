@@ -159,6 +159,12 @@ export function dashboardHtml(config: AppConfig): string {
       flex-wrap: wrap;
       justify-content: flex-end;
     }
+    .top-controls-tail {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
     .view-switch {
       display: flex;
       border: 1px solid var(--border);
@@ -496,6 +502,7 @@ export function dashboardHtml(config: AppConfig): string {
       background: color-mix(in srgb, var(--panel) 92%, transparent);
       border-radius: 14px;
       min-height: 240px;
+      min-width: 0;
       padding: 12px;
       display: grid;
       gap: 10px;
@@ -520,6 +527,7 @@ export function dashboardHtml(config: AppConfig): string {
     .board-column-items {
       display: grid;
       gap: 10px;
+      min-width: 0;
     }
     .board-card {
       border: 1px solid var(--border);
@@ -528,6 +536,8 @@ export function dashboardHtml(config: AppConfig): string {
       padding: 12px;
       display: grid;
       gap: 8px;
+      min-width: 0;
+      overflow: hidden;
       box-shadow: var(--shadow);
       cursor: pointer;
       transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
@@ -560,12 +570,14 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 14px;
       font-weight: 700;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .board-card-summary {
       font-size: 12px;
       color: var(--muted);
       line-height: 1.45;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .board-card-meta {
       display: flex;
@@ -629,6 +641,8 @@ export function dashboardHtml(config: AppConfig): string {
       top: 0;
       display: grid;
       gap: 12px;
+      min-width: 0;
+      overflow: hidden;
     }
     .board-detail.is-hidden {
       display: none !important;
@@ -640,6 +654,7 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 18px;
       font-weight: 700;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .board-detail-meta {
       display: flex;
@@ -1831,20 +1846,22 @@ export function dashboardHtml(config: AppConfig): string {
           <span class="material-symbols-rounded">link</span>
           <span>Report issue</span>
         </a>
-        <div class="theme-switch" id="theme-switch">
-          <button class="theme-btn" data-theme-val="light" title="Light mode">
-            <span class="material-symbols-rounded">light_mode</span>
-          </button>
-          <button class="theme-btn" data-theme-val="system" title="System mode">
-            <span class="material-symbols-rounded">desktop_windows</span>
-          </button>
-          <button class="theme-btn" data-theme-val="dark" title="Dark mode">
-            <span class="material-symbols-rounded">dark_mode</span>
+        <div class="top-controls-tail">
+          <div class="theme-switch" id="theme-switch">
+            <button class="theme-btn" data-theme-val="light" title="Light mode">
+              <span class="material-symbols-rounded">light_mode</span>
+            </button>
+            <button class="theme-btn" data-theme-val="system" title="System mode">
+              <span class="material-symbols-rounded">desktop_windows</span>
+            </button>
+            <button class="theme-btn" data-theme-val="dark" title="Dark mode">
+              <span class="material-symbols-rounded">dark_mode</span>
+            </button>
+          </div>
+          <button class="top-btn danger" id="logout-btn" title="Logout">
+            <span class="material-symbols-rounded">power_settings_new</span>
           </button>
         </div>
-        <button class="top-btn danger" id="logout-btn" title="Logout">
-          <span class="material-symbols-rounded">power_settings_new</span>
-        </button>
       </div>
     </header>
     <aside class="sidebar">
@@ -3836,12 +3853,16 @@ export function dashboardHtml(config: AppConfig): string {
         fetchJson('/api/stats').catch(function() { return {}; }),
       ]);
       state.runs = runsData.runs || [];
+      if (Array.isArray(statsData.repositories)) {
+        rememberRepositoryOptions(statsData.repositories.map(function(slug) {
+          return { repoSlug: slug };
+        }));
+      }
       rememberRepositoryOptions(state.runs);
       var filteredRuns = getFilteredRuns();
       el.meta.textContent = filteredRuns.length + ' runs';
       if (el.topMeta) {
         var parts = [filteredRuns.length + ' runs'];
-        if (selectedRepository()) parts.push(selectedRepository());
         if (statsData.successRate !== undefined) parts.push(statsData.successRate + '% success');
         if (statsData.totalCostUsd > 0) parts.push('$' + statsData.totalCostUsd.toFixed(2) + ' total');
         el.topMeta.textContent = parts.join(' | ');
@@ -3914,9 +3935,7 @@ export function dashboardHtml(config: AppConfig): string {
         el.boardMeta.textContent = state.workItems.filter(matchesRepositoryFilter).length + ' work items';
       }
       if (state.viewMode === 'board' && el.topMeta) {
-        var boardParts = [state.workItems.filter(matchesRepositoryFilter).length + ' work items'];
-        if (selectedRepository()) boardParts.push(selectedRepository());
-        el.topMeta.textContent = boardParts.join(' | ');
+        el.topMeta.textContent = state.workItems.filter(matchesRepositoryFilter).length + ' work items';
       }
       renderBoard();
       if (state.selectedWorkItemId) {

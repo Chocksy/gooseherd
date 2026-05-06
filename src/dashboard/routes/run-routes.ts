@@ -80,10 +80,8 @@ export async function handleRunRoutes(
     const statusFilter = requestUrl.searchParams.get("status") ?? undefined;
     const search = requestUrl.searchParams.get("search") ?? undefined;
     const repoFilter = requestUrl.searchParams.get("repo") ?? undefined;
-    let runs = await store.listRuns({ limit: 500, teamId });
-    if (repoFilter && repoFilter !== "all") {
-      runs = runs.filter((run) => run.repoSlug === repoFilter);
-    }
+    const repoSlug = repoFilter && repoFilter !== "all" ? repoFilter : undefined;
+    let runs = await store.listRuns({ limit: 500, teamId, repoSlug });
     if (statusFilter && statusFilter !== "all") {
       runs = runs.filter((run) => run.status === statusFilter);
     }
@@ -107,8 +105,7 @@ export async function handleRunRoutes(
     const teamId = requestUrl.searchParams.get("team") ?? undefined;
     const statusFilter = requestUrl.searchParams.get("status") ?? undefined;
     const search = requestUrl.searchParams.get("search") ?? undefined;
-    let runs = await store.listRuns({ limit: 500, teamId });
-    runs = runs.filter((run) => run.repoSlug === repoSlug);
+    let runs = await store.listRuns({ limit: 500, teamId, repoSlug });
     if (statusFilter && statusFilter !== "all") {
       runs = runs.filter((run) => run.status === statusFilter);
     }

@@ -52,6 +52,16 @@ test("classifyFailureWithRetryability: 'no candidate changes to push' (bail vari
   assert.equal(result.retryable, false);
 });
 
+test("classifyFailureWithRetryability: Kubernetes job wait timeout suggests KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS, not AGENT_TIMEOUT_SECONDS", () => {
+  const result = classifyFailureWithRetryability(
+    "Timed out waiting for Kubernetes job gooseherd-run-ea5866c8"
+  );
+  assert.equal(result.category, "kubernetes_wait_timeout");
+  assert.equal(result.retryable, false);
+  assert.match(result.suggestion, /KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS/);
+  assert.doesNotMatch(result.suggestion, /AGENT_TIMEOUT_SECONDS/);
+});
+
 test("classifyFailureWithRetryability: validation errors are NOT retryable", () => {
   const result = classifyFailureWithRetryability("Validation failed after 2 retry rounds");
   assert.equal(result.category, "validation");

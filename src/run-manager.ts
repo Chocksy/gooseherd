@@ -37,6 +37,14 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
     result: { category: "clone", friendly: "Failed to clone repository", suggestion: "Check that the repo exists and your GitHub credentials (GITHUB_TOKEN or GitHub App) have access." }
   },
   {
+    test: /timed out waiting for kubernetes job/i,
+    result: {
+      category: "kubernetes_wait_timeout",
+      friendly: "Kubernetes job did not reach a terminal state in time",
+      suggestion: "The runner pod likely never reported Complete/Failed. Check pod status (RBAC, image-pull, scheduling, db-slot exhaustion) and, if needed, raise KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS (default 600s)."
+    }
+  },
+  {
     test: /timed out|timeout:|exceeded \d+s.*terminating|\[timeout[^\]]*\]/i,
     result: { category: "timeout", friendly: "Agent timed out", suggestion: "The task may be too complex. Try breaking it into smaller steps or increase AGENT_TIMEOUT_SECONDS." }
   },

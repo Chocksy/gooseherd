@@ -4,6 +4,7 @@ export const DEFAULT_KUBERNETES_RUNNER_IMAGE = "gooseherd/k8s-runner:dev";
 export const DEFAULT_KUBERNETES_NAMESPACE = "default";
 export const DEFAULT_KUBERNETES_RUNNER_ENV_SECRET = "gooseherd-env";
 export const DEFAULT_KUBERNETES_RUNNER_ENV_CONFIGMAP = "gooseherd-config";
+export const DEFAULT_KUBERNETES_RUN_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 
 export function resolveKubernetesRunnerImage(): string {
   return process.env.KUBERNETES_RUNNER_IMAGE?.trim() || DEFAULT_KUBERNETES_RUNNER_IMAGE;
@@ -34,4 +35,12 @@ export function resolveKubernetesInternalBaseUrl(
   }
 
   return `http://host.minikube.internal:${String(config.dashboardPort)}`;
+}
+
+export function resolveKubernetesRunWaitTimeoutMs(): number {
+  const raw = process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS?.trim();
+  if (!raw) return DEFAULT_KUBERNETES_RUN_WAIT_TIMEOUT_MS;
+  const seconds = Number.parseInt(raw, 10);
+  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_KUBERNETES_RUN_WAIT_TIMEOUT_MS;
+  return seconds * 1_000;
 }

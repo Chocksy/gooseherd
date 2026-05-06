@@ -51,6 +51,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunWaitTimeoutMs,
 } from "./runtime/kubernetes-env.js";
 import type { WorkItemActor } from "./work-items/actor.js";
 import {
@@ -769,6 +770,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
         namespace: resolveKubernetesNamespace(),
+        waitTimeoutMs: resolveKubernetesRunWaitTimeoutMs(),
         runnerConfigSource: config,
         runnerDbSlotManager,
       })

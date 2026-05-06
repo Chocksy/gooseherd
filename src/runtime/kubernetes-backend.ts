@@ -206,7 +206,12 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       await sleep(this.pollIntervalMs);
     }
 
-    throw new Error(`Timed out waiting for Kubernetes job ${jobName}`);
+    const seconds = Math.round(this.waitTimeoutMs / 1000);
+    throw new Error(
+      `Timed out waiting for Kubernetes job ${jobName} after ${String(seconds)}s. ` +
+        `Set KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS to a larger value if the workload legitimately needs longer; ` +
+        `otherwise inspect pod RBAC, image-pull state, scheduling, and db-slot allocation.`
+    );
   }
 
   private async readRuntimeFact(jobName: string): Promise<TerminalFact> {

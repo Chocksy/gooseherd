@@ -243,6 +243,17 @@ export class GitHubService {
     return auth.token;
   }
 
+  /**
+   * Resolve a clone URL for `git clone`. Returned URL embeds a fresh
+   * installation token (App auth) or PAT. Exposed as a method (rather than
+   * inlined at the call site) so tests can substitute a `file://` URL
+   * pointing at a local bare repo.
+   */
+  async getCloneUrl(repoSlug: string): Promise<string> {
+    const token = await this.getToken();
+    return buildAuthenticatedGitUrl(repoSlug, token);
+  }
+
   async createPullRequest(params: PullRequestParams): Promise<PullRequestResult> {
     const { owner, repo } = parseRepoSlug(params.repoSlug);
     const response = await this.octokit.pulls.create({

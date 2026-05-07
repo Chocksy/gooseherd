@@ -323,7 +323,6 @@ export class ControlPlaneStore {
       if (!safeTokenCompare(cached.tokenHash, tokenHash)) {
         return false;
       }
-      await this.stampTokenUse(runId, cached.usedAt);
       return true;
     }
 
@@ -337,9 +336,10 @@ export class ControlPlaneStore {
       return false;
     }
 
-    await this.stampTokenUse(runId, row.usedAt);
-    if (!row.usedAt) {
-      row.usedAt = new Date();
+    const stamped = await this.stampTokenUse(runId, row);
+    if (stamped) {
+      row.usedAt = stamped.usedAt;
+      row.expiresAt = stamped.expiresAt;
     }
     this.cacheRunToken(runId, row);
     return true;
@@ -366,21 +366,29 @@ export class ControlPlaneStore {
     });
   }
 
-  private async stampTokenUse(runId: string, usedAt: Date | null): Promise<void> {
-    if (usedAt) {
-      return;
+  private async stampTokenUse(
+    runId: string,
+    token: Pick<TokenRow, "issuedAt" | "expiresAt" | "usedAt">,
+  ): Promise<{ usedAt: Date; expiresAt: Date } | null> {
+    if (token.usedAt) {
+      return null;
     }
 
     const stampedAt = new Date();
+    const ttlMs = Math.max(1, token.expiresAt.getTime() - token.issuedAt.getTime());
+    const expiresAt = new Date(stampedAt.getTime() + ttlMs);
     await this.db
       .update(runTokens)
-      .set({ usedAt: stampedAt })
+      .set({ usedAt: stampedAt, expiresAt })
       .where(eq(runTokens.runId, runId));
 
     const cached = this.tokenCache.get(runId);
     if (cached) {
       cached.usedAt = stampedAt;
+      cached.expiresAt = expiresAt.getTime();
       cached.cachedAt = Date.now();
     }
+
+    return { usedAt: stampedAt, expiresAt };
   }
 }

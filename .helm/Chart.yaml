@@ -1,8 +1,8 @@
 apiVersion: v2
 name: gooseherd
-version: 0.1.0
+version: 1.0.0
 appVersion: "1.0.0"
-description: Gooseherd Kubernetes deployment chart
+description: Gooseherd deployment chart
 dependencies:
   - name: common
     version: "^1.0.0"

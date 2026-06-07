@@ -10,6 +10,12 @@ export default {
   extends: [
     '@commitlint/config-conventional',
   ],
+  // Dependabot writes lowercase subjects (e.g. "bump axios ...") that violate our
+  // sentence-case rule. Its commits are machine-generated and not authored by us,
+  // so skip linting them rather than weakening the rule for human commits.
+  ignores: [
+    (message) => /Signed-off-by: dependabot\[bot\]/.test(message),
+  ],
   rules: {
     "header-max-length": [2, "always", 100],
     "subject-case": [2, "always", ["sentence-case"]],

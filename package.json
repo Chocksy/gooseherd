@@ -30,7 +30,8 @@
     "db:backfill-legacy-setup": "tsx scripts/migrate-legacy-setup-config-sections.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed-json.ts",
-    "eval": "tsx scripts/run-eval.ts"
+    "eval": "tsx scripts/run-eval.ts",
+    "label-walk": "tsx scripts/work-item-label-walk.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^1.0.33",
@@ -48,7 +49,7 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "@browserbasehq/stagehand": "^3.2.1",
+    "@browserbasehq/stagehand": "^3.5.0",
     "playwright": "^1.59.1"
   },
   "devDependencies": {
@@ -58,5 +59,15 @@
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
+  },
+  "overrides": {
+    "fast-uri": "^3.1.2",
+    "ip-address": "^10.1.1",
+    "dockerode": {
+      "uuid": "^11.1.1"
+    },
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.0"
+    }
   }
 }

@@ -10,6 +10,10 @@ nodes:
   - id: sync_base_branch
     type: deterministic
     action: sync_base_branch
+    on_failure:
+      action: loop
+      agent_node: resolve_rebase_conflicts
+      max_rounds: 1
 
   - id: push
     type: deterministic

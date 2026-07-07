@@ -454,3 +454,90 @@ test("kubernetes backend falls back to event timestamp when runner checkpoint em
     await rm(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test("kubernetes backend injects RUN_LOG_MIRROR_STDOUT=true into the runner pod env on retry runs", async (t) => {
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "gooseherd-k8s-backend-retry-mirror-"));
+  t.after(async () => { await rm(tmpRoot, { recursive: true, force: true }); });
+
+  const backend = new KubernetesExecutionBackend({
+    controlPlaneStore: {
+      createRunEnvelope: async () => undefined,
+      issueRunToken: async () => ({ token: "issued-token" }),
+      getLatestCompletion: async () => makeCompletion({ runId: "run-k8s-retry-1" } as never),
+      revokeRunToken: async () => undefined,
+      listEventsAfterSequence: async () => [],
+    },
+    artifactStore: { allocateTargets: async () => ({ targets: {} }) },
+    runStore: { getRun: async () => undefined },
+    workRoot: tmpRoot,
+    runnerImage: "gooseherd/k8s-runner:dev",
+    internalBaseUrl: "http://host.minikube.internal:8787",
+    dryRun: false,
+    resourceClient: {
+      applySecret: async () => undefined,
+      applyJob: async () => undefined,
+      readJob: async () => ({ status: { conditions: [{ type: "Complete", status: "True" }] } }),
+      listPodsForJob: async () => [],
+      readJobLogs: async () => "runner completed\n",
+      deleteJob: async () => undefined,
+      deletePodsForJob: async () => undefined,
+      deleteSecret: async () => undefined,
+    },
+    pollIntervalMs: 1,
+    waitTimeoutMs: 5_000,
+    completionWaitMs: 100,
+  });
+
+  await backend.execute(makeRun({
+    id: "run-k8s-retry-1",
+    retriedFromRunId: "run-k8s-original-1",
+  }), {
+    onPhase: async () => undefined,
+    pipelineFile: "pipelines/kubernetes-smoke.yml",
+  });
+
+  const manifest = await readFile(path.resolve(tmpRoot, "run-k8s-retry-1", "kubernetes-job.yaml"), "utf8");
+  assert.match(manifest, /name: RUN_LOG_MIRROR_STDOUT[\s\S]*value: "true"/);
+});
+
+test("kubernetes backend does NOT set RUN_LOG_MIRROR_STDOUT for first-attempt runs", async (t) => {
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "gooseherd-k8s-backend-first-attempt-"));
+  t.after(async () => { await rm(tmpRoot, { recursive: true, force: true }); });
+
+  const backend = new KubernetesExecutionBackend({
+    controlPlaneStore: {
+      createRunEnvelope: async () => undefined,
+      issueRunToken: async () => ({ token: "issued-token" }),
+      getLatestCompletion: async () => makeCompletion({ runId: "run-k8s-first-1" } as never),
+      revokeRunToken: async () => undefined,
+      listEventsAfterSequence: async () => [],
+    },
+    artifactStore: { allocateTargets: async () => ({ targets: {} }) },
+    runStore: { getRun: async () => undefined },
+    workRoot: tmpRoot,
+    runnerImage: "gooseherd/k8s-runner:dev",
+    internalBaseUrl: "http://host.minikube.internal:8787",
+    dryRun: false,
+    resourceClient: {
+      applySecret: async () => undefined,
+      applyJob: async () => undefined,
+      readJob: async () => ({ status: { conditions: [{ type: "Complete", status: "True" }] } }),
+      listPodsForJob: async () => [],
+      readJobLogs: async () => "runner completed\n",
+      deleteJob: async () => undefined,
+      deletePodsForJob: async () => undefined,
+      deleteSecret: async () => undefined,
+    },
+    pollIntervalMs: 1,
+    waitTimeoutMs: 5_000,
+    completionWaitMs: 100,
+  });
+
+  await backend.execute(makeRun({ id: "run-k8s-first-1" }), {
+    onPhase: async () => undefined,
+    pipelineFile: "pipelines/kubernetes-smoke.yml",
+  });
+
+  const manifest = await readFile(path.resolve(tmpRoot, "run-k8s-first-1", "kubernetes-job.yaml"), "utf8");
+  assert.doesNotMatch(manifest, /RUN_LOG_MIRROR_STDOUT/);
+});

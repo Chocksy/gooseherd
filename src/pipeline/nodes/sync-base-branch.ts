@@ -31,6 +31,11 @@ function resolveSyncBaseBranch(ctx: ContextBag, deps: NodeDeps): string | undefi
   return runBaseBranch || undefined;
 }
 
+function shouldPreservePriorRebaseResult(ctx: ContextBag, baseBranch: string): boolean {
+  return ctx.get<boolean>("rebasePerformed") === true
+    && ctx.get<string>("rebaseConflictBaseBranch") === baseBranch;
+}
+
 async function getCurrentHead(repoDir: string, logFile: string): Promise<string> {
   const result = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
   if (result.code !== 0) {
@@ -50,99 +55,32 @@ async function listConflictedFiles(repoDir: string, logFile: string): Promise<st
     .filter(Boolean);
 }
 
-async function resolveConflictFiles(repoDir: string, logFile: string, files: string[]): Promise<void> {
-  if (files.length === 0) {
-    throw new Error("Rebase stopped with conflicts, but no conflicted files were reported.");
-  }
-
-  for (const file of files) {
-    const checkoutResult = await runShellCapture(
-      `git checkout --theirs -- ${shellEscape(file)}`,
-      { cwd: repoDir, logFile },
-    );
-    if (checkoutResult.code !== 0) {
-      throw new Error(`Failed to prefer feature branch content for conflicted file: ${file}`);
-    }
-
-    const addResult = await runShellCapture(`git add -- ${shellEscape(file)}`, {
-      cwd: repoDir,
-      logFile,
-    });
-    if (addResult.code !== 0) {
-      throw new Error(`Failed to stage conflicted file during auto-resolution: ${file}`);
-    }
-  }
+async function abortRebase(repoDir: string, logFile: string): Promise<void> {
+  await runShellCapture("git rebase --abort", { cwd: repoDir, logFile });
 }
 
-async function resolveConflicts(repoDir: string, logFile: string): Promise<string[]> {
-  const files = await listConflictedFiles(repoDir, logFile);
-  await resolveConflictFiles(repoDir, logFile, files);
-  return files;
-}
+type RebaseAttemptResult =
+  | { kind: "completed" }
+  | { kind: "conflict"; conflictFiles: string[]; rawOutput: string }
+  | { kind: "stuck"; rawOutput: string };
 
-async function advanceRebase(
+async function rebaseOntoBase(
   repoDir: string,
   logFile: string,
-  command: string,
-): Promise<{ completed: boolean; conflictFiles: string[] }> {
-  const stepResult = await runShellCapture(command, { cwd: repoDir, logFile });
+  baseBranch: string,
+): Promise<RebaseAttemptResult> {
+  const rebaseTarget = shellEscape(`origin/${baseBranch}`);
+  const stepResult = await runShellCapture(`git rebase ${rebaseTarget}`, { cwd: repoDir, logFile });
   if (stepResult.code === 0) {
-    return { completed: true, conflictFiles: [] };
+    return { kind: "completed" };
   }
 
+  const rawOutput = [stepResult.stderr, stepResult.stdout].filter(Boolean).join("\n").trim();
   const conflictFiles = await listConflictedFiles(repoDir, logFile);
   if (conflictFiles.length > 0) {
-    await resolveConflictFiles(repoDir, logFile, conflictFiles);
-    return { completed: false, conflictFiles };
+    return { kind: "conflict", conflictFiles, rawOutput };
   }
-
-  const skipResult = await runShellCapture("git rebase --skip", { cwd: repoDir, logFile });
-  if (skipResult.code === 0) {
-    return { completed: true, conflictFiles: [] };
-  }
-
-  const skippedConflictFiles = await listConflictedFiles(repoDir, logFile);
-  if (skippedConflictFiles.length > 0) {
-    await resolveConflictFiles(repoDir, logFile, skippedConflictFiles);
-    return { completed: false, conflictFiles: skippedConflictFiles };
-  }
-
-  const output = [
-    stepResult.stderr,
-    stepResult.stdout,
-    skipResult.stderr,
-    skipResult.stdout,
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-
-  throw new Error(
-    output
-      ? `Automatic rebase could not continue or skip the current commit.\n${output}`
-      : "Automatic rebase could not continue or skip the current commit.",
-  );
-}
-
-async function rebaseOntoBase(repoDir: string, logFile: string, baseBranch: string): Promise<string[]> {
-  const rebasedFiles = new Set<string>();
-  const rebaseTarget = shellEscape(`origin/${baseBranch}`);
-  const initial = await advanceRebase(repoDir, logFile, `git rebase ${rebaseTarget}`);
-  if (initial.completed) {
-    return [];
-  }
-
-  initial.conflictFiles.forEach((file) => rebasedFiles.add(file));
-
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const continued = await advanceRebase(repoDir, logFile, "GIT_EDITOR=true git rebase --continue");
-    continued.conflictFiles.forEach((file) => rebasedFiles.add(file));
-    if (continued.completed) {
-      return [...rebasedFiles];
-    }
-  }
-
-  throw new Error("Automatic rebase conflict resolution exceeded 50 continuation attempts.");
+  return { kind: "stuck", rawOutput };
 }
 
 export async function syncBaseBranchNode(
@@ -206,13 +144,14 @@ export async function syncBaseBranchNode(
 
   const behindCount = Number.parseInt(behindResult.stdout.trim(), 10);
   if (!Number.isFinite(behindCount) || behindCount <= maxBehindCommits) {
-    ctx.set("rebasePerformed", false);
+    const rebasePerformed = shouldPreservePriorRebaseResult(ctx, resolvedBaseBranch);
+    ctx.set("rebasePerformed", rebasePerformed);
     ctx.set("forcePushWithLease", false);
     return {
       outcome: "success",
       outputs: {
         behindCount: Number.isFinite(behindCount) ? behindCount : 0,
-        rebasePerformed: false,
+        rebasePerformed,
         requiresForcePush: false,
       },
     };
@@ -221,24 +160,45 @@ export async function syncBaseBranchNode(
   await deps.onPhase("rebasing");
 
   const oldHead = await getCurrentHead(repoDir, logFile);
-  const autoResolvedFiles = await rebaseOntoBase(repoDir, logFile, resolvedBaseBranch);
+  const rebaseResult = await rebaseOntoBase(repoDir, logFile, resolvedBaseBranch);
+
+  if (rebaseResult.kind !== "completed") {
+    await abortRebase(repoDir, logFile);
+    const conflictFiles = rebaseResult.kind === "conflict" ? rebaseResult.conflictFiles : [];
+    const reason = rebaseResult.kind === "conflict"
+      ? `Rebase onto origin/${resolvedBaseBranch} stopped on conflicts in ${String(conflictFiles.length)} file(s).`
+      : `Rebase onto origin/${resolvedBaseBranch} could not proceed.`;
+    await appendLog(logFile, `\n[sync_base_branch] ${reason} Aborted; agent fallback should resolve.\n`);
+    ctx.set("rebaseConflictBaseBranch", resolvedBaseBranch);
+    ctx.set("rebasePerformed", false);
+    ctx.set("forcePushWithLease", false);
+    return {
+      outcome: "failure",
+      error: reason,
+      rawOutput: rebaseResult.rawOutput,
+      outputs: {
+        rebasePerformed: false,
+        requiresForcePush: false,
+        rebaseConflictBaseBranch: resolvedBaseBranch,
+        rebaseConflictFiles: conflictFiles,
+      },
+    };
+  }
+
   const newHead = await getCurrentHead(repoDir, logFile);
   const changedFilesResult = await runShellCapture(
     `git diff --name-only ${shellEscape(oldHead)}..${shellEscape(newHead)}`,
     { cwd: repoDir, logFile },
   );
-  const changedFiles = new Set(
-    changedFilesResult.stdout
-      .split("\n")
-      .map((entry) => entry.trim())
-      .filter(Boolean),
-  );
-  autoResolvedFiles.forEach((file) => changedFiles.add(file));
+  const changedFiles = changedFilesResult.stdout
+    .split("\n")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 
   await appendLog(logFile, `\n[sync_base_branch] rebased onto origin/${resolvedBaseBranch}; behind=${String(behindCount)}\n`);
 
   ctx.set("commitSha", newHead);
-  ctx.set("changedFiles", [...changedFiles]);
+  ctx.set("changedFiles", changedFiles);
   ctx.set("rebasePerformed", true);
   ctx.set("forcePushWithLease", true);
 
@@ -250,7 +210,7 @@ export async function syncBaseBranchNode(
       requiresForcePush: true,
       forcePushWithLease: true,
       commitSha: newHead,
-      changedFiles: [...changedFiles],
+      changedFiles,
     },
   };
 }

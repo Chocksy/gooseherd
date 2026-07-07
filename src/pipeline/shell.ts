@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ContainerManager } from "../sandbox/container-manager.js";
@@ -117,8 +118,56 @@ export function buildPiExtensionFlags(extensions: string[]): string {
     .join(" ");
 }
 
+/**
+ * Per-runId line buffer for stdout mirroring. Agent stdout/stderr arrives in
+ * arbitrary chunks, so we accumulate a partial trailing line and emit only
+ * complete `\n`-terminated lines as `[run:<id>] <line>` to keep Loki/Grafana
+ * parsing clean.
+ */
+const runLogMirrorBuffers = new Map<string, string>();
+
+function shouldMirrorRunLog(): boolean {
+  return process.env.RUN_LOG_MIRROR_STDOUT === "true";
+}
+
+function deriveRunIdFromLogFile(logFile: string): string {
+  // Convention: <workRoot>/<runId>/run.log — see pipeline-engine.ts.
+  return path.basename(path.dirname(logFile));
+}
+
+function mirrorRunLogChunk(runId: string, content: string): void {
+  if (!content || !runId) return;
+  const sanitized = sanitizeForLogs(content);
+  const combined = (runLogMirrorBuffers.get(runId) ?? "") + sanitized;
+  const lines = combined.split("\n");
+  const tail = lines.pop() ?? "";
+  for (const line of lines) {
+    process.stdout.write(`[run:${runId}] ${line}\n`);
+  }
+  if (tail) {
+    runLogMirrorBuffers.set(runId, tail);
+  } else {
+    runLogMirrorBuffers.delete(runId);
+  }
+}
+
+/**
+ * Flush any buffered partial line for the given run. Call at end-of-run so
+ * trailing content without a final `\n` still reaches stdout.
+ */
+export function flushRunLogMirror(runId: string): void {
+  const tail = runLogMirrorBuffers.get(runId);
+  if (tail) {
+    process.stdout.write(`[run:${runId}] ${tail}\n`);
+    runLogMirrorBuffers.delete(runId);
+  }
+}
+
 export async function appendLog(logFile: string, content: string): Promise<void> {
   await writeFile(logFile, content, { flag: "a" });
+  if (shouldMirrorRunLog()) {
+    mirrorRunLogChunk(deriveRunIdFromLogFile(logFile), content);
+  }
 }
 
 export function sanitizeForLogs(input: string): string {
@@ -145,6 +194,36 @@ export function sleep(ms: number): Promise<void> {
 }
 
 // ── Shell execution functions ──
+
+const COMMAND_FAILURE_STDERR_TAIL_BYTES = 1500;
+
+function trimUtf8Tail(buffer: Buffer, maxBytes: number): Buffer {
+  if (buffer.length <= maxBytes) return buffer;
+  return buffer.subarray(buffer.length - maxBytes);
+}
+
+function decodeUtf8Tail(buffer: Buffer): string {
+  let start = 0;
+  while (start < buffer.length && (buffer[start] & 0b1100_0000) === 0b1000_0000) {
+    start++;
+  }
+  return buffer.subarray(start).toString("utf8");
+}
+
+function formatCommandFailure(code: number | null, command: string, stderr: string): string {
+  const base = `Command failed with exit code ${String(code)}: ${sanitizeForLogs(command)}`;
+  const sanitizedStderr = sanitizeForLogs(stderr).trim();
+  if (!sanitizedStderr) return base;
+  // Skip the byte-trim allocation when the sanitized stderr already fits — sandbox
+  // callers can pass arbitrarily large logs (a 50MB build log shouldn't allocate
+  // a 50MB Buffer just to keep 1500 bytes).
+  if (Buffer.byteLength(sanitizedStderr, "utf8") <= COMMAND_FAILURE_STDERR_TAIL_BYTES) {
+    return `${base}\nstderr: ${sanitizedStderr}`;
+  }
+  const tail = decodeUtf8Tail(trimUtf8Tail(Buffer.from(sanitizedStderr), COMMAND_FAILURE_STDERR_TAIL_BYTES)).trim();
+  if (!tail) return base;
+  return `${base}\nstderr: ${tail}`;
+}
 
 export interface ShellOptions {
   cwd?: string;
@@ -178,7 +257,7 @@ export async function runShell(
 
     if (result.code !== 0) {
       throw new Error(
-        `Command failed with exit code ${String(result.code)}: ${sanitizeForLogs(command)}`
+        formatCommandFailure(result.code, command, result.stderr)
       );
     }
     return;
@@ -187,6 +266,7 @@ export async function runShell(
   // Local spawn path (existing behavior)
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     const child = spawn("bash", ["-lc", command], {
       cwd: options.cwd,
       env: {
@@ -221,7 +301,10 @@ export async function runShell(
     });
 
     child.stderr.on("data", async (chunk) => {
-      await appendLog(options.logFile, chunk.toString());
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const text = buffer.toString();
+      stderrTail = trimUtf8Tail(Buffer.concat([stderrTail, buffer]), COMMAND_FAILURE_STDERR_TAIL_BYTES);
+      await appendLog(options.logFile, text);
     });
 
     child.on("exit", (code) => {
@@ -237,9 +320,7 @@ export async function runShell(
         return;
       }
       reject(
-        new Error(
-          `Command failed with exit code ${String(code)}: ${sanitizeForLogs(command)}`
-        )
+        new Error(formatCommandFailure(code, command, decodeUtf8Tail(stderrTail)))
       );
     });
 
@@ -284,7 +365,7 @@ export async function runShellWithProgress(
     });
 
     if (result.code !== 0) {
-      throw new Error(`Command failed with exit code ${String(result.code)}: ${sanitizeForLogs(command)}`);
+      throw new Error(formatCommandFailure(result.code, command, result.stderr));
     }
     return;
   }
@@ -292,6 +373,7 @@ export async function runShellWithProgress(
   // Local spawn path (existing behavior)
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     const child = spawn("bash", ["-lc", command], {
       cwd: options.cwd,
       env: process.env,
@@ -303,7 +385,9 @@ export async function runShellWithProgress(
     });
 
     child.stderr.on("data", async (chunk) => {
-      const text = chunk.toString();
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const text = buffer.toString();
+      stderrTail = trimUtf8Tail(Buffer.concat([stderrTail, buffer]), COMMAND_FAILURE_STDERR_TAIL_BYTES);
       await appendLog(options.logFile, text);
       options.onStderr?.(text);
     });
@@ -315,7 +399,7 @@ export async function runShellWithProgress(
         resolve();
         return;
       }
-      reject(new Error(`Command failed with exit code ${String(code)}: ${sanitizeForLogs(command)}`));
+      reject(new Error(formatCommandFailure(code, command, decodeUtf8Tail(stderrTail))));
     });
 
     child.on("error", (error) => {
@@ -335,10 +419,25 @@ export interface ShellCaptureOptions {
   sandboxId?: string;
 }
 
+/**
+ * Translate a signal-killed child into a shell-conventional exit code
+ * (128 + signo) so callers can distinguish "killed by SIGTERM/SIGKILL/
+ * SIGSEGV/timeout" from "process exited with code 1". Numbers come from
+ * `os.constants.signals` so we cover whatever this platform exposes
+ * without maintaining a hand-rolled map. If a signal is delivered but we
+ * can't resolve a number for it, fall back to a bare `128` rather than
+ * `1` — anything ≥128 is treated by callers as infra/non-test failure.
+ */
+function exitCodeForSignal(signal: NodeJS.Signals | null): number | null {
+  if (!signal) return null;
+  const num = (os.constants.signals as Record<string, number | undefined>)[signal];
+  return typeof num === "number" ? 128 + num : 128;
+}
+
 export async function runShellCapture(
   command: string,
   options: ShellCaptureOptions
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<{ code: number; stdout: string; stderr: string; signal: NodeJS.Signals | null }> {
   await appendLog(options.logFile, `\n$ ${sanitizeForLogs(command)}\n`);
 
   const effectiveSandbox = resolveSandbox(options.sandboxId);
@@ -356,11 +455,11 @@ export async function runShellCapture(
       onStderr: (chunk) => { appendLog(logFile, chunk).catch(() => {}); }
     });
 
-    return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+    return { code: result.code, stdout: result.stdout, stderr: result.stderr, signal: null };
   }
 
   // Local spawn path
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+  return new Promise<{ code: number; stdout: string; stderr: string; signal: NodeJS.Signals | null }>((resolve, reject) => {
     let settled = false;
     const bashFlags = options.login ? "-lc" : "-c";
     const child = spawn("bash", [bashFlags, command], {
@@ -402,11 +501,16 @@ export async function runShellCapture(
       await appendLog(options.logFile, text);
     });
 
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (settled) return;
       settled = true;
-      resolve({ code: code ?? 1, stdout, stderr });
+      // When the child is killed by a signal (incl. our own timeout SIGTERM),
+      // node delivers code=null and signal!=null. Translate to the standard
+      // shell convention (128 + signo) so callers can distinguish a real
+      // "exit 1" from a signal-kill rather than misclassifying timeouts.
+      const effectiveCode = code ?? exitCodeForSignal(signal) ?? 1;
+      resolve({ code: effectiveCode, stdout, stderr, signal });
     });
 
     child.on("error", (error) => {

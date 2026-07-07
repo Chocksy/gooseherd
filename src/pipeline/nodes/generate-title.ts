@@ -1,6 +1,7 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { summarizeTitle, type LLMCallerConfig } from "../../llm/caller.js";
+import { summarizeTitle } from "../../llm/caller.js";
+import { describeAgentProfileSelection, resolveLLMProfileSelection } from "../../agent-profile-resolver.js";
 import { appendLog } from "../shell.js";
 import { logInfo } from "../../logger.js";
 
@@ -18,8 +19,14 @@ export async function generateTitleNode(
   const run = deps.run;
   const logFile = deps.logFile;
 
-  // Skip if no LLM API key or task is already short
-  if (!config.openrouterApiKey) {
+  const llmSelection = resolveLLMProfileSelection(
+    config,
+    deps.agentProfileTarget,
+    "llm_text",
+    config.defaultLlmModel,
+    10_000,
+  );
+  if (!llmSelection) {
     await appendLog(logFile, "\n[generate_title] skipped (no OpenRouter API key)\n");
     return { outcome: "skipped" };
   }
@@ -31,14 +38,8 @@ export async function generateTitleNode(
   }
 
   try {
-    const llmConfig: LLMCallerConfig = {
-      apiKey: config.openrouterApiKey,
-      defaultModel: config.defaultLlmModel,
-      defaultTimeoutMs: 10_000,
-      providerPreferences: config.openrouterProviderPreferences
-    };
-
-    const result = await summarizeTitle(llmConfig, run.task);
+    await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(llmSelection) + "\n");
+    const result = await summarizeTitle(llmSelection.llmConfig, run.task, llmSelection.model);
     await appendLog(logFile, `[generate_title] "${result.title}" (${String(result.inputTokens + result.outputTokens)} tokens)\n`);
     logInfo("generate_title", { title: result.title });
 

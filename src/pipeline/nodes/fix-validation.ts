@@ -3,7 +3,8 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { runShell, appendLog } from "../shell.js";
-import { buildAgentCommand } from "../agent-command.js";
+import { buildAgentCommandWithSelection } from "../agent-command.js";
+import { describeAgentProfileSelection } from "../../agent-profile-resolver.js";
 import { parseErrors } from "../error-parser.js";
 
 /**
@@ -43,7 +44,15 @@ export async function fixValidationNode(
   await writeFile(fixPromptFile, fixPrompt, "utf8");
 
   // Re-run agent with fix prompt
-  const agentCommand = buildAgentCommand(config, run, repoDir, fixPromptFile, isFollowUp);
+  const { command: agentCommand, selection: agentProfileSelection } = buildAgentCommandWithSelection(
+    config,
+    run,
+    repoDir,
+    fixPromptFile,
+    isFollowUp,
+    deps.agentProfileTarget,
+  );
+  await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(agentProfileSelection) + "\n");
 
   await runShell(agentCommand, {
     cwd: path.resolve("."),

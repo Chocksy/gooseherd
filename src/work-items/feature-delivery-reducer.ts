@@ -5,7 +5,6 @@ import {
   nextFeatureDeliveryStateAfterProductReview,
   nextFeatureDeliveryStateAfterQaPreparation,
   nextFeatureDeliveryStateAfterQaReview,
-  nextFeatureDeliveryStateAfterReadyForMergeRecovery,
 } from "./feature-delivery-policy.js";
 import type { UpdateWorkItemStateInput, WorkItemRecord } from "./types.js";
 import type { FeatureDeliveryProgressCheckpointType } from "../runs/run-checkpoints.js";
@@ -66,6 +65,8 @@ export interface FeatureDeliveryReducerPolicy {
   skipProductReview?: boolean;
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
+  selfReviewEnabled?: boolean;
+  applyReviewFeedbackEnabled?: boolean;
 }
 
 export type FeatureDeliveryCommand =
@@ -180,7 +181,13 @@ function reduceSuccessfulCi(
   event: FeatureDeliveryCiCompletedEvent,
   policy: FeatureDeliveryReducerPolicy,
 ): FeatureDeliveryDecision {
-  if (workItem.state === "auto_review" && !hasFlag(workItem, "self_review_done")) {
+  const selfReviewEnabled = policy.selfReviewEnabled ?? false;
+
+  if (
+    selfReviewEnabled
+    && workItem.state === "auto_review"
+    && !hasFlag(workItem, "self_review_done")
+  ) {
     const hadGreenCi = hasFlag(workItem, "ci_green");
     return {
       patches: [{
@@ -200,6 +207,9 @@ function reduceSuccessfulCi(
       selfReviewDone: true,
       policy,
     });
+    const firstPatchFlagsToAdd = !selfReviewEnabled && !hasFlag(workItem, "self_review_done")
+      ? ["ci_green", "self_review_done"]
+      : ["ci_green"];
 
     if (path.length === 0) {
       return {
@@ -209,14 +219,14 @@ function reduceSuccessfulCi(
             fallback: workItem.substate,
             defaultValue: "waiting_ci",
           }),
-          flagsToAdd: ["ci_green"],
+          flagsToAdd: firstPatchFlagsToAdd,
         }],
         commands: [],
       };
     }
 
     return decisionForStatePath(workItem.state, path, {
-      firstPatchFlagsToAdd: ["ci_green"],
+      firstPatchFlagsToAdd,
       fallbackSubstate: workItem.substate,
     });
   }
@@ -276,43 +286,32 @@ function reduceFailedCi(
   workItem: WorkItemRecord,
   event: FeatureDeliveryCiCompletedEvent,
 ): FeatureDeliveryDecision {
-  if (workItem.state === "auto_review") {
+  if (workItem.state === "backlog" || workItem.state === "in_progress") {
     return {
       patches: [{
         state: "auto_review",
-        substate: event.hasActiveSystemRun ? workItem.substate : "ci_failed",
+        substate: "ci_failed",
         flagsToRemove: ["ci_green"],
       }],
-      commands: event.automationEnabled && !event.hasActiveSystemRun
-        ? [{ type: "reconcile_work_item", reason: "github.ci_failed" }]
-        : [],
+      commands: [],
     };
   }
 
   if (!isManagedFeatureDeliveryState(workItem.state)) {
-    if (workItem.state === "backlog" || workItem.state === "in_progress") {
-      return {
-        patches: [{
-          state: "auto_review",
-          substate: "waiting_ci",
-          flagsToRemove: ["ci_green"],
-        }],
-        commands: [],
-      };
-    }
-
     return emptyDecision();
   }
 
+  const preserveSubstate = workItem.state === "auto_review" && event.hasActiveSystemRun;
+
   return {
     patches: [{
-      state: workItem.state === "ready_for_merge"
-        ? nextFeatureDeliveryStateAfterReadyForMergeRecovery("ci_failed_after_rebase")
-        : "auto_review",
-      substate: workItem.state === "ready_for_merge" ? "revalidating_after_rebase" : "waiting_ci",
+      state: "auto_review",
+      substate: preserveSubstate ? workItem.substate : "ci_failed",
       flagsToRemove: ["ci_green"],
     }],
-    commands: [],
+    commands: event.automationEnabled && !event.hasActiveSystemRun
+      ? [{ type: "reconcile_work_item", reason: "github.ci_failed" }]
+      : [],
   };
 }
 
@@ -321,10 +320,27 @@ function reduceReviewSubmitted(
   event: FeatureDeliveryReviewSubmittedEvent,
   policy: FeatureDeliveryReducerPolicy,
 ): FeatureDeliveryDecision {
+  const applyReviewFeedbackEnabled = policy.applyReviewFeedbackEnabled ?? false;
+
+  if (workItem.state === "qa_review") {
+    if (event.reviewState !== "changes_requested" || applyReviewFeedbackEnabled) {
+      return emptyDecision();
+    }
+
+    return {
+      patches: [{
+        state: "auto_review",
+        substate: "waiting_ci",
+      }],
+      commands: [],
+    };
+  }
+
+  // qa_review approvals can only advance via the "qa passed" label — not via a PR review
+  // approval — until reviewer roles are tracked. See reduceReviewLabelsSynced.
   if (
     workItem.state !== "engineering_review"
     && workItem.state !== "product_review"
-    && workItem.state !== "qa_review"
   ) {
     return emptyDecision();
   }
@@ -337,27 +353,23 @@ function reduceReviewSubmitted(
     if (event.reviewState === "approved") {
       flagsToAdd = ["engineering_review_done"];
     }
-  } else if (workItem.state === "product_review") {
+  } else {
     nextState = nextFeatureDeliveryStateAfterProductReview(event.reviewState);
     if (event.reviewState === "approved") {
       flagsToAdd = ["product_review_done"];
     }
-  } else {
-    nextState = nextFeatureDeliveryStateAfterQaReview(event.reviewState);
-    if (event.reviewState === "approved") {
-      flagsToAdd = ["qa_review_done"];
-    }
   }
 
-  const qaReviewDone = event.reviewState === "approved"
-    && (hasFlag(workItem, "qa_review_done") || flagsToAdd.includes("qa_review_done"));
   const finalState = isManagedFeatureDeliveryState(nextState)
-    ? advanceFeatureDeliveryStateAfterQaEntry(nextState, { qaReviewDone })
+    ? advanceFeatureDeliveryStateAfterQaEntry(nextState, {
+        qaReviewDone: hasFlag(workItem, "qa_review_done"),
+      })
     : nextState;
+  const changesRequestedSubstate = applyReviewFeedbackEnabled ? "applying_review_feedback" : "waiting_ci";
   const patches = [patchForState(nextState, {
     fallbackSubstate: workItem.substate,
     defaultSubstate: event.reviewState === "approved" ? "waiting_ci" : undefined,
-    explicitSubstate: event.reviewState === "approved" ? undefined : "applying_review_feedback",
+    explicitSubstate: event.reviewState === "approved" ? undefined : changesRequestedSubstate,
     flagsToAdd,
   })];
 
@@ -371,7 +383,7 @@ function reduceReviewSubmitted(
   return {
     patches,
     commands: [
-      ...(event.reviewState === "changes_requested" && event.automationEnabled
+      ...(event.reviewState === "changes_requested" && event.automationEnabled && applyReviewFeedbackEnabled
         ? [{ type: "reconcile_work_item", reason: "github.review_changes_requested" } as const]
         : []),
       ...commandsForEnteredStates(workItem.state, patches),
@@ -441,7 +453,7 @@ function reducePullRequestSynchronized(
     return emptyDecision();
   }
 
-  const flagsToRemove = new Set<string>(["ci_green"]);
+  const flagsToRemove = new Set<string>(["ci_green", "ci_rerun_exhausted", "ci_triage_fix_decided"]);
   if (workItem.state === "ready_for_merge" && policy.resetEngineeringReviewOnNewCommits) {
     flagsToRemove.add("engineering_review_done");
     flagsToRemove.add("product_review_done");

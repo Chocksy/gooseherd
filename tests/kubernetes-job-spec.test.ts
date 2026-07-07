@@ -43,7 +43,7 @@ test("buildRunJobSpec uses one Job per run with emptyDir workspace and runner en
   assert.equal(spec.kind, "Job");
   assert.equal(spec.metadata.name, defaultJobName(runId));
   assert.equal(spec.spec.backoffLimit, 0);
-  assert.equal(spec.spec.template.spec.volumes[0]?.emptyDir != null, true);
+  assert.deepEqual(spec.spec.template.spec.volumes[0], { name: "work", emptyDir: { sizeLimit: "1.5Gi" } });
   assert.equal(spec.spec.template.spec.containers[0]?.image, "gooseherd/k8s-runner:dev");
   assert.deepEqual(spec.spec.template.spec.containers[0]?.envFrom, [
     { secretRef: { name: "gooseherd-env" } },
@@ -113,4 +113,78 @@ test("buildRunJobSpec uses one Job per run with emptyDir workspace and runner en
       value: "false",
     },
   );
+});
+
+test("buildRunJobSpec applies cpu/memory override as both request and limit (Guaranteed QoS)", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    resources: { cpu: "2", memory: "3Gi" },
+  });
+
+  assert.deepEqual(spec.spec.template.spec.containers[0]?.resources, {
+    requests: { cpu: "2", memory: "3Gi" },
+    limits: { cpu: "2", memory: "3Gi" },
+  });
+});
+
+test("buildRunJobSpec injects NODE_OPTIONS=--max-old-space-size when nodeHeapMb is set", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    nodeHeapMb: "1536",
+  });
+
+  const env = spec.spec.template.spec.containers[0]?.env ?? [];
+  assert.deepEqual(
+    env.find((entry) => entry.name === "NODE_OPTIONS"),
+    { name: "NODE_OPTIONS", value: "--max-old-space-size=1536" },
+  );
+});
+
+test("buildRunJobSpec omits NODE_OPTIONS when nodeHeapMb is not set", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+  });
+
+  const env = spec.spec.template.spec.containers[0]?.env ?? [];
+  assert.equal(env.some((entry) => entry.name === "NODE_OPTIONS"), false);
+});
+
+test("buildRunJobSpec falls back to sandbox defaults per dimension when only one is overridden", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    resources: { memory: "6Gi" },
+  });
+
+  assert.deepEqual(spec.spec.template.spec.containers[0]?.resources, {
+    requests: { cpu: "250m", memory: "6Gi" },
+    limits: { cpu: "1", memory: "6Gi" },
+  });
 });

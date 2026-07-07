@@ -191,10 +191,12 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
   const config = makeConfig({ workRoot: workDir, dryRun: true });
   const engine = new PipelineEngine(config);
   let observedPrefetchContext: RunRecord["prefetchContext"] | undefined;
+  let observedPipelineId: string | undefined;
 
   (engine as unknown as {
     executePipeline: (
       pipeline: unknown,
+      pipelineId: string,
       ctx: ContextBag,
       deps: unknown,
       startIndex: number,
@@ -204,7 +206,8 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
       abortSignal?: AbortSignal,
       sandboxRef?: { handle?: unknown }
     ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
-  }).executePipeline = async (_pipeline, ctx) => {
+  }).executePipeline = async (_pipeline, _pipelineId, ctx) => {
+    observedPipelineId = _pipelineId;
     observedPrefetchContext = ctx.get<RunRecord["prefetchContext"]>("prefetchContext");
     return {
       outcome: "success",
@@ -213,9 +216,10 @@ test("PipelineEngine: seeds ContextBag with run prefetch context", async (t) => 
     };
   };
 
-  await engine.execute(run, async () => undefined, pipelinePath);
+  await engine.execute(run, async () => undefined, pipelinePath, "stored-custom-pipeline");
 
   assert.deepEqual(observedPrefetchContext, prefetchContext);
+  assert.equal(observedPipelineId, "stored-custom-pipeline");
 });
 
 test("PipelineEngine: unified pipeline is the single pipeline file", () => {
@@ -249,6 +253,7 @@ test("PipelineEngine: filters internal-generated files from execution result cha
   (engine as unknown as {
     executePipeline: (
       pipeline: unknown,
+      pipelineId: string,
       ctx: ContextBag,
       deps: unknown,
       startIndex: number,
@@ -258,7 +263,7 @@ test("PipelineEngine: filters internal-generated files from execution result cha
       abortSignal?: AbortSignal,
       sandboxRef?: { handle?: unknown }
     ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
-  }).executePipeline = async (_pipeline, ctx) => {
+  }).executePipeline = async (_pipeline, _pipelineId, ctx) => {
     ctx.set("changedFiles", ["AGENTS.md", "src/index.ts"]);
     ctx.set("internalArtifacts", ["AGENTS.md"]);
     return {
@@ -271,6 +276,81 @@ test("PipelineEngine: filters internal-generated files from execution result cha
   const result = await engine.execute(run, async () => undefined, pipelinePath);
   assert.deepEqual(result.changedFiles, ["src/index.ts"]);
   assert.deepEqual(result.internalArtifacts, ["AGENTS.md"]);
+});
+
+test("PipelineEngine: surfaces ContextBag.answer on ExecutionResult.answer (investigation pipeline)", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-answer-"));
+  const workDir = path.join(tmpDir, "work");
+  await mkdir(workDir, { recursive: true });
+  const pipelinePath = path.join(tmpDir, "investigation.yml");
+  await writeFile(
+    pipelinePath,
+    [
+      "version: 1",
+      "name: investigation",
+      "nodes:",
+      "  - id: classify_task",
+      "    type: deterministic",
+      "    action: classify_task"
+    ].join("\n"),
+    "utf8"
+  );
+  t.after(async () => { await rm(tmpDir, { recursive: true, force: true }); });
+
+  const run = makeRun({ id: "test-run-answer" });
+  const config = makeConfig({ workRoot: workDir, dryRun: true });
+  const engine = new PipelineEngine(config);
+
+  (engine as unknown as {
+    executePipeline: (
+      pipeline: unknown,
+      pipelineId: string,
+      ctx: ContextBag,
+    ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
+  }).executePipeline = async (_pipeline, _pipelineId, ctx) => {
+    ctx.set("answer", "# Answer\n\nDWS dispatcher dropped org 633609 due to a TZ off-by-one — see app/jobs/work_summary_jobs/process_organization.rb:42.\n");
+    return { outcome: "success", steps: [], warnings: [] };
+  };
+
+  const result = await engine.execute(run, async () => undefined, pipelinePath);
+
+  assert.ok(result.answer, "ExecutionResult.answer should be populated when ctx.answer is set");
+  assert.match(result.answer, /DWS dispatcher dropped org 633609/);
+});
+
+test("PipelineEngine: ExecutionResult.answer is undefined when ContextBag.answer is missing", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pe-no-answer-"));
+  const workDir = path.join(tmpDir, "work");
+  await mkdir(workDir, { recursive: true });
+  const pipelinePath = path.join(tmpDir, "pipeline.yml");
+  await writeFile(
+    pipelinePath,
+    [
+      "version: 1",
+      "name: test-pipeline",
+      "nodes:",
+      "  - id: classify_task",
+      "    type: deterministic",
+      "    action: classify_task"
+    ].join("\n"),
+    "utf8"
+  );
+  t.after(async () => { await rm(tmpDir, { recursive: true, force: true }); });
+
+  const run = makeRun({ id: "test-run-no-answer" });
+  const config = makeConfig({ workRoot: workDir, dryRun: true });
+  const engine = new PipelineEngine(config);
+
+  (engine as unknown as {
+    executePipeline: (
+      pipeline: unknown,
+      ctx: ContextBag,
+    ) => Promise<NodeResult & { steps: never[]; warnings: never[] }>;
+  }).executePipeline = async () => ({ outcome: "success", steps: [], warnings: [] });
+
+  const result = await engine.execute(run, async () => undefined, pipelinePath);
+
+  assert.equal(result.answer, undefined, "ExecutionResult.answer should be undefined when ctx.answer is unset");
 });
 
 test("PipelineEngine: context conflict stops before commit and push", async (t) => {
@@ -488,6 +568,7 @@ test("PipelineEngine: auto-enables decide_recovery when browser_verify is enable
     pipelinePath,
     undefined,
     undefined,
+    undefined,
     ["browser_verify"]
   );
 
@@ -538,6 +619,7 @@ test("PipelineEngine: bypasses browser_verify fix loop for non-code failure clas
   };
 
   const loopResult = await (engine as any).handleLoopFailure(
+    "test-pipeline",
     failedNode,
     failedResult,
     ctx,

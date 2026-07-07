@@ -18,6 +18,25 @@ export interface KubernetesRunnerJobInput {
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
   jobName?: string;
+  /** Additional plain-value env vars merged into the runner container. */
+  extraEnv?: Record<string, string>;
+  /**
+   * Per-run CPU/memory override. When set, the value is applied as both
+   * request and limit (Guaranteed QoS) so the runner pod gets reserved
+   * capacity and is the last to be evicted under node pressure. Either
+   * dimension may be omitted to fall back to the sandbox default.
+   */
+  resources?: {
+    cpu?: string;
+    memory?: string;
+  };
+  /**
+   * V8 old-space heap cap in MB for the runner Node.js process. When set,
+   * `NODE_OPTIONS=--max-old-space-size=<value>` is added to the runner
+   * pod's env so Node leaves headroom for sibling processes (e.g. Ruby
+   * test runners) sharing the container memory budget.
+   */
+  nodeHeapMb?: string;
 }
 
 export interface SecretManifest {
@@ -51,7 +70,7 @@ export interface JobManifest {
       };
       spec: {
         restartPolicy: "Never";
-        volumes: Array<{ name: "work"; emptyDir: Record<string, never> }>;
+        volumes: Array<{ name: "work"; emptyDir: { sizeLimit: string } }>;
         containers: Array<{
           name: "runner";
           image: string;
@@ -72,12 +91,12 @@ export interface JobManifest {
           };
           resources: {
             requests: {
-              cpu: "250m";
-              memory: "512Mi";
+              cpu: string;
+              memory: string;
             };
             limits: {
-              cpu: "1";
-              memory: "1Gi";
+              cpu: string;
+              memory: string;
             };
           };
           env: Array<
@@ -131,12 +150,30 @@ export function buildRunTokenSecretManifest(input: KubernetesRunnerSecretInput):
   };
 }
 
+const DEFAULT_CPU_REQUEST = "250m";
+const DEFAULT_CPU_LIMIT = "1";
+const DEFAULT_MEMORY_REQUEST = "512Mi";
+const DEFAULT_MEMORY_LIMIT = "1Gi";
+
 export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
   const jobName = input.jobName ?? defaultJobName(input.runId);
   const envFrom = [
     input.runnerEnvSecretName ? { secretRef: { name: input.runnerEnvSecretName } } : undefined,
     input.runnerEnvConfigMapName ? { configMapRef: { name: input.runnerEnvConfigMapName } } : undefined,
   ].filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
+
+  const cpuOverride = input.resources?.cpu;
+  const memoryOverride = input.resources?.memory;
+  const resources = {
+    requests: {
+      cpu: cpuOverride ?? DEFAULT_CPU_REQUEST,
+      memory: memoryOverride ?? DEFAULT_MEMORY_REQUEST,
+    },
+    limits: {
+      cpu: cpuOverride ?? DEFAULT_CPU_LIMIT,
+      memory: memoryOverride ?? DEFAULT_MEMORY_LIMIT,
+    },
+  };
 
   return {
     apiVersion: "batch/v1",
@@ -161,7 +198,7 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
         },
         spec: {
           restartPolicy: "Never",
-          volumes: [{ name: "work", emptyDir: {} }],
+          volumes: [{ name: "work", emptyDir: { sizeLimit: "1.5Gi" } }],
           containers: [
             {
               name: "runner",
@@ -178,16 +215,7 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
                 runAsNonRoot: true,
                 runAsUser: 1000,
               },
-              resources: {
-                requests: {
-                  cpu: "250m",
-                  memory: "512Mi",
-                },
-                limits: {
-                  cpu: "1",
-                  memory: "1Gi",
-                },
-              },
+              resources,
               env: [
                 { name: "RUN_ID", value: input.runId },
                 {
@@ -208,6 +236,10 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
                 { name: "OBSERVER_ENABLED", value: "false" },
                 { name: "SUPERVISOR_ENABLED", value: "false" },
                 { name: "CI_WAIT_ENABLED", value: "false" },
+                ...(input.nodeHeapMb
+                  ? [{ name: "NODE_OPTIONS", value: `--max-old-space-size=${input.nodeHeapMb}` }]
+                  : []),
+                ...Object.entries(input.extraEnv ?? {}).map(([name, value]) => ({ name, value })),
               ],
             },
           ],

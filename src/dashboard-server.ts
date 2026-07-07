@@ -128,6 +128,7 @@ export function startDashboardServer(
         githubRepositoriesCache,
         githubService,
         modelPriceStore,
+        pipelineStore,
         requestUrl,
         setGitHubRepositoriesCache: (cache) => {
           githubRepositoriesCache = cache;

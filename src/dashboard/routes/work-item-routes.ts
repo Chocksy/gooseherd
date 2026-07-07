@@ -30,7 +30,27 @@ export async function handleWorkItemRoutes(
     }
 
     const workflow = requestUrl.searchParams.get("workflow") ?? undefined;
-    const workItems = await workItemsSource.listWorkItems(workflow || undefined);
+    const repoFilter = requestUrl.searchParams.get("repo") ?? undefined;
+    let workItems = await workItemsSource.listWorkItems(workflow || undefined);
+    if (repoFilter && repoFilter !== "all") {
+      workItems = workItems.filter((workItem) => workItem.repo === repoFilter);
+    }
+    sendJson(res, 200, { workItems });
+    return true;
+  }
+
+  const parts = pathname.split("/").filter(Boolean);
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "repo" && parts[2] && parts[3] && parts[4] === "work-items") {
+    if (!workItemsSource) {
+      sendJson(res, 501, { error: "Work item APIs are unavailable" });
+      return true;
+    }
+
+    const repoSlug = `${decodeURIComponent(parts[2])}/${decodeURIComponent(parts[3])}`;
+    const workflow = requestUrl.searchParams.get("workflow") ?? undefined;
+    let workItems = await workItemsSource.listWorkItems(workflow || undefined);
+    workItems = workItems.filter((workItem) => workItem.repo === repoSlug);
     sendJson(res, 200, { workItems });
     return true;
   }
@@ -94,8 +114,6 @@ export async function handleWorkItemRoutes(
     }
     return true;
   }
-
-  const parts = pathname.split("/").filter(Boolean);
 
   if (parts[0] === "api" && parts[1] === "work-items" && parts[2]) {
     if (!workItemsSource) {

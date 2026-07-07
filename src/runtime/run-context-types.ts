@@ -1,6 +1,7 @@
 export interface RunPrefetchMeta {
   fetchedAt: string;
   sources: Array<"github_pr" | "github_ci" | "jira">;
+  warnings?: string[];
 }
 
 export interface RunPrefetchContext {

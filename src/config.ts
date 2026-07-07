@@ -1,4 +1,5 @@
 import type { SandboxRuntime } from "./runtime/runtime-mode.js";
+import type { AgentProfilePolicySnapshot, AgentProfileSnapshot } from "./agent-profile-resolver.js";
 import { loadCoreConfig } from "./config/core.js";
 import { loadDashboardConfig } from "./config/dashboard.js";
 import { loadFeatureConfig, loadFeatureFlags } from "./config/features.js";
@@ -164,9 +165,12 @@ export interface AppConfig {
   ciMaxWaitSeconds: number;
   ciCheckFilter: string[];
   ciMaxFixRounds: number;
+  ciFixAgentBailEnabled: boolean;
   featureDeliveryResetEngineeringReviewOnNewCommits: boolean;
   featureDeliveryResetQaReviewOnNewCommits: boolean;
   featureDeliverySkipProductReview: boolean;
+  featureDeliverySelfReviewEnabled: boolean;
+  featureDeliveryApplyReviewFeedbackEnabled: boolean;
   workItemGithubAdoptionLabels: string[];
   autoReviewBranchSyncEnabled: boolean;
   autoReviewBranchSyncMaxBehindCommits: number;
@@ -205,6 +209,10 @@ export interface AppConfig {
     commandTemplate: string;
     source: "profile" | "env";
   };
+  /** Snapshot used by per-workflow/per-node agent-profile routing. */
+  agentProfileCatalog?: AgentProfileSnapshot[];
+  /** Policy snapshot used by resolver. Exactly one policy per targetKey. */
+  agentProfilePolicies?: AgentProfilePolicySnapshot[];
 }
 
 export function resolveGitHubAuthMode(config: AppConfig): "app" | "pat" | "none" {

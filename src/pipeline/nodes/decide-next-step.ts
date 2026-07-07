@@ -12,6 +12,7 @@ import type { ContextBag } from "../context-bag.js";
 import { callLLMForJSON, type LLMCallerConfig } from "../../llm/caller.js";
 import { appendLog } from "../shell.js";
 import { logInfo } from "../../logger.js";
+import { describeAgentProfileSelection, resolveLLMProfileSelection } from "../../agent-profile-resolver.js";
 
 const DECISION_SYSTEM_PROMPT = `You are a pipeline orchestrator deciding what to do next.
 Given the current pipeline state, decide which nodes to skip and optionally jump to a different node.
@@ -83,18 +84,26 @@ export async function decideNextStepNode(
     "Decide which nodes (if any) to skip based on the current state."
   ].join("\n");
 
-  // Resolve API key
-  const apiKey = deps.config.openrouterApiKey;
+  const llmSelection = resolveLLMProfileSelection(
+    deps.config,
+    deps.agentProfileTarget,
+    "llm_json",
+    model,
+    15_000,
+  );
 
-  if (!apiKey) {
+  if (!llmSelection) {
     await appendLog(logFile, "[decide] OPENROUTER_API_KEY missing, skipping decision\n");
     return { outcome: "success", outputs: {} };
   }
 
-  const llmConfig: LLMCallerConfig = { apiKey, defaultModel: model, defaultTimeoutMs: 15_000, providerPreferences: deps.config.openrouterProviderPreferences };
+  await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(llmSelection) + "\n");
+
+  const primaryModel = llmSelection.profile ? llmSelection.model : model;
+  const llmConfig: LLMCallerConfig = llmSelection.llmConfig;
 
   try {
-    const { parsed, raw } = await requestDecision(llmConfig, userMessage, model);
+    const { parsed, raw } = await requestDecision(llmConfig, userMessage, primaryModel);
 
     const skipNodes = Array.isArray(parsed.skipNodes)
       ? parsed.skipNodes.filter(s => typeof s === "string")
@@ -117,9 +126,9 @@ export async function decideNextStepNode(
     return { outcome: "success", outputs };
   } catch (err) {
     const firstError = err instanceof Error ? err.message : "unknown";
-    if (fallbackModel && fallbackModel !== model) {
+    if (fallbackModel && fallbackModel !== primaryModel) {
       try {
-        await appendLog(logFile, `[decide] primary model failed (${model}): ${firstError}; retrying with fallback ${fallbackModel}\n`);
+        await appendLog(logFile, `[decide] primary model failed (${primaryModel}): ${firstError}; retrying with fallback ${fallbackModel}\n`);
         const { parsed, raw } = await requestDecision(llmConfig, userMessage, fallbackModel);
 
         const skipNodes = Array.isArray(parsed.skipNodes)

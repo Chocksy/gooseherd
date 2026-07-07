@@ -22,6 +22,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunWaitTimeoutMs,
 } from "./runtime/kubernetes-env.js";
 
 function parseArgs(args: string[]): { repoSlug: string; baseBranch?: string; task: string } {
@@ -118,6 +119,7 @@ async function main(): Promise<void> {
         runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
         namespace: resolveKubernetesNamespace(),
+        waitTimeoutMs: resolveKubernetesRunWaitTimeoutMs(),
       })
     : undefined;
   const runtimeRegistry: RuntimeRegistry = {

@@ -193,6 +193,16 @@ test("buildCIFixPrompt: includes current run id when provided", () => {
   assert.match(prompt, /Current Gooseherd run id: `445ad8a6-33c3-45c6-badf-429ec98c4a51`/);
 });
 
+test("buildCIFixPrompt: explains how to handle history-level failures (commitlint, DCO)", () => {
+  const prompt = buildCIFixPrompt([], "", []);
+  assert.match(prompt, /History-level failures/i);
+  assert.match(prompt, /commitlint/i);
+  assert.match(prompt, /git commit --amend/);
+  assert.match(prompt, /git rebase -i/);
+  assert.match(prompt, /force-with-lease/);
+  assert.match(prompt, /HEAD movement/i);
+});
+
 // ── shouldAbortFixLoop ──
 
 test("shouldAbortFixLoop: more failures → abort", () => {

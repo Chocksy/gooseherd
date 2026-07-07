@@ -11,6 +11,7 @@ import { sleep } from "../utils/sleep.js";
 import { isRecord } from "../utils/type-guards.js";
 import type { RunPrefetchContext } from "../runtime/run-context-types.js";
 import { deriveRunIntentFromLegacy, isRunIntent } from "../runs/run-intent.js";
+import { logInfo } from "../logger.js";
 
 export type RunnerPipelineExecutor = (
   run: RunRecord,
@@ -232,8 +233,15 @@ export async function runPipelineRunner(
   client: RunnerControlPlaneClient,
   executePipeline: RunnerPipelineExecutor,
 ): Promise<void> {
+  logInfo("Runner: fetching payload from control plane", { runId: process.env.RUN_ID ?? "unknown" });
   const payload = await client.getPayload({ maxAttempts: PAYLOAD_FETCH_MAX_ATTEMPTS });
   const run = deriveRunRecordFromPayload(payload);
+  logInfo("Runner: payload fetched, run record derived", {
+    runId: run.id,
+    runtime: payload.runtime,
+    repoSlug: run.repoSlug,
+    retriedFromRunId: run.retriedFromRunId ?? "none",
+  });
   let sequence = 0;
 
   const emit: RunnerEventEmitter = async (eventType, eventPayload) => {

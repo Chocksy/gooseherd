@@ -7,14 +7,16 @@ export interface ClassifiedFailure extends ClassifiedError {
 
 /** Maps error categories to retry decisions. */
 const RETRY_MAP: Record<string, { retryable: boolean; retryStrategy: ClassifiedFailure["retryStrategy"] }> = {
-  clone:       { retryable: true,  retryStrategy: "full" },
-  timeout:     { retryable: false, retryStrategy: "none" },
-  no_changes:  { retryable: false, retryStrategy: "none" },
-  validation:  { retryable: false, retryStrategy: "none" },
-  agent_crash: { retryable: true,  retryStrategy: "full" },
-  push:        { retryable: true,  retryStrategy: "full" },
-  pr:          { retryable: true,  retryStrategy: "full" },
-  unknown:     { retryable: false, retryStrategy: "none" }
+  clone:                   { retryable: true,  retryStrategy: "full" },
+  timeout:                 { retryable: false, retryStrategy: "none" },
+  kubernetes_wait_timeout: { retryable: false, retryStrategy: "none" },
+  no_changes:              { retryable: false, retryStrategy: "none" },
+  validation:              { retryable: false, retryStrategy: "none" },
+  agent_crash:             { retryable: true,  retryStrategy: "full" },
+  push:                    { retryable: true,  retryStrategy: "full" },
+  pr:                      { retryable: true,  retryStrategy: "full" },
+  prefetch:                { retryable: false, retryStrategy: "none" },
+  unknown:                 { retryable: false, retryStrategy: "none" }
 };
 
 export function classifyFailureWithRetryability(message: string): ClassifiedFailure {

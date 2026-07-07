@@ -12,7 +12,8 @@ export type RunStatus =
   | "cancel_requested"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "conversation";
 
 export type RunPhase =
   | "queued"
@@ -26,7 +27,8 @@ export type RunPhase =
   | "cancel_requested"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "conversation";
 
 export interface TokenUsage {
   qualityGateInputTokens: number;
@@ -117,6 +119,13 @@ export interface RunRecord {
   autoReviewSourceSubstate?: string;
   intent?: RunIntent;
   intentKind?: RunIntentKind;
+  /**
+   * Original run that this run was retried from (set in-memory by RunManager
+   * for both user- and supervisor-triggered retries). Not persisted in the DB
+   * — flows through processRun → runtime backend so retry logs can be
+   * surfaced (e.g. RUN_LOG_MIRROR_STDOUT in Kubernetes).
+   */
+  retriedFromRunId?: string;
 }
 
 export interface NewRunInput {
@@ -159,4 +168,6 @@ export interface ExecutionResult {
   prNumber?: number;
   tokenUsage?: TokenUsage;
   title?: string;
+  /** Markdown answer produced by the investigation pipeline (read-only research). */
+  answer?: string;
 }

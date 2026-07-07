@@ -21,6 +21,7 @@ import {
   primaryKey,
   customType,
   foreignKey,
+  smallint,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { RunPrefetchContext } from "../runtime/run-context-types.js";
@@ -706,6 +707,78 @@ export const agentProfiles = pgTable(
   (t) => [
     index("agent_profiles_active_idx").on(t.isActive),
     index("agent_profiles_runtime_idx").on(t.runtime),
+  ]
+);
+
+
+export const agentProfilePolicies = pgTable(
+  "agent_profile_policies",
+  {
+    id: uuid("id").primaryKey(),
+    scope: text("scope").notNull(),
+    pipelineId: text("pipeline_id"),
+    intentKind: text("intent_kind"),
+    nodeId: text("node_id"),
+    action: text("action"),
+    purpose: text("purpose"),
+    targetKey: text("target_key").notNull(),
+    mode: text("mode").notNull().default("single"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("agent_profile_policies_target_key_idx").on(t.targetKey),
+    index("agent_profile_policies_scope_idx").on(t.scope),
+    index("agent_profile_policies_enabled_idx").on(t.enabled),
+  ]
+);
+
+export const agentProfilePolicyMembers = pgTable(
+  "agent_profile_policy_members",
+  {
+    id: uuid("id").primaryKey(),
+    policyId: uuid("policy_id").notNull(),
+    profileId: uuid("profile_id").notNull(),
+    role: text("role"),
+    ordinal: integer("ordinal").notNull().default(0),
+    weight: integer("weight"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.policyId],
+      foreignColumns: [agentProfilePolicies.id],
+      name: "agent_profile_policy_members_policy_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.profileId],
+      foreignColumns: [agentProfiles.id],
+      name: "agent_profile_policy_members_profile_id_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("agent_profile_policy_members_policy_profile_idx").on(t.policyId, t.profileId, t.role),
+    index("agent_profile_policy_members_policy_idx").on(t.policyId),
+    index("agent_profile_policy_members_profile_idx").on(t.profileId),
+  ]
+);
+
+// ── runner_db_slots ──
+
+export const runnerDbSlots = pgTable(
+  "runner_db_slots",
+  {
+    id: smallint("id").primaryKey(),
+    status: text("status").notNull().default("free"),
+    runId: uuid("run_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("runner_db_slots_status_idx").on(t.status),
+    index("runner_db_slots_claimed_at_idx")
+      .on(t.claimedAt)
+      .where(sql`claimed_at IS NOT NULL`),
   ]
 );
 

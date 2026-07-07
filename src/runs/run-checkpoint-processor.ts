@@ -2,7 +2,11 @@ import { RunStore } from "../store.js";
 import type { Database } from "../db/index.js";
 import { WorkItemOrchestrator, type WorkItemOrchestratorDeps } from "../work-items/orchestrator.js";
 import { isFeatureDeliveryAutoReviewOrRepairCiRun } from "./run-intent.js";
-import { isFeatureDeliveryProgressCheckpointType, type RunCheckpointRecord } from "./run-checkpoints.js";
+import {
+  isCiTriageCheckpointType,
+  isFeatureDeliveryProgressCheckpointType,
+  type RunCheckpointRecord,
+} from "./run-checkpoints.js";
 import { RunCheckpointStore } from "./run-checkpoint-store.js";
 import { logError } from "../logger.js";
 
@@ -57,6 +61,11 @@ export class RunCheckpointProcessor {
   private async processUnchecked(checkpoint: RunCheckpointRecord): Promise<void> {
     const run = await this.runs.getRun(checkpoint.runId);
     if (!run) {
+      return;
+    }
+
+    if (isCiTriageCheckpointType(checkpoint.checkpointType)) {
+      await this.workItemOrchestrator.handleCiTriageCheckpoint(run.id, checkpoint);
       return;
     }
 

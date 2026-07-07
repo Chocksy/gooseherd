@@ -3,7 +3,6 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { runShell, runShellCapture, runShellWithProgress, shellEscape, appendLog, mapToContainerPath } from "../shell.js";
-import { buildAuthenticatedGitUrl } from "../../github.js";
 import { loadRepoConfig, applyRepoConfig } from "../repo-config.js";
 import { hasReusableBranch, isFollowUpRun } from "../branch-reuse.js";
 
@@ -38,9 +37,8 @@ export async function cloneNode(
   ctx.set("repoDir", repoDir);
   ctx.set("promptFile", promptFile);
 
-  const token = await deps.githubService?.getToken();
-  const repoUrl = token
-    ? buildAuthenticatedGitUrl(run.repoSlug, token)
+  const repoUrl = deps.githubService
+    ? await deps.githubService.getCloneUrl(run.repoSlug)
     : `https://github.com/${run.repoSlug}.git`;
 
   await deps.onPhase("cloning");
@@ -76,15 +74,22 @@ export async function cloneNode(
   if (reusesExistingBranch && run.parentBranchName) {
     const reuseReason = isFollowUp ? "follow-up run" : "branch reuse run";
     await appendLog(logFile, `\n[info] ${reuseReason}: checking out existing branch '${run.parentBranchName}'\n`);
+    const parentRefspec = `refs/heads/${run.parentBranchName}:refs/remotes/origin/${run.parentBranchName}`;
     const fetchResult = await runShellCapture(
-      `git fetch origin ${shellEscape(run.parentBranchName)}`,
+      `git fetch origin ${shellEscape(parentRefspec)}`,
       { cwd: repoDir, logFile }
     );
     if (fetchResult.code !== 0) {
       return { outcome: "failure", error: `Failed to fetch parent branch '${run.parentBranchName}' from origin.` };
     }
+    // Check out via FETCH_HEAD rather than `git checkout <branch>` DWIM:
+    // shallow clones are single-branch, so origin's fetch refspec covers
+    // only the base branch. Even if we populated refs/remotes/origin/<branch>
+    // explicitly, git would refuse the DWIM tracking setup ("not a branch")
+    // because the refspec doesn't cover it. FETCH_HEAD always points at the
+    // ref we just fetched.
     const checkoutResult = await runShellCapture(
-      `git checkout ${shellEscape(run.parentBranchName)}`,
+      `git checkout -B ${shellEscape(run.parentBranchName)} FETCH_HEAD`,
       { cwd: repoDir, logFile }
     );
     if (checkoutResult.code !== 0) {

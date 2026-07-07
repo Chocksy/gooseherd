@@ -20,7 +20,6 @@ jobs:
       RELEASE_NAME: ${{ vars.SERVICE_NAME }}
       CONTAINER_REGISTRY_NAME: ${{ vars.CONTAINER_REGISTRY_NAME }}
       CONTAINER_REGISTRY_URL: ${{ vars.CONTAINER_REGISTRY_URL }}
-      HELM_NEW: true
     secrets:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

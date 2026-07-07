@@ -203,6 +203,25 @@ describe("Dashboard Work Item API routes", () => {
   const tmpDirs: string[] = [];
   const cleanups: Array<() => Promise<void>> = [];
 
+  const runsFixture = [
+    {
+      id: "run-a",
+      repoSlug: "hubstaff/gooseherd",
+      baseBranch: "main",
+      task: "First",
+      status: "completed",
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: "run-b",
+      repoSlug: "hubstaff/other",
+      baseBranch: "main",
+      task: "Second",
+      status: "completed",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+
   afterEach(async () => {
     for (const server of servers) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -322,6 +341,7 @@ describe("Dashboard Work Item API routes", () => {
       homeThreadTs: "1740000000.901",
       jiraIssueKey: "HBL-500",
       createdByUserId: pmUserId,
+      repo: "hubstaff/gooseherd",
     });
 
     const sessionStore = new DashboardAuthSessionStore(testDb.db);
@@ -468,6 +488,145 @@ describe("Dashboard Work Item API routes", () => {
     const items = res.data.workItems as Array<{ workflow: string }>;
     assert.equal(items.length, 1);
     assert.equal(items[0]?.workflow, "product_discovery");
+  });
+
+  test("GET /api/work-items lists work items filtered by repository", async () => {
+    const source = {
+      listWorkItems: async () => [
+        {
+          id: "item-a",
+          workflow: "feature_delivery",
+          state: "backlog",
+          title: "Matching item",
+          summary: "",
+          ownerTeamId: "team-1",
+          homeChannelId: "C_TEST",
+          homeThreadTs: "1.000",
+          repo: "hubstaff/gooseherd",
+          createdByUserId: "user-1",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "item-b",
+          workflow: "feature_delivery",
+          state: "backlog",
+          title: "Other item",
+          summary: "",
+          ownerTeamId: "team-1",
+          homeChannelId: "C_TEST",
+          homeThreadTs: "1.001",
+          repo: "hubstaff/other",
+          createdByUserId: "user-1",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    } as DashboardWorkItemsSource;
+    const port = await startServer(source);
+
+    const matchingRes = await request(port, "GET", "/api/work-items?workflow=feature_delivery&repo=hubstaff%2Fgooseherd");
+    assert.equal(matchingRes.status, 200);
+    const matchingItems = matchingRes.data.workItems as Array<{ repo?: string }>;
+    assert.equal(matchingItems.length, 1);
+    assert.equal(matchingItems[0]?.repo, "hubstaff/gooseherd");
+
+    const emptyRes = await request(port, "GET", "/api/work-items?workflow=feature_delivery&repo=hubstaff%2Fmissing");
+    assert.equal(emptyRes.status, 200);
+    assert.deepEqual(emptyRes.data.workItems, []);
+  });
+
+  test("GET /api/repo/:owner/:name/work-items lists repository-scoped work items", async () => {
+    const source = {
+      listWorkItems: async () => [
+        {
+          id: "item-a",
+          workflow: "feature_delivery",
+          state: "backlog",
+          title: "Matching item",
+          summary: "",
+          ownerTeamId: "team-1",
+          homeChannelId: "C_TEST",
+          homeThreadTs: "1.000",
+          repo: "hubstaff/gooseherd",
+          createdByUserId: "user-1",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "item-b",
+          workflow: "feature_delivery",
+          state: "backlog",
+          title: "Other item",
+          summary: "",
+          ownerTeamId: "team-1",
+          homeChannelId: "C_TEST",
+          homeThreadTs: "1.001",
+          repo: "hubstaff/other",
+          createdByUserId: "user-1",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    } as DashboardWorkItemsSource;
+    const port = await startServer(source);
+
+    const res = await request(port, "GET", "/api/repo/hubstaff/gooseherd/work-items?workflow=feature_delivery");
+    assert.equal(res.status, 200);
+    const items = res.data.workItems as Array<{ id: string; repo?: string }>;
+    assert.deepEqual(items.map((item) => item.id), ["item-a"]);
+  });
+
+  test("GET /api/runs lists runs filtered by repository", async () => {
+    const runStore = {
+      listRuns: async (filter?: { repoSlug?: string }) =>
+        filter?.repoSlug ? runsFixture.filter((run) => run.repoSlug === filter.repoSlug) : runsFixture,
+    };
+    const port = getPort();
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gooseherd-dash-runs-"));
+    tmpDirs.push(tmpDir);
+    const server = startDashboardServer(makeConfig(port, tmpDir), runStore as never);
+    servers.push(server);
+    await waitForServer(port);
+
+    const res = await request(port, "GET", "/api/runs?repo=hubstaff%2Fgooseherd");
+    assert.equal(res.status, 200);
+    const runs = res.data.runs as Array<{ id: string; repoSlug: string }>;
+    assert.deepEqual(runs.map((run) => run.id), ["run-a"]);
+  });
+
+  test("GET /api/repo/:owner/:name/runs lists repository-scoped runs", async () => {
+    const runStore = {
+      listRuns: async (filter?: { repoSlug?: string }) =>
+        filter?.repoSlug ? runsFixture.filter((run) => run.repoSlug === filter.repoSlug) : runsFixture,
+    };
+    const port = getPort();
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gooseherd-dash-runs-"));
+    tmpDirs.push(tmpDir);
+    const server = startDashboardServer(makeConfig(port, tmpDir), runStore as never);
+    servers.push(server);
+    await waitForServer(port);
+
+    const res = await request(port, "GET", "/api/repo/hubstaff/gooseherd/runs");
+    assert.equal(res.status, 200);
+    const runs = res.data.runs as Array<{ id: string; repoSlug: string }>;
+    assert.deepEqual(runs.map((run) => run.id), ["run-a"]);
+  });
+
+  test("GET dashboard path routes return the dashboard shell", async () => {
+    const port = await startServer();
+
+    for (const pathname of [
+      "/runs",
+      "/board/feature-delivery",
+      "/repo/hubstaff/gooseherd/runs",
+      "/repo/hubstaff/gooseherd/board/feature-delivery",
+    ]) {
+      const res = await request(port, "GET", pathname);
+      assert.equal(res.status, 200);
+      assert.match(String(res.data.raw), /id="repo-filter"/);
+      assert.match(String(res.data.raw), /id="view-switch"/);
+    }
   });
 
   test("GET /api/work-items includes activeRunCount computed from linked active runs", async () => {

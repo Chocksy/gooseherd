@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { shellEscape, renderTemplate, sanitizeForLogs, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
+import { appendLog, flushRunLogMirror, shellEscape, renderTemplate, sanitizeForLogs, runShell, runShellCapture, buildMcpFlags } from "../src/pipeline/shell.js";
+
+function captureStdout(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write;
+  return {
+    lines,
+    restore: () => {
+      process.stdout.write = original;
+    },
+  };
+}
+
+async function makeRunLogFile(t: { after: (fn: () => Promise<void> | void) => void }, runId: string): Promise<string> {
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "run-log-mirror-"));
+  const runDir = path.join(workRoot, runId);
+  await mkdir(runDir, { recursive: true });
+  const logFile = path.join(runDir, "run.log");
+  t.after(async () => { await rm(workRoot, { recursive: true, force: true }); });
+  return logFile;
+}
 
 // ── shellEscape ──
 
@@ -131,7 +155,7 @@ test("runShellCapture: returns non-zero exit code", async (t) => {
   assert.equal(result.code, 42);
 });
 
-test("runShellCapture: timeout kills long-running process", async (t) => {
+test("runShellCapture: timeout kills long-running process and reports SIGTERM as 143", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "shell-test-"));
   const logFile = path.join(dir, "test.log");
   await writeFile(logFile, "", "utf8");
@@ -141,8 +165,22 @@ test("runShellCapture: timeout kills long-running process", async (t) => {
   const result = await runShellCapture("sleep 60", { logFile, timeoutMs: 200 });
   const elapsed = Date.now() - start;
 
-  assert.notEqual(result.code, 0);
+  // POSIX convention: 128 + signo. SIGTERM = 15 → 143.
+  // Critical: this code must NOT collide with [1, 2] which mean "real test failure".
+  assert.equal(result.code, 143, "timeout SIGTERM must surface as 128+15=143, not 1");
+  assert.equal(result.signal, "SIGTERM");
   assert.ok(elapsed < 10000, `Should complete quickly after timeout, took ${String(elapsed)}ms`);
+});
+
+test("runShellCapture: surfaces signal=null and full code for normal exits", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "shell-test-"));
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const result = await runShellCapture("exit 7", { logFile });
+  assert.equal(result.code, 7);
+  assert.equal(result.signal, null);
 });
 
 test("runShellCapture: no timeout when timeoutMs is undefined", async (t) => {
@@ -154,6 +192,38 @@ test("runShellCapture: no timeout when timeoutMs is undefined", async (t) => {
   const result = await runShellCapture("echo fast", { logFile });
   assert.equal(result.code, 0);
   assert.match(result.stdout, /fast/);
+});
+
+test("runShell: includes a UTF-8-safe stderr tail capped to 1500 bytes", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "shell-test-"));
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  // 1 × 🙂 (4 bytes) + 499 × € (3 bytes each) = 1501 total bytes. Trimming to
+  // the trailing 1500 drops byte 0 (0xF0, the emoji's lead byte), so the kept
+  // window starts at byte 0x9F — a UTF-8 continuation byte — forcing
+  // decodeUtf8Tail's skip loop to advance past 3 continuation bytes to the
+  // next codepoint boundary. A purely-emoji or purely-ASCII+emoji input would
+  // always land the cut on a 4-byte boundary and skip this code path entirely.
+  const stderrChunk = "🙂" + "€".repeat(499);
+  const command = `node -e ${shellEscape(`process.stderr.write(${JSON.stringify(stderrChunk)}); process.exit(1);`)}`;
+
+  await assert.rejects(
+    () => runShell(command, { logFile }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stderrLine = error.message.match(/\nstderr: ([\s\S]*)$/);
+      assert.ok(stderrLine, `expected stderr tail in error message, got: ${error.message}`);
+      const tail = stderrLine[1];
+      assert.ok(Buffer.byteLength(tail, "utf8") <= 1500, `tail exceeded 1500 bytes: ${String(Buffer.byteLength(tail, "utf8"))}`);
+      assert.doesNotMatch(tail, /�/, "tail must not start mid-codepoint");
+      assert.ok(tail.length > 0, "tail should not be empty");
+      // Skipping the 3 partial-emoji bytes must leave exactly 499 × €.
+      assert.equal(tail, "€".repeat(499));
+      return true;
+    }
+  );
 });
 
 // ── buildMcpFlags ──
@@ -174,4 +244,133 @@ test("buildMcpFlags: multiple extensions", () => {
 test("buildMcpFlags: filters empty strings", () => {
   const result = buildMcpFlags(["npx @cems/mcp", "", "  ", "npx @other/ext"]);
   assert.equal(result, "--with-extension 'npx @cems/mcp' --with-extension 'npx @other/ext'");
+});
+
+// ── appendLog stdout mirror ──
+
+test("appendLog: does NOT mirror to stdout when RUN_LOG_MIRROR_STDOUT is unset", async (t) => {
+  const runId = "run-mirror-off";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  delete process.env.RUN_LOG_MIRROR_STDOUT;
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "secret line\n");
+  } finally {
+    captured.restore();
+  }
+  assert.equal(captured.lines.join(""), "");
+  assert.equal(await readFile(logFile, "utf8"), "secret line\n");
+});
+
+test("appendLog: mirrors complete lines with [run:<id>] prefix when flag is on", async (t) => {
+  const runId = "run-mirror-on";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "first line\nsecond line\n");
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(captured.lines, [
+    `[run:${runId}] first line\n`,
+    `[run:${runId}] second line\n`,
+  ]);
+});
+
+test("appendLog: buffers partial line until newline arrives", async (t) => {
+  const runId = "run-mirror-partial";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "hello ");
+    assert.equal(captured.lines.length, 0, "no emit until newline");
+    await appendLog(logFile, "world\nnext ");
+    assert.deepEqual(captured.lines, [`[run:${runId}] hello world\n`]);
+    flushRunLogMirror(runId);
+    assert.deepEqual(captured.lines, [
+      `[run:${runId}] hello world\n`,
+      `[run:${runId}] next \n`,
+    ]);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("appendLog: sanitizes secrets in the mirrored stream", async (t) => {
+  const runId = "run-mirror-sanitize";
+  const logFile = await makeRunLogFile(t, runId);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runId);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFile, "token=ghp_ABCdef123456789012345678901234567890\n");
+  } finally {
+    captured.restore();
+  }
+
+  const emitted = captured.lines.join("");
+  assert.match(emitted, new RegExp(`^\\[run:${runId}\\] `));
+  assert.ok(!emitted.includes("ghp_ABCdef"), `mirrored output must not contain raw token, got: ${emitted}`);
+  // Raw on-disk log preserves content verbatim — sanitization is mirror-only.
+  assert.match(await readFile(logFile, "utf8"), /ghp_ABCdef/);
+});
+
+test("appendLog: keeps separate buffers for concurrent runs", async (t) => {
+  const runIdA = "run-mirror-A";
+  const runIdB = "run-mirror-B";
+  const logFileA = await makeRunLogFile(t, runIdA);
+  const logFileB = await makeRunLogFile(t, runIdB);
+  const previous = process.env.RUN_LOG_MIRROR_STDOUT;
+  process.env.RUN_LOG_MIRROR_STDOUT = "true";
+  t.after(() => {
+    if (previous === undefined) delete process.env.RUN_LOG_MIRROR_STDOUT;
+    else process.env.RUN_LOG_MIRROR_STDOUT = previous;
+    flushRunLogMirror(runIdA);
+    flushRunLogMirror(runIdB);
+  });
+
+  const captured = captureStdout();
+  try {
+    await appendLog(logFileA, "alpha-");
+    await appendLog(logFileB, "beta-");
+    await appendLog(logFileA, "one\n");
+    await appendLog(logFileB, "two\n");
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(captured.lines, [
+    `[run:${runIdA}] alpha-one\n`,
+    `[run:${runIdB}] beta-two\n`,
+  ]);
 });

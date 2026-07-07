@@ -1,0 +1,31 @@
+version: 1
+name: "triage-ci"
+description: "Lightweight pipeline that classifies a CI failure as PR-related or unrelated, without modifying code"
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+    config:
+      depth: 50
+
+  - id: setup_sandbox
+    type: deterministic
+    action: setup_sandbox
+    if: "config.sandboxEnabled"
+
+  - id: classify_task
+    type: deterministic
+    action: classify_task
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: triage_ci
+    type: agentic
+    action: triage_ci
+
+  - id: notify
+    type: deterministic
+    action: notify

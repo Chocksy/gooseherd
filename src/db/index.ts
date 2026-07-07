@@ -10,6 +10,8 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import * as schema from "./schema.js";
 import { backfillLegacySetupConfigSections } from "./setup-legacy-storage.js";
+import { seedRunnerDbSlots } from "./seed-runner-db-slots.js";
+import { resolveRunnerDbPoolSize } from "../runtime/runner-db-env.js";
 
 const DEFAULT_URL = "postgres://gooseherd:gooseherd@postgres:5432/gooseherd";
 
@@ -39,6 +41,8 @@ export async function initDatabase(url?: string): Promise<Database> {
 
   // Run migrations
   await migrate(_db, { migrationsFolder: "./drizzle" });
+
+  await seedRunnerDbSlots(_db, resolveRunnerDbPoolSize());
 
   return _db;
 }

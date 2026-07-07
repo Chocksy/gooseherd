@@ -4,6 +4,8 @@
 **Status:** Approved for implementation
 **Context:** Refines the active `feature_delivery.auto_review` orchestration so CI failures stop re-entering generic self-review and instead take an explicit CI-fix path.
 
+> **Update (2026-05-04, PR #69):** The `revalidating_after_rebase` substate referenced throughout this document was removed. CI failures from any managed feature-delivery state now route directly to `auto_review/ci_failed`, which `shouldAutoLaunchSystemRun` already drives through `feature_delivery.repair_ci`. There is no separate "revalidating" label — `engineering_review_done` / `qa_review_done` flags carry recovery back to `ready_for_merge` automatically.
+
 ## Goal
 
 Keep `WorkItem.state = auto_review` as the business lifecycle state while making the next system action explicit through typed `substate` values.

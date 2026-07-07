@@ -20,7 +20,7 @@ import type { GitHubService } from "../github.js";
 import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import { ContextBag } from "./context-bag.js";
 import { loadPipeline } from "./pipeline-loader.js";
-import { appendLog, runInSandboxContext } from "./shell.js";
+import { appendLog, flushRunLogMirror, runInSandboxContext } from "./shell.js";
 import { filterInternalGeneratedFiles } from "./internal-generated-files.js";
 import { logInfo } from "../logger.js";
 import type { ContainerManager } from "../sandbox/container-manager.js";
@@ -76,6 +76,11 @@ function shouldRunNode(condition: string, ctx: ContextBag, config: Record<string
   return !!value;
 }
 
+function derivePipelineRoutingId(pipelineFilePath: string, pipeline: PipelineConfig): string {
+  const base = path.basename(pipelineFilePath).replace(/\.ya?ml$/i, "").trim();
+  return base || pipeline.name;
+}
+
 /**
  * Pipeline engine: loads YAML pipeline, executes nodes in order,
  * handles loop constructs for failure recovery.
@@ -110,6 +115,7 @@ export class PipelineEngine {
     run: RunRecord,
     onPhase: (phase: PipelinePhase) => Promise<void>,
     pipelineFile?: string,
+    pipelineId?: string,
     onDetail?: (detail: string) => Promise<void>,
     skipNodes?: string[],
     enableNodes?: string[],
@@ -124,8 +130,9 @@ export class PipelineEngine {
   ): Promise<ExecutionResult> {
     const yamlPath = pipelineFile ?? path.resolve("pipelines/pipeline.yml");
     const pipeline = await loadPipeline(yamlPath);
+    const pipelineRoutingId = pipelineId?.trim() || derivePipelineRoutingId(yamlPath, pipeline);
 
-    logInfo("Pipeline loaded", { name: pipeline.name, nodes: pipeline.nodes.length });
+    logInfo("Pipeline loaded", { id: pipelineRoutingId, name: pipeline.name, nodes: pipeline.nodes.length });
 
     const runDir = path.resolve(this.config.workRoot, run.id);
     const logFile = path.join(runDir, "run.log");
@@ -134,137 +141,143 @@ export class PipelineEngine {
     await mkdir(runDir, { recursive: true });
     await appendLog(logFile, `${this.config.appName} pipeline started for ${run.id}\n`);
 
-    // Event logger — local to this execution to avoid race conditions
-    // when RUNNER_CONCURRENCY > 1 (multiple execute() calls in parallel).
-    const eventLogger = new EventLogger(runDir);
-
-    // Initialize context bag
-    const ctx = new ContextBag({
-      runId: run.id,
-      repoSlug: run.repoSlug,
-      baseBranch: run.baseBranch,
-      branchName: run.branchName,
-      task: run.task,
-      requestedBy: run.requestedBy,
-      ...(run.prefetchContext ? { prefetchContext: run.prefetchContext } : {})
-    });
-    // Merge pipeline-level context
-    if (pipeline.context) {
-      for (const [key, value] of Object.entries(pipeline.context)) {
-        ctx.set(key, value);
-      }
-    }
-
-    const deps: NodeDeps = {
-      config: this.config,
-      run,
-      githubService: this.githubService,
-      hooks: this.hooks,
-      logFile,
-      workRoot: this.config.workRoot,
-      onPhase: async (phase: string) => {
-        await eventLogger.emit("phase_change", { phase });
-        await onPhase(phase as PipelinePhase);
-      },
-      emitRunCheckpoint: async (checkpoint) => {
-        await onCheckpoint?.({
-          ...checkpoint,
-          emittedAt: new Date().toISOString(),
-        });
-      },
-      onDetail,
-      recordTokenUsage,
-    };
-
-    let startIndex = 0;
-
-    // Determine sandbox strategy: deferred (setup_sandbox node) or upfront (legacy)
-    const hasSetupSandbox = pipeline.nodes.some(n => n.action === "setup_sandbox");
-
-    // Create sandbox container if enabled — upfront for legacy pipelines,
-    // deferred for pipelines with setup_sandbox node.
-    let sandbox: SandboxHandle | undefined;
-    const sandboxRef: { handle?: SandboxHandle } = {};
-
-    if (this.config.sandboxEnabled && this.containerManager && !hasSetupSandbox) {
-      // Legacy path: create sandbox upfront with global image
-      sandbox = await this.buildAndCreateSandbox(run.id, this.config.sandboxImage, logFile);
-    }
-
-    // For deferred sandbox, provide requestSandbox callback
-    if (hasSetupSandbox && this.config.sandboxEnabled && this.containerManager) {
-      deps.requestSandbox = async (image: string) => {
-        sandboxRef.handle = await this.buildAndCreateSandbox(run.id, image, logFile);
-      };
-      deps.containerManager = this.containerManager;
-    }
-
-    const skipNodeIdSet = skipNodes && skipNodes.length > 0 ? new Set(skipNodes) : undefined;
-    let enableNodeIdSet = enableNodes && enableNodes.length > 0 ? new Set(enableNodes) : undefined;
-    if (enableNodeIdSet?.has("browser_verify")) {
-      // Recovery decision should follow browser_verify by default when browser verify is explicitly enabled.
-      enableNodeIdSet.add("decide_recovery");
-      await appendLog(logFile, "[pipeline] auto-enable: decide_recovery (browser_verify enabled)\n");
-    }
-
-    let result;
     try {
-      if (sandbox) {
-        // Legacy path: Run pipeline inside AsyncLocalStorage context so all shell calls
-        // within this async tree route through the correct container.
-        result = await runInSandboxContext(sandbox.containerId, run.id, () =>
-          this.executePipeline(pipeline, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal)
-        );
-      } else if (hasSetupSandbox) {
-        // Deferred path: run pre-sandbox nodes on host, then enter sandbox context
-        // after setup_sandbox completes. executePipeline handles the context switch.
-        result = await this.executePipeline(pipeline, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal, sandboxRef);
-      } else {
-        result = await this.executePipeline(pipeline, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal);
+      // Event logger — local to this execution to avoid race conditions
+      // when RUNNER_CONCURRENCY > 1 (multiple execute() calls in parallel).
+      const eventLogger = new EventLogger(runDir);
+
+      // Initialize context bag
+      const ctx = new ContextBag({
+        runId: run.id,
+        repoSlug: run.repoSlug,
+        baseBranch: run.baseBranch,
+        branchName: run.branchName,
+        task: run.task,
+        requestedBy: run.requestedBy,
+        ...(run.prefetchContext ? { prefetchContext: run.prefetchContext } : {})
+      });
+      // Merge pipeline-level context
+      if (pipeline.context) {
+        for (const [key, value] of Object.entries(pipeline.context)) {
+          ctx.set(key, value);
+        }
       }
+
+      const deps: NodeDeps = {
+        config: this.config,
+        run,
+        githubService: this.githubService,
+        hooks: this.hooks,
+        logFile,
+        workRoot: this.config.workRoot,
+        onPhase: async (phase: string) => {
+          await eventLogger.emit("phase_change", { phase });
+          await onPhase(phase as PipelinePhase);
+        },
+        emitRunCheckpoint: async (checkpoint) => {
+          await onCheckpoint?.({
+            ...checkpoint,
+            emittedAt: new Date().toISOString(),
+          });
+        },
+        onDetail,
+        recordTokenUsage,
+      };
+
+      let startIndex = 0;
+
+      // Determine sandbox strategy: deferred (setup_sandbox node) or upfront (legacy)
+      const hasSetupSandbox = pipeline.nodes.some(n => n.action === "setup_sandbox");
+
+      // Create sandbox container if enabled — upfront for legacy pipelines,
+      // deferred for pipelines with setup_sandbox node.
+      let sandbox: SandboxHandle | undefined;
+      const sandboxRef: { handle?: SandboxHandle } = {};
+
+      if (this.config.sandboxEnabled && this.containerManager && !hasSetupSandbox) {
+        // Legacy path: create sandbox upfront with global image
+        sandbox = await this.buildAndCreateSandbox(run.id, this.config.sandboxImage, logFile);
+      }
+
+      // For deferred sandbox, provide requestSandbox callback
+      if (hasSetupSandbox && this.config.sandboxEnabled && this.containerManager) {
+        deps.requestSandbox = async (image: string) => {
+          sandboxRef.handle = await this.buildAndCreateSandbox(run.id, image, logFile);
+        };
+        deps.containerManager = this.containerManager;
+      }
+
+      const skipNodeIdSet = skipNodes && skipNodes.length > 0 ? new Set(skipNodes) : undefined;
+      let enableNodeIdSet = enableNodes && enableNodes.length > 0 ? new Set(enableNodes) : undefined;
+      if (enableNodeIdSet?.has("browser_verify")) {
+        // Recovery decision should follow browser_verify by default when browser verify is explicitly enabled.
+        enableNodeIdSet.add("decide_recovery");
+        await appendLog(logFile, "[pipeline] auto-enable: decide_recovery (browser_verify enabled)\n");
+      }
+
+      let result;
+      try {
+        if (sandbox) {
+          // Legacy path: Run pipeline inside AsyncLocalStorage context so all shell calls
+          // within this async tree route through the correct container.
+          result = await runInSandboxContext(sandbox.containerId, run.id, () =>
+            this.executePipeline(pipeline, pipelineRoutingId, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal)
+          );
+        } else if (hasSetupSandbox) {
+          // Deferred path: run pre-sandbox nodes on host, then enter sandbox context
+          // after setup_sandbox completes. executePipeline handles the context switch.
+          result = await this.executePipeline(pipeline, pipelineRoutingId, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal, sandboxRef);
+        } else {
+          result = await this.executePipeline(pipeline, pipelineRoutingId, ctx, deps, startIndex, eventLogger, skipNodeIdSet, enableNodeIdSet, abortSignal);
+        }
+      } finally {
+        // Clean up sandbox (handles both upfront and deferred)
+        const activeSandbox = sandbox ?? sandboxRef.handle;
+        if (activeSandbox && this.containerManager) {
+          await this.containerManager.destroySandbox(run.id);
+          await appendLog(logFile, `[sandbox] container destroyed: ${activeSandbox.containerName}\n`);
+        }
+      }
+
+      // Aggregate token usage from all _tokenUsage_* context bag keys
+      const tokenUsage = aggregateTokenUsage(ctx, this.config.defaultLlmModel);
+      if (tokenUsage) {
+        ctx.set("tokenUsage", tokenUsage);
+      }
+
+      // Build ExecutionResult from context bag
+      const branchName = run.branchName;
+      const commitSha = ctx.get<string>("commitSha") ?? "";
+      const changedFiles = filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []);
+      const internalArtifacts = ctx.get<string[]>("internalArtifacts");
+      const prUrl = ctx.get<string>("prUrl");
+      const prNumber = ctx.get<number>("prNumber");
+
+      if (result.outcome === "failure") {
+        const failedStep = result.steps.find(s => s.outcome === "failure");
+        throw new Error(failedStep?.error ?? "Pipeline failed");
+      }
+
+      return {
+        branchName,
+        logsPath: logFile,
+        commitSha,
+        changedFiles,
+        internalArtifacts,
+        prUrl,
+        prNumber,
+        tokenUsage: tokenUsage ?? undefined,
+        title: ctx.get<string>("generatedTitle"),
+        answer: ctx.get<string>("answer")
+      };
     } finally {
-      // Clean up sandbox (handles both upfront and deferred)
-      const activeSandbox = sandbox ?? sandboxRef.handle;
-      if (activeSandbox && this.containerManager) {
-        await this.containerManager.destroySandbox(run.id);
-        await appendLog(logFile, `[sandbox] container destroyed: ${activeSandbox.containerName}\n`);
-      }
+      flushRunLogMirror(run.id);
     }
-
-    // Aggregate token usage from all _tokenUsage_* context bag keys
-    const tokenUsage = aggregateTokenUsage(ctx, this.config.defaultLlmModel);
-    if (tokenUsage) {
-      ctx.set("tokenUsage", tokenUsage);
-    }
-
-    // Build ExecutionResult from context bag
-    const branchName = run.branchName;
-    const commitSha = ctx.get<string>("commitSha") ?? "";
-    const changedFiles = filterInternalGeneratedFiles(ctx.get<string[]>("changedFiles") ?? []);
-    const internalArtifacts = ctx.get<string[]>("internalArtifacts");
-    const prUrl = ctx.get<string>("prUrl");
-    const prNumber = ctx.get<number>("prNumber");
-
-    if (result.outcome === "failure") {
-      const failedStep = result.steps.find(s => s.outcome === "failure");
-      throw new Error(failedStep?.error ?? "Pipeline failed");
-    }
-
-    return {
-      branchName,
-      logsPath: logFile,
-      commitSha,
-      changedFiles,
-      internalArtifacts,
-      prUrl,
-      prNumber,
-      tokenUsage: tokenUsage ?? undefined,
-      title: ctx.get<string>("generatedTitle")
-    };
   }
 
   private async executePipeline(
     pipeline: PipelineConfig,
+    pipelineId: string,
     ctx: ContextBag,
     deps: NodeDeps,
     startIndex: number,
@@ -319,7 +332,7 @@ export class PipelineEngine {
       const startTime = Date.now();
       const handler = this.getHandler(node.action);
       const { result, durationMs } = await this.runTrackedNode(
-        node.id, node.action, handler, node, ctx, deps, eventLogger
+        pipelineId, node.id, node.action, handler, node, ctx, deps, eventLogger
       );
       await appendLog(deps.logFile, `\n[pipeline] ${node.id}: ${result.outcome} (${String(durationMs)}ms)\n`);
 
@@ -392,7 +405,7 @@ export class PipelineEngine {
       // Handle failure with loop construct
       if (result.outcome === "failure" && node.on_failure) {
         const loopResult = await this.handleLoopFailure(
-          node, result, ctx, deps, eventLogger
+          pipelineId, node, result, ctx, deps, eventLogger
         );
 
         if (loopResult.outcome === "success") {
@@ -442,7 +455,7 @@ export class PipelineEngine {
           sandboxRef.handle.containerId,
           deps.run.id,
           () => this.executePipeline(
-            pipeline, ctx, deps, i + 1,
+            pipeline, pipelineId, ctx, deps, i + 1,
             eventLogger, skipNodeIds, enableNodeIds, abortSignal
           )
         );
@@ -460,6 +473,7 @@ export class PipelineEngine {
    * Handle a loop-based failure recovery (validation retry, CI fix, etc.)
    */
   private async handleLoopFailure(
+    pipelineName: string,
     failedNode: NodeConfig,
     failedResult: NodeResult,
     ctx: ContextBag,
@@ -537,7 +551,7 @@ export class PipelineEngine {
         action: loopConfig.agent_node
       };
       const { result: fixResult } = await this.runTrackedNode(
-        fixNode.id, fixNode.action, agentHandler, fixNode, ctx, deps, eventLogger
+        pipelineName, fixNode.id, fixNode.action, agentHandler, fixNode, ctx, deps, eventLogger
       );
 
       if (fixResult.outcome !== "success") {
@@ -559,7 +573,7 @@ export class PipelineEngine {
       const retryNodeId = `${failedNode.id}_retry_${String(attempt)}`;
       const retryHandler = this.getHandler(failedNode.action);
       const { result: retryResult } = await this.runTrackedNode(
-        retryNodeId, failedNode.action, retryHandler, failedNode, ctx, deps, eventLogger
+        pipelineName, retryNodeId, failedNode.action, retryHandler, failedNode, ctx, deps, eventLogger
       );
 
       if (retryResult.outcome === "success") {
@@ -624,6 +638,7 @@ export class PipelineEngine {
    * Returns the result and duration. Catches handler errors into failure results.
    */
   private async runTrackedNode(
+    pipelineName: string,
     nodeId: string,
     action: string,
     handler: NodeHandler,
@@ -637,11 +652,21 @@ export class PipelineEngine {
     const start = Date.now();
 
     let result: NodeResult;
+    const previousAgentProfileTarget = deps.agentProfileTarget;
+    deps.agentProfileTarget = {
+      pipelineName,
+      pipelineId: pipelineName,
+      intentKind: deps.run.intentKind,
+      nodeId,
+      nodeAction: action,
+    };
     try {
       result = await handler(node, ctx, deps);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       result = { outcome: "failure", error: message };
+    } finally {
+      deps.agentProfileTarget = previousAgentProfileTarget;
     }
 
     const durationMs = Date.now() - start;

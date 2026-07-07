@@ -105,6 +105,39 @@ test("isRunIntent rejects malformed feature-delivery intents", () => {
   assert.equal(isRunIntent({ ...BASE_FEATURE, kind: "feature_delivery.qa_preparation" }), true);
 });
 
+test("InvestigateRunIntent: isRunIntent accepts a valid investigate intent", () => {
+  const intent = {
+    version: 1,
+    kind: "investigate",
+    source: "slack",
+    requestedBy: "U123",
+    question: "Why didn't DWS go out for org 633609 on 2026-04-24?",
+    triggerReason: "slack-mention",
+  };
+  assert.equal(isRunIntent(intent), true);
+});
+
+test("InvestigateRunIntent: isRunIntent rejects investigate intent missing question", () => {
+  const intent = {
+    version: 1,
+    kind: "investigate",
+    source: "slack",
+    requestedBy: "U123",
+  };
+  assert.equal(isRunIntent(intent), false);
+});
+
+test("InvestigateRunIntent: selectPipelineIdForIntent maps to investigation pipeline", () => {
+  const intent: RunIntent = {
+    version: 1,
+    kind: "investigate",
+    source: "slack",
+    requestedBy: "U123",
+    question: "How does the X feature work?",
+  };
+  assert.equal(selectPipelineIdForIntent(intent), "investigation");
+});
+
 test("isRunIntent rejects malformed generic intents", () => {
   assert.equal(isRunIntent({ version: 1, kind: "generic_task" }), false);
   assert.equal(isRunIntent({ version: 1, kind: "generic_task", source: "invalid" }), false);
@@ -129,4 +162,58 @@ test("run intent predicates keep legacy requestedBy fallback", () => {
   assert.equal(isFeatureDeliveryAutoReviewRun({ intent: undefined, requestedBy: "work-item:auto-review" }), true);
   assert.equal(isFeatureDeliveryAutoReviewOrRepairCiRun({ intent: undefined, requestedBy: "work-item:ci-fix" }), true);
   assert.equal(isFeatureDeliverySystemRun({ intent: undefined, requestedBy: "work-item:qa-preparation" }), true);
+});
+
+test("ConversationRunIntent passes isRunIntent validation", () => {
+  const intent = {
+    version: 1,
+    kind: "conversation",
+    source: "slack",
+    requestedBy: "U123",
+    question: "why is auth slow?",
+  };
+  assert.equal(isRunIntent(intent), true);
+});
+
+test("ConversationRunIntent rejects when source is not slack", () => {
+  const intent = {
+    version: 1,
+    kind: "conversation",
+    source: "dashboard",
+    requestedBy: "U123",
+    question: "why is auth slow?",
+  };
+  assert.equal(isRunIntent(intent), false);
+});
+
+test("ConversationRunIntent rejects when question is empty", () => {
+  const intent = {
+    version: 1,
+    kind: "conversation",
+    source: "slack",
+    requestedBy: "U123",
+    question: "",
+  };
+  assert.equal(isRunIntent(intent), false);
+});
+
+test("ConversationRunIntent rejects when requestedBy is missing", () => {
+  const intent = {
+    version: 1,
+    kind: "conversation",
+    source: "slack",
+    question: "why is auth slow?",
+  };
+  assert.equal(isRunIntent(intent), false);
+});
+
+test("selectPipelineIdForIntent returns undefined for conversation kind", () => {
+  const intent: RunIntent = {
+    version: 1,
+    kind: "conversation",
+    source: "slack",
+    requestedBy: "U123",
+    question: "anything",
+  };
+  assert.equal(selectPipelineIdForIntent(intent), undefined);
 });

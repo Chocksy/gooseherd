@@ -2,6 +2,8 @@
 
 **Date:** 2026-04-16
 
+> **Update (2026-05-04, PR #69):** The `revalidating_after_rebase` substate listed below has been removed. Recovery now lands every CI failure in `auto_review/ci_failed` and is driven by the regular `reconcile_work_item` path; the periodic branch-sync monitor backstops missed events.
+
 ## Goal
 
 Add a dedicated orchestration layer for `feature_delivery.auto_review` so work items can trigger the correct side effects after state transitions, especially automatic run launch.

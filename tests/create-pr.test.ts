@@ -666,6 +666,128 @@ test("GitHubService: CI snapshot reports no_ci without failed run details", asyn
   });
 });
 
+test("GitHubService: CI snapshot reports pending while a check is still running, even if another already failed", async () => {
+  const annotationCalls: number[] = [];
+  const logCalls: number[] = [];
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            { id: 50, name: "lint", status: "completed", conclusion: "failure" },
+            { id: 51, name: "tests", status: "in_progress", conclusion: null }
+          ]
+        }
+      }),
+      listAnnotations: async ({ check_run_id }: { check_run_id: number }) => {
+        annotationCalls.push(check_run_id);
+        return { data: [] };
+      }
+    },
+    actions: {
+      downloadJobLogsForWorkflowRun: async ({ job_id }: { job_id: number }) => {
+        logCalls.push(job_id);
+        return { data: "" };
+      }
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(snapshot, { headSha: "abc123", conclusion: "pending" });
+  // Failure context must NOT be collected while CI is still in flight.
+  assert.deepEqual(annotationCalls, []);
+  assert.deepEqual(logCalls, []);
+});
+
+test("GitHubService: CI snapshot ignores cancelled checks alongside passing ones", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            { id: 60, name: "build", status: "completed", conclusion: "success" },
+            { id: 61, name: "deploy", status: "completed", conclusion: "cancelled" }
+          ]
+        }
+      })
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(snapshot, { headSha: "abc123", conclusion: "success" });
+});
+
+test("GitHubService: CI snapshot reports no_ci when every check was cancelled", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            { id: 70, name: "build", status: "completed", conclusion: "cancelled" },
+            { id: 71, name: "tests", status: "completed", conclusion: "cancelled" }
+          ]
+        }
+      })
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(snapshot, { headSha: "abc123", conclusion: "no_ci" });
+});
+
+test("GitHubService: CI snapshot still reports failure when failures coexist with cancelled checks", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            { id: 80, name: "build", status: "completed", conclusion: "success" },
+            { id: 81, name: "tests", status: "completed", conclusion: "failure" },
+            { id: 82, name: "deploy", status: "completed", conclusion: "cancelled" }
+          ]
+        }
+      }),
+      listAnnotations: async () => ({ data: [] })
+    },
+    actions: {
+      downloadJobLogsForWorkflowRun: async () => ({ data: "" })
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.equal(snapshot.conclusion, "failure");
+  assert.deepEqual(snapshot.failedRuns?.map(run => run.id), [81]);
+});
+
+test("GitHubService: CI snapshot treats neutral and skipped checks as positive verdicts", async () => {
+  const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };
+  service.octokit = {
+    checks: {
+      listForRef: async () => ({
+        data: {
+          check_runs: [
+            { id: 90, name: "lint", status: "completed", conclusion: "success" },
+            { id: 91, name: "docs", status: "completed", conclusion: "neutral" },
+            { id: 92, name: "release-notes", status: "completed", conclusion: "skipped" }
+          ]
+        }
+      })
+    }
+  };
+
+  const snapshot = await service.getPullRequestCiSnapshot("org/repo", "abc123");
+
+  assert.deepEqual(snapshot, { headSha: "abc123", conclusion: "success" });
+});
+
 test("GitHubService: discussion comments paginate across pages", async () => {
   const calls: Array<{ page: number; per_page: number }> = [];
   const service = Object.create(GitHubService.prototype) as GitHubService & { octokit: any };

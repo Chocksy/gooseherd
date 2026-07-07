@@ -219,7 +219,7 @@ test("orchestrator auto-launches one linked run for auto_review items applying r
   assert.equal(runRows[0]?.intent?.kind, "feature_delivery.apply_review_feedback");
 });
 
-test("orchestrator launches a standalone ci-fix run for auto_review ci_failed", async (t) => {
+test("orchestrator launches a triage run for auto_review ci_failed", async (t) => {
   const { db, cleanup, workItem } = await createAutoReviewFixture("ci_failed");
   t.after(cleanup);
   const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
@@ -234,14 +234,40 @@ test("orchestrator launches a standalone ci-fix run for auto_review ci_failed", 
   assert.equal(workItemRow?.state, "auto_review");
   assert.equal(workItemRow?.substate, "ci_failed");
   assert.equal(runRows.length, 1);
-  assert.equal(runRows[0]?.requestedBy, "work-item:ci-fix");
-  assert.equal(runRows[0]?.pipelineHint, "ci-fix");
-  assert.equal(runRows[0]?.intentKind, "feature_delivery.repair_ci");
-  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.repair_ci");
+  assert.equal(runRows[0]?.requestedBy, "work-item:ci-triage");
+  assert.equal(runRows[0]?.pipelineHint, "triage-ci");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.triage_ci");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.triage_ci");
   assert.equal(runRows[0]?.branchName, "feature/hbl-404");
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_failed");
   assert.equal(runRows[0]?.runtime, "kubernetes");
+});
+
+test("orchestrator launches a repair_ci run when ci_triage_fix_decided flag is set", async (t) => {
+  const { db, cleanup, workItem } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  await new WorkItemStore(db).updateState(workItem.id, {
+    state: "auto_review",
+    substate: "ci_failed",
+    flagsToAdd: ["ci_triage_fix_decided"],
+  });
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await reconcileWorkItem(db, workItem.id, "ci.triage_fix_needed", {
+    config: { defaultBaseBranch: "release/2026.04", sandboxRuntime: "kubernetes" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.substate, "ci_failed");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:ci-fix");
+  assert.equal(runRows[0]?.pipelineHint, "ci-fix");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.repair_ci");
+  assert.equal(runRows[0]?.intent?.kind, "feature_delivery.repair_ci");
+  assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_failed");
 });
 
 test("orchestrator launches a self-review run for auto_review ci_green_pending_self_review", async (t) => {
@@ -267,6 +293,25 @@ test("orchestrator launches a self-review run for auto_review ci_green_pending_s
   assert.equal(runRows[0]?.parentBranchName, "feature/hbl-404");
   assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_green_pending_self_review");
   assert.equal(runRows[0]?.runtime, "kubernetes");
+});
+
+test("orchestrator does not auto-launch runs when work item is in auto_review/waiting_ci with ai:assist enabled", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "auto_review",
+    substate: "waiting_ci",
+    flags: ["self_review_done"],
+  });
+  t.after(cleanup);
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await reconcileWorkItem(db, workItem.id, "github.pr_adopted");
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.state, "auto_review");
+  assert.equal(workItemRow?.substate, "waiting_ci");
+  assert.equal(runRows.length, 0);
 });
 
 test("orchestrator does not auto-launch runs when ai:assist automation is disabled", async (t) => {
@@ -644,7 +689,7 @@ test("orchestrator reconcile does not treat active branch-sync run as active aut
   const runRows = await runStore.listRunsForWorkItem(workItem.id);
   assert.equal(runRows.length, 2);
   assert.ok(runRows.some((run) => run.intent?.kind === "feature_delivery.sync_branch"));
-  assert.ok(runRows.some((run) => run.intent?.kind === "feature_delivery.repair_ci"));
+  assert.ok(runRows.some((run) => run.intent?.kind === "feature_delivery.triage_ci"));
 });
 
 test("orchestrator reconcile does not duplicate an existing active work-item:ci-fix run", async (t) => {
@@ -783,4 +828,344 @@ test("orchestrator does not roll back superseded auto-review launches", async (t
 
   const updated = await (new WorkItemService(db)).getWorkItem(workItem.id);
   assert.equal(updated?.substate, "collecting_context");
+});
+
+test("orchestrator reconcileWorkItem launches a triage run for ci_failed substate", async (t) => {
+  const { db, cleanup, workItem } = await createFeatureDeliveryFixture({
+    state: "auto_review",
+    substate: "ci_failed",
+    flags: ["pr_opened", "ai_assist_enabled", "engineering_review_done", "qa_review_done"],
+  });
+  t.after(cleanup);
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  const updated = await reconcileWorkItem(db, workItem.id, "periodic.ci_failed_recovery", {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(updated?.substate, "ci_failed");
+  assert.equal(workItemRow?.state, "auto_review");
+  assert.equal(workItemRow?.substate, "ci_failed");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.requestedBy, "work-item:ci-triage");
+  assert.equal(runRows[0]?.intentKind, "feature_delivery.triage_ci");
+  assert.equal(runRows[0]?.autoReviewSourceSubstate, "ci_failed");
+
+  const events = await db
+    .select()
+    .from(workItemEvents)
+    .where(eq(workItemEvents.workItemId, workItem.id));
+  const launched = events.find((event) => event.eventType === "run.auto_launched");
+  assert.ok(launched, "run.auto_launched event should be appended");
+  assert.equal((launched!.payload as Record<string, unknown>).reason, "periodic.ci_failed_recovery");
+});
+
+test("orchestrator reconcileWorkItem is a no-op for ci_failed when an active system run already exists", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createFeatureDeliveryFixture({
+    state: "auto_review",
+    substate: "ci_failed",
+    flags: ["pr_opened", "ai_assist_enabled"],
+  });
+  t.after(cleanup);
+
+  await runStore.createRun({
+    repoSlug: workItem.repo!,
+    task: "stub",
+    baseBranch: "main",
+    requestedBy: "work-item:ci-fix",
+    channelId: workItem.homeChannelId,
+    threadTs: workItem.homeThreadTs,
+    runtime: "local",
+    workItemId: workItem.id,
+    autoReviewSourceSubstate: "ci_failed",
+    pipelineHint: "feature_delivery.ci_fix",
+  }, "gooseherd", workItem.githubPrHeadBranch);
+
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+  await reconcileWorkItem(db, workItem.id);
+
+  const runs = await runStore.listRunsForWorkItem(workItem.id);
+  assert.equal(runs.length, 1, "no new run should be queued while one is in flight");
+});
+
+async function createTriageRun(runStore: RunStore, workItem: {
+  id: string;
+  homeChannelId: string;
+  homeThreadTs: string;
+  repo?: string;
+  title: string;
+  githubPrHeadBranch?: string;
+  githubPrUrl?: string;
+  githubPrNumber?: number;
+}) {
+  const run = await runStore.createRun(
+    {
+      repoSlug: workItem.repo!,
+      task: `Triage CI for ${workItem.title}`,
+      baseBranch: "main",
+      requestedBy: "work-item:ci-triage",
+      channelId: workItem.homeChannelId,
+      threadTs: workItem.homeThreadTs,
+      runtime: "local",
+      workItemId: workItem.id,
+      autoReviewSourceSubstate: "ci_failed",
+      prUrl: workItem.githubPrUrl,
+      prNumber: workItem.githubPrNumber,
+      intent: {
+        version: 1,
+        kind: "feature_delivery.triage_ci",
+        source: "work_item",
+        workItemId: workItem.id,
+        repo: workItem.repo!,
+        prNumber: workItem.githubPrNumber!,
+        prUrl: workItem.githubPrUrl!,
+        sourceSubstate: "ci_failed",
+      },
+    },
+    "gooseherd",
+    workItem.githubPrHeadBranch,
+  );
+  return runStore.updateRun(run.id, { status: "completed", phase: "agent" });
+}
+
+test("orchestrator handleCiTriageCheckpoint sets repair_ci flag for verdict=fix_needed", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const triageRun = await createTriageRun(runStore, workItem);
+  const { WorkItemOrchestrator } = await import("../src/work-items/orchestrator.js");
+  const orchestrator = new WorkItemOrchestrator(db, {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  await orchestrator.handleCiTriageCheckpoint(triageRun.id, {
+    checkpointType: "run.ci_triage_decided",
+    payload: { verdict: "fix_needed", reason: "spec failure caused by diff" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.ok(workItemRow?.flags.includes("ci_triage_fix_decided"));
+  assert.equal(workItemRow?.substate, "ci_failed");
+
+  const runs = await runStore.listRunsForWorkItem(workItem.id);
+  const repairRun = runs.find((run) => run.intent?.kind === "feature_delivery.repair_ci");
+  assert.ok(repairRun, "repair_ci run should be queued after fix_needed verdict");
+});
+
+test("orchestrator handleCiTriageCheckpoint exhausts rerun budget when verdict=rerun has no failedJobIds", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const triageRun = await createTriageRun(runStore, workItem);
+  const rerunCalls: Array<{ repo: string; jobIds: number[] }> = [];
+  const { WorkItemOrchestrator } = await import("../src/work-items/orchestrator.js");
+  const orchestrator = new WorkItemOrchestrator(db, {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+    githubService: {
+      rerunFailedJobsForCheckRuns: async (repoSlug: string, jobIds: number[]) => {
+        rerunCalls.push({ repo: repoSlug, jobIds });
+        return { rerunRunIds: [123], unresolvedJobIds: [], failedRunIds: [] };
+      },
+      getPullRequestCiSnapshot: async () => ({ conclusion: "failure" }),
+    } as unknown as ConstructorParameters<typeof WorkItemOrchestrator>[1]["githubService"],
+  });
+
+  await orchestrator.handleCiTriageCheckpoint(triageRun.id, {
+    checkpointType: "run.ci_triage_decided",
+    payload: { verdict: "rerun", reason: "flaky", headSha: workItem.githubPrHeadSha, failedJobIds: [] },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.ok(workItemRow?.flags.includes("ci_rerun_exhausted"));
+  assert.equal(rerunCalls.length, 0, "GitHub rerun must not be invoked without failedJobIds");
+
+  const events = await db
+    .select()
+    .from(workItemEvents)
+    .where(eq(workItemEvents.workItemId, workItem.id));
+  const exhaustedEvent = events.find((event) => event.eventType === "ci.rerun_exhausted");
+  assert.ok(exhaustedEvent, "ci.rerun_exhausted event should be appended");
+  assert.equal((exhaustedEvent!.payload as Record<string, unknown>).reason, "missing_failed_job_ids");
+});
+
+test("orchestrator handleCiTriageCheckpoint exhausts rerun budget when GitHub rerun returns no run IDs", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const triageRun = await createTriageRun(runStore, workItem);
+  const { WorkItemOrchestrator } = await import("../src/work-items/orchestrator.js");
+  const orchestrator = new WorkItemOrchestrator(db, {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+    githubService: {
+      rerunFailedJobsForCheckRuns: async () => ({
+        rerunRunIds: [],
+        unresolvedJobIds: [42],
+        failedRunIds: [],
+      }),
+      getPullRequestCiSnapshot: async () => ({ conclusion: "failure" }),
+    } as unknown as ConstructorParameters<typeof WorkItemOrchestrator>[1]["githubService"],
+  });
+
+  await orchestrator.handleCiTriageCheckpoint(triageRun.id, {
+    checkpointType: "run.ci_triage_decided",
+    payload: { verdict: "rerun", reason: "flaky", headSha: workItem.githubPrHeadSha, failedJobIds: [42] },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.ok(workItemRow?.flags.includes("ci_rerun_exhausted"));
+  assert.notEqual(workItemRow?.substate, "ci_rerunning");
+
+  const events = await db
+    .select()
+    .from(workItemEvents)
+    .where(eq(workItemEvents.workItemId, workItem.id));
+  const exhaustedEvent = events.find((event) => event.eventType === "ci.rerun_exhausted");
+  assert.ok(exhaustedEvent);
+  assert.equal((exhaustedEvent!.payload as Record<string, unknown>).reason, "no_workflow_runs_rerun");
+});
+
+test("orchestrator handleCiTriageCheckpoint transitions to ci_rerunning when rerun succeeds", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const triageRun = await createTriageRun(runStore, workItem);
+  const { WorkItemOrchestrator } = await import("../src/work-items/orchestrator.js");
+  const orchestrator = new WorkItemOrchestrator(db, {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+    githubService: {
+      rerunFailedJobsForCheckRuns: async () => ({
+        rerunRunIds: [777],
+        unresolvedJobIds: [],
+        failedRunIds: [],
+      }),
+      getPullRequestCiSnapshot: async () => ({ conclusion: "failure" }),
+    } as unknown as ConstructorParameters<typeof WorkItemOrchestrator>[1]["githubService"],
+  });
+
+  await orchestrator.handleCiTriageCheckpoint(triageRun.id, {
+    checkpointType: "run.ci_triage_decided",
+    payload: { verdict: "rerun", reason: "flaky", headSha: workItem.githubPrHeadSha, failedJobIds: [42] },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.equal(workItemRow?.substate, "ci_rerunning");
+  assert.equal(workItemRow?.flags.includes("ci_rerun_exhausted"), false);
+
+  const events = await db
+    .select()
+    .from(workItemEvents)
+    .where(eq(workItemEvents.workItemId, workItem.id));
+  assert.ok(events.some((event) => event.eventType === "ci.rerun_triggered"));
+});
+
+test("orchestrator does not auto-launch a system run while substate is ci_rerunning", async (t) => {
+  const { db, cleanup, workItem } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  await new WorkItemStore(db).updateState(workItem.id, {
+    state: "auto_review",
+    substate: "ci_rerunning",
+  });
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+
+  await reconcileWorkItem(db, workItem.id, "test.ci_rerunning_should_be_passive", {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.equal(workItemRow?.substate, "ci_rerunning");
+  assert.equal(runRows.length, 0, "ci_rerunning is a passive waiting state — no run should be launched");
+});
+
+test("orchestrator exhausts rerun budget after MAX_CI_RERUN_ATTEMPTS_PER_HEAD_SHA reruns for the same headSha", async (t) => {
+  const { db, cleanup, workItem } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const headSha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+  await new WorkItemStore(db).linkPullRequest(workItem.id, {
+    githubPrNumber: workItem.githubPrNumber!,
+    githubPrUrl: workItem.githubPrUrl,
+    githubPrBaseBranch: workItem.githubPrBaseBranch,
+    githubPrHeadBranch: workItem.githubPrHeadBranch,
+    githubPrHeadSha: headSha,
+  });
+
+  const { WorkItemEventsStore } = await import("../src/work-items/events-store.js");
+  const events = new WorkItemEventsStore(db);
+  await events.append({
+    workItemId: workItem.id,
+    eventType: "ci.rerun_triggered",
+    payload: { headSha },
+  });
+  await events.append({
+    workItemId: workItem.id,
+    eventType: "ci.rerun_triggered",
+    payload: { headSha },
+  });
+
+  const { reconcileWorkItem } = await import("../src/work-items/orchestrator.js");
+  await reconcileWorkItem(db, workItem.id, "test.rerun_budget_check", {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  const runRows = await (new RunStore(db)).listRunsForWorkItem(workItem.id);
+
+  assert.ok(workItemRow?.flags.includes("ci_rerun_exhausted"));
+  assert.equal(runRows.length, 0, "no triage/repair run should be launched once the rerun budget is exhausted");
+});
+
+test("orchestrator handleCiTriageRunFailure falls back to fix_needed when triage run fails without a verdict", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const triageRun = await createTriageRun(runStore, workItem);
+  await runStore.updateRun(triageRun.id, { status: "failed", error: "Triage agent crashed" });
+  const { WorkItemOrchestrator } = await import("../src/work-items/orchestrator.js");
+  const orchestrator = new WorkItemOrchestrator(db, {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  await orchestrator.handleCiTriageRunFailure(triageRun.id);
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.ok(workItemRow?.flags.includes("ci_triage_fix_decided"));
+  assert.equal(workItemRow?.substate, "ci_failed");
+
+  const runs = await runStore.listRunsForWorkItem(workItem.id);
+  const repairRun = runs.find((run) => run.intent?.kind === "feature_delivery.repair_ci");
+  assert.ok(repairRun, "fallback should queue a repair_ci run");
+
+  const events = await db
+    .select()
+    .from(workItemEvents)
+    .where(eq(workItemEvents.workItemId, workItem.id));
+  const triageEvent = events.find((e) => e.eventType === "ci.triage_decided");
+  assert.ok(triageEvent, "ci.triage_decided event should be appended for the fallback");
+  assert.equal((triageEvent!.payload as Record<string, unknown>).fallback, true);
+});
+
+test("orchestrator handleCiTriageRunFailure is a no-op if the run already emitted a verdict checkpoint", async (t) => {
+  const { db, cleanup, workItem, runStore } = await createAutoReviewFixture("ci_failed");
+  t.after(cleanup);
+  const triageRun = await createTriageRun(runStore, workItem);
+  await runStore.updateRun(triageRun.id, { status: "failed", error: "Notify step crashed" });
+
+  const { RunCheckpointStore } = await import("../src/runs/run-checkpoint-store.js");
+  const checkpointStore = new RunCheckpointStore(db);
+  await checkpointStore.emit({
+    runId: triageRun.id,
+    checkpointKey: "ci_triage_decided",
+    checkpointType: "run.ci_triage_decided",
+    payload: { verdict: "rerun" },
+  });
+
+  const { WorkItemOrchestrator } = await import("../src/work-items/orchestrator.js");
+  const orchestrator = new WorkItemOrchestrator(db, {
+    config: { defaultBaseBranch: "main", sandboxRuntime: "local" },
+  });
+
+  const result = await orchestrator.handleCiTriageRunFailure(triageRun.id);
+  assert.equal(result, undefined);
+
+  const workItemRow = await (new WorkItemService(db)).getWorkItem(workItem.id);
+  assert.equal(workItemRow?.flags.includes("ci_triage_fix_decided"), false);
 });

@@ -39,6 +39,18 @@ export interface LlmJudgeConfig {
   prompt: string;
 }
 
+/**
+ * Passes when the run "correctly did nothing" — its terminal status/error matches
+ * one of the expected outcomes (e.g. `no_changes`, `context_conflict`), or when
+ * `allow_empty_diff` is set and a completed run produced an empty diff. Makes
+ * refusing to invent work a PASSING benchmark result.
+ */
+export interface ExpectedOutcomeJudgeConfig {
+  type: "expected_outcome";
+  expect: string[];
+  allow_empty_diff?: boolean;
+}
+
 export type EvalJudgeConfig =
   | StatusJudgeConfig
   | FilesChangedJudgeConfig
@@ -46,7 +58,8 @@ export type EvalJudgeConfig =
   | PrCreatedJudgeConfig
   | GateVerdictJudgeConfig
   | BrowserVerdictJudgeConfig
-  | LlmJudgeConfig;
+  | LlmJudgeConfig
+  | ExpectedOutcomeJudgeConfig;
 
 // ── Scenario ──
 

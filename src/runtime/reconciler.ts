@@ -1,3 +1,4 @@
+import type { RunStatus } from "../types.js";
 import type { RunStore } from "../store.js";
 import type { ControlPlaneStore } from "./control-plane-store.js";
 import type { TerminalFact } from "./terminal-fact.js";
@@ -12,6 +13,10 @@ interface RuntimeFactsReader {
   getTerminalFact(runId: string): Promise<TerminalFact>;
 }
 
+function isTerminalRunStatus(status: RunStatus | undefined): boolean {
+  return status === "failed" || status === "completed" || status === "cancelled";
+}
+
 export class RuntimeReconciler {
   constructor(
     private readonly controlPlaneStore: Pick<ControlPlaneStore, "getLatestCompletion" | "listEventsAfterSequence">,
@@ -24,8 +29,17 @@ export class RuntimeReconciler {
   async reconcileRun(runId: string): Promise<void> {
     await this.drainCheckpointEvents(runId);
     const completion = await this.controlPlaneStore.getLatestCompletion(runId);
-    const fact = await this.runtimeFacts.getTerminalFact(runId);
     const run = await this.runStore.getRun(runId);
+
+    if (!run) {
+      return;
+    }
+
+    if (!completion && isTerminalRunStatus(run.status)) {
+      return;
+    }
+
+    const fact = await this.runtimeFacts.getTerminalFact(runId);
     const terminalWithoutCompletion = !completion && (fact === "succeeded" || fact === "failed" || fact === "missing");
 
     if (run?.status === "cancel_requested" && fact !== "running") {

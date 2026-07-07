@@ -4,6 +4,8 @@
 **Status:** Draft approved in conversation, written for review  
 **Base branch for implementation:** `feat/kubernetes-runtime`
 
+> **Update (2026-05-04, PR #69):** The `revalidating_after_rebase` substate listed in the substate enumeration has been removed. CI failures normalize to `auto_review/ci_failed` regardless of the originating state — see `2026-04-20-auto-review-ci-fix-substates-design.md` for the canonical substate set.
+
 ## Goal
 
 Introduce a high-level `WorkItem` domain model above `Run`, with workflow-specific lifecycle/state, review coordination, and a Kanban board UI.

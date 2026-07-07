@@ -10,6 +10,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunWaitTimeoutMs,
 } from "../src/runtime/kubernetes-env.js";
 
 test("kubernetes env resolvers use explicit env overrides", () => {
@@ -83,5 +84,47 @@ test("kubernetes internal base URL falls back to public URL before host.minikube
     );
   } finally {
     process.env = originalEnv;
+  }
+});
+
+function withWaitTimeoutEnv<T>(value: string | undefined, fn: () => T): T {
+  const original = process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS;
+  try {
+    if (value === undefined) {
+      delete process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS;
+    } else {
+      process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS = value;
+    }
+    return fn();
+  } finally {
+    if (original === undefined) {
+      delete process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS;
+    } else {
+      process.env.KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS = original;
+    }
+  }
+}
+
+test("resolveKubernetesRunWaitTimeoutMs: defaults to 600s when env unset", () => {
+  withWaitTimeoutEnv(undefined, () => {
+    assert.equal(resolveKubernetesRunWaitTimeoutMs(), 600_000);
+  });
+});
+
+test("resolveKubernetesRunWaitTimeoutMs: reads value from env in seconds", () => {
+  withWaitTimeoutEnv("1800", () => {
+    assert.equal(resolveKubernetesRunWaitTimeoutMs(), 1_800_000);
+  });
+});
+
+test("resolveKubernetesRunWaitTimeoutMs: rejects non-positive, non-numeric, and lossy values", () => {
+  for (const bad of ["", "  ", "0", "-30", "abc", "NaN", "600.5", "600abc", "undefined", "1e3"]) {
+    withWaitTimeoutEnv(bad, () => {
+      assert.equal(
+        resolveKubernetesRunWaitTimeoutMs(),
+        600_000,
+        `value=${JSON.stringify(bad)} should fall back to default`,
+      );
+    });
   }
 });

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { describe, test, mock } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createTestDb, type TestDb } from "./helpers/test-db.js";
@@ -874,14 +874,14 @@ describe("clone node dynamic token", () => {
     cloneNode = mod.cloneNode;
   });
 
-  test("clone node uses githubService.getToken for authenticated URL", async () => {
+  test("clone node resolves clone URL via githubService.getCloneUrl", async () => {
     // We don't want to actually clone, so we create deps that will fail on the
-    // shell call but verify the token was requested
-    let tokenCalled = false;
+    // shell call but verify the clone URL was resolved through the service.
+    let cloneUrlCalledFor: string | undefined;
     const mockGithubService = {
-      getToken: async () => {
-        tokenCalled = true;
-        return "ghs_freshtoken";
+      getCloneUrl: async (repoSlug: string) => {
+        cloneUrlCalledFor = repoSlug;
+        return `https://x-access-token:ghs_freshtoken@github.com/${repoSlug}.git`;
       }
     };
 
@@ -892,15 +892,86 @@ describe("clone node dynamic token", () => {
 
     const ctx = makeMockContextBag({});
 
-    // This will fail during the git clone shell command (which is expected)
-    // but we verify the token was fetched
     try {
       await cloneNode({}, ctx, mockDeps);
     } catch {
       // Expected failure — we don't have a real repo
     }
 
-    assert.ok(tokenCalled, "Clone node should call githubService.getToken()");
+    assert.equal(cloneUrlCalledFor, "org/repo");
+  });
+
+  test("clone node checks out reuse branch from a shallow single-branch clone", async () => {
+    const { runShell, runShellCapture, shellEscape } = await import("../src/pipeline/shell.js");
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "gooseherd-clone-test-"));
+    try {
+      const sourceDir = path.join(tmpRoot, "source");
+      const bareDir = path.join(tmpRoot, "origin.git");
+      const workRoot = path.join(tmpRoot, "work");
+
+      // Build a source repo with master + a feature branch to reuse.
+      await runShell(`git init -q -b master ${shellEscape(sourceDir)}`, { logFile: "/dev/null" });
+      await runShell(`git -C ${shellEscape(sourceDir)} config user.email test@local`, { logFile: "/dev/null" });
+      await runShell(`git -C ${shellEscape(sourceDir)} config user.name Test`, { logFile: "/dev/null" });
+      await writeFile(path.join(sourceDir, "README.md"), "master\n");
+      await runShell(`git -C ${shellEscape(sourceDir)} add README.md`, { logFile: "/dev/null" });
+      await runShell(`git -C ${shellEscape(sourceDir)} commit -q -m master`, { logFile: "/dev/null" });
+      await runShell(`git -C ${shellEscape(sourceDir)} checkout -q -b feature`, { logFile: "/dev/null" });
+      await writeFile(path.join(sourceDir, "feature.md"), "feature\n");
+      await runShell(`git -C ${shellEscape(sourceDir)} add feature.md`, { logFile: "/dev/null" });
+      await runShell(`git -C ${shellEscape(sourceDir)} commit -q -m feature`, { logFile: "/dev/null" });
+      await runShell(`git -C ${shellEscape(sourceDir)} checkout -q master`, { logFile: "/dev/null" });
+      await runShell(`git clone -q --bare ${shellEscape(sourceDir)} ${shellEscape(bareDir)}`, { logFile: "/dev/null" });
+
+      // file:// forces git's smart-protocol path so --depth (and the
+      // implicit --single-branch) actually shape origin's fetch refspec —
+      // the real-world condition that triggered the bug.
+      const cloneUrl = `file://${bareDir}`;
+      const mockGithubService = {
+        getCloneUrl: async () => cloneUrl
+      };
+
+      const runId = "reuse-test-run";
+      const repoDir = path.join(workRoot, runId, "repo");
+      const mockDeps: import("../src/pipeline/types.js").NodeDeps = {
+        config: makeMinimalConfig({ dryRun: false }),
+        logFile: "/dev/null",
+        workRoot,
+        run: {
+          id: runId,
+          status: "running",
+          phase: "cloning",
+          repoSlug: "org/repo",
+          task: "test task",
+          baseBranch: "master",
+          branchName: "feature",
+          parentBranchName: "feature",
+          requestedBy: "U123",
+          channelId: "C123",
+          threadTs: "1234.5678",
+          createdAt: new Date().toISOString()
+        },
+        onPhase: async () => {},
+        githubService: mockGithubService as any
+      };
+
+      const ctx = makeMockContextBag({});
+      const result = await cloneNode({ config: { depth: 1 } }, ctx, mockDeps);
+
+      assert.equal(result.outcome, "success", `clone failed: ${result.error ?? ""}`);
+
+      const head = await runShellCapture(
+        "git rev-parse --abbrev-ref HEAD",
+        { cwd: repoDir, logFile: "/dev/null" }
+      );
+      assert.equal(head.stdout.trim(), "feature");
+
+      // The feature-branch commit must be present in the working tree —
+      // proves we actually fetched and checked out the branch's tip.
+      await access(path.join(repoDir, "feature.md"));
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 

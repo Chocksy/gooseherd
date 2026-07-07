@@ -40,6 +40,8 @@ import { FileArtifactStore } from "./runtime/file-artifact-store.js";
 import type { ArtifactStore } from "./runtime/artifact-store.js";
 import { RuntimeReconciler } from "./runtime/reconciler.js";
 import { recoverRunsAfterRestart } from "./runtime/startup-recovery.js";
+import { RunnerDbSlotManager } from "./runtime/runner-db-slot-manager.js";
+import { resolveRunnerProfile } from "./runtime/runner-profile.js";
 import { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
 import { RunCheckpointStore } from "./runs/run-checkpoint-store.js";
 import { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
@@ -49,6 +51,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunWaitTimeoutMs,
 } from "./runtime/kubernetes-env.js";
 import type { WorkItemActor } from "./work-items/actor.js";
 import {
@@ -380,6 +383,8 @@ async function createWorkItemServices(
       resetEngineeringReviewOnNewCommits: config.featureDeliveryResetEngineeringReviewOnNewCommits,
       resetQaReviewOnNewCommits: config.featureDeliveryResetQaReviewOnNewCommits,
       skipProductReview: config.featureDeliverySkipProductReview,
+      selfReviewEnabled: config.featureDeliverySelfReviewEnabled,
+      applyReviewFeedbackEnabled: config.featureDeliveryApplyReviewFeedbackEnabled,
       reconcileWorkItem: async (workItemId, reason) => {
         await workItemOrchestratorRef.current?.reconcileWorkItem(workItemId, reason);
       },
@@ -657,7 +662,10 @@ async function createDashboardWorkItemsBundle(
       sandboxRuntime: config.sandboxRuntime,
       autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
       featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
+      featureDeliverySelfReviewEnabled: config.featureDeliverySelfReviewEnabled,
+      featureDeliveryApplyReviewFeedbackEnabled: config.featureDeliveryApplyReviewFeedbackEnabled,
     },
+    githubService,
     qaPreparationHandler,
     readyForMergeHandler,
     runManager,
@@ -719,9 +727,12 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
           sandboxRuntime: config.sandboxRuntime,
           autoReviewBranchSyncMaxBehindCommits: config.autoReviewBranchSyncMaxBehindCommits,
           featureDeliverySkipProductReview: config.featureDeliverySkipProductReview,
+          featureDeliverySelfReviewEnabled: config.featureDeliverySelfReviewEnabled,
+          featureDeliveryApplyReviewFeedbackEnabled: config.featureDeliveryApplyReviewFeedbackEnabled,
         },
         qaPreparationHandler: workItemServices.qaPreparationHandler,
         readyForMergeHandler: workItemServices.readyForMergeHandler,
+        githubService: coreServices.githubService,
       }, runCheckpointStore)
     : undefined;
   const runtimeFactsReader = config.sandboxRuntime === "kubernetes"
@@ -744,6 +755,9 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     publicBaseUrl,
     coreServices.controlPlaneStore,
   );
+  const runnerDbSlotManager = config.sandboxRuntime === "kubernetes"
+    ? new RunnerDbSlotManager(db)
+    : undefined;
   const kubernetesBackend = config.sandboxRuntime === "kubernetes"
     ? new (await import("./runtime/kubernetes-backend.js")).KubernetesExecutionBackend({
         controlPlaneStore: coreServices.controlPlaneStore,
@@ -756,7 +770,9 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
         namespace: resolveKubernetesNamespace(),
+        waitTimeoutMs: resolveKubernetesRunWaitTimeoutMs(),
         runnerConfigSource: config,
+        runnerDbSlotManager,
       })
     : undefined;
   const runtimeRegistry: RuntimeRegistry = {
@@ -775,6 +791,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
     runContextPrefetcher,
     runCheckpointStore,
     runCheckpointProcessor,
+    runnerDbSlotManager,
   );
   runManager.onRunTerminal((runId, _status, runtime) => {
     if (runtime !== "kubernetes") {
@@ -785,7 +802,37 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
       const message = error instanceof Error ? error.message : "unknown";
       logError("Failed to reconcile terminal kubernetes run", { runId, error: message });
     });
+
+    if (runnerDbSlotManager) {
+      // Best-effort teardown — Run already reached terminal state, slot
+      // residue is bounded and the orphan sweeper is the safety net.
+      coreServices.store.getRun(runId).then((run) => {
+        if (!run) return;
+        const profile = resolveRunnerProfile(run.repoSlug);
+        return runnerDbSlotManager.releaseForRun(runId, profile);
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : "unknown";
+        logError("Failed to release runner DB slot", { runId, error: message });
+      });
+    }
   });
+
+  if (runnerDbSlotManager) {
+    const SWEEP_INTERVAL_MS = 60_000;
+    const ORPHAN_MAX_AGE_MS = 30 * 60_000;
+    const sweepTimer = setInterval(() => {
+      const cutoff = new Date(Date.now() - ORPHAN_MAX_AGE_MS);
+      runnerDbSlotManager.sweepOrphans(cutoff, async (runId) => {
+        if (!runId) return null;
+        const run = await coreServices.store.getRun(runId);
+        return run ? resolveRunnerProfile(run.repoSlug) : null;
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : "unknown";
+        logError("Failed to sweep runner DB slot orphans", { error: message });
+      });
+    }, SWEEP_INTERVAL_MS);
+    sweepTimer.unref?.();
+  }
 
   const conversationStore = new ConversationStore({ db });
   await conversationStore.load();
@@ -843,6 +890,10 @@ function checkAgentDefault(config: { agentCommandTemplate: string }): void {
 }
 
 async function applyActiveAgentProfile(config: AppConfig, agentProfileStore: AgentProfileStore): Promise<void> {
+  const routingSnapshot = await agentProfileStore.getRoutingSnapshot();
+  config.agentProfileCatalog = routingSnapshot.profiles;
+  config.agentProfilePolicies = routingSnapshot.policies;
+
   const activeAgentProfile = await agentProfileStore.getActive();
   if (activeAgentProfile) {
     config.agentCommandTemplate = await agentProfileStore.getEffectiveCommandTemplate(
@@ -882,6 +933,11 @@ function wireWorkItemLifecycleHandlers(runManager: RunManager, workItemOrchestra
     workItemOrchestrator.handlePrefetchFailure(runId).catch((error) => {
       const message = error instanceof Error ? error.message : "unknown";
       logError("Failed to roll back auto-review work item after prefetch failure", { runId, error: message });
+    });
+
+    workItemOrchestrator.handleCiTriageRunFailure(runId).catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown";
+      logError("Failed to apply CI triage fallback after triage run failed", { runId, error: message });
     });
   });
 }

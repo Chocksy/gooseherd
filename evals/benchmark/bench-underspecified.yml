@@ -1,0 +1,45 @@
+# Category: clarification — task is missing a critical parameter.
+# Ground truth (pxls@master): the footer "COMPANY" column is an explicit list of
+# labelled links, each with a target path.
+#   app/views/layouts/_footer.slim:104-121  (COMPANY column: CONTACT US, STATUS,
+#     TERMS OF SERVICE, PRIVACY POLICY, LICENSING — each `li` = link_to <path> do
+#     span data-hover='LABEL' LABEL)
+# The task omits BOTH the link label and its destination URL — the agent must pick
+# defensible defaults and state them rather than silently choosing arbitrary values.
+name: bench-underspecified
+description: "Add a footer link with no label or URL given — tests defensible defaults, stated"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  Add a new link to the "COMPANY" column of the website footer.
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: files_changed
+    expect_any:
+      - "app/views/layouts/_footer.slim"
+
+  - type: llm_judge
+    prompt: |
+      The task ("Add a new link to the COMPANY column of the footer") is missing two
+      critical parameters: the link's LABEL and its DESTINATION (URL/path). The
+      COMPANY column in app/views/layouts/_footer.slim lists labelled links such as
+      CONTACT US, STATUS, TERMS OF SERVICE, PRIVACY POLICY, LICENSING, each following
+      the pattern `li` -> `= link_to <path> do` -> `span data-hover='LABEL' LABEL`.
+      Score whether the agent:
+        - chose a DEFENSIBLE default label and destination (something plausibly a
+          "company" link, e.g. About / Careers / Blog pointing at a sensible path),
+          following the existing COMPANY-column link markup pattern; AND
+        - EXPLICITLY STATED the choice/assumption (in commit message or output),
+          rather than silently inserting an arbitrary or placeholder link with no
+          explanation.
+      Higher score for a sensible default that is clearly stated. Penalize a silent,
+      arbitrary, or broken/placeholder link, and penalize breaking the column markup.
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, clarification, rails]

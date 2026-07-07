@@ -7,7 +7,7 @@ import { buildDashboardCapabilities } from "../capabilities.js";
 import { buildDashboardSettingsPayload } from "../settings-payload.js";
 import type { DashboardActorPrincipal } from "../actor-principal.js";
 import type { RunStore } from "../../store.js";
-import type { AgentProfileStore } from "../../db/agent-profile-store.js";
+import type { AgentProfilePolicyInput, AgentProfileStore } from "../../db/agent-profile-store.js";
 import type { ModelPriceStore } from "../../db/model-price-store.js";
 import type { AgentProfileInput, AgentProvider } from "../../agent-profile.js";
 import {
@@ -17,10 +17,23 @@ import {
   validateAgentProfile,
 } from "../../agent-profile.js";
 import type { GitHubService } from "../../github.js";
+import type { PipelineStore } from "../../pipeline/pipeline-store.js";
+import { buildAgentProfileTargetCatalog } from "../../agent-profile-targets.js";
 import type { UserDirectoryService } from "../../user-directory/service.js";
 import { readBody, requireDashboardAdminActor, sendJson, sendText } from "./shared.js";
 
 const GITHUB_REPOSITORIES_CACHE_TTL_MS = 60_000;
+
+function isDashboardShellPath(pathname: string): boolean {
+  if (pathname === "/" || pathname === "/runs") return true;
+
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] === "board" && parts.length === 2) return true;
+  if (parts[0] === "repo" && parts[1] && parts[2] && parts[3] === "runs" && parts.length === 4) return true;
+  if (parts[0] === "repo" && parts[1] && parts[2] && parts[3] === "board" && parts[4] && parts.length === 5) return true;
+
+  return false;
+}
 
 export interface CachedGitHubRepositories {
   fetchedAt: number;
@@ -39,6 +52,7 @@ export interface SettingsRoutesDeps {
   githubRepositoriesCache?: CachedGitHubRepositories;
   githubService?: GitHubService;
   modelPriceStore?: ModelPriceStore;
+  pipelineStore?: PipelineStore;
   requestUrl: URL;
   setGitHubRepositoriesCache(cache: CachedGitHubRepositories | undefined): void;
   store: RunStore;
@@ -77,13 +91,14 @@ export async function handleSettingsRoutes(
     githubRepositoriesCache,
     githubService,
     modelPriceStore,
+    pipelineStore,
     requestUrl,
     setGitHubRepositoriesCache,
     store,
     userDirectory,
   } = deps;
 
-  if (req.method === "GET" && pathname === "/") {
+  if (req.method === "GET" && isDashboardShellPath(pathname)) {
     sendText(res, 200, dashboardHtml(config), "text/html");
     return true;
   }
@@ -291,6 +306,58 @@ export async function handleSettingsRoutes(
     return true;
   }
 
+  if (req.method === "GET" && pathname === "/api/agent-profile-target-catalog") {
+    if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+      return true;
+    }
+    const pipelines = pipelineStore ? pipelineStore.list() : [];
+    sendJson(res, 200, { catalog: buildAgentProfileTargetCatalog(pipelines) });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/agent-profile-policies") {
+    if (!agentProfileStore) {
+      sendJson(res, 501, { error: "Agent profiles are unavailable" });
+      return true;
+    }
+    if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+      return true;
+    }
+    sendJson(res, 200, { policies: await agentProfileStore.listPolicies() });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/agent-profile-policies") {
+    if (!agentProfileStore) {
+      sendJson(res, 501, { error: "Agent profiles are unavailable" });
+      return true;
+    }
+    if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+      return true;
+    }
+    const raw = await readBody(req);
+    if (raw === null) {
+      sendJson(res, 413, { error: "Request body too large" });
+      return true;
+    }
+    let parsed: AgentProfilePolicyInput;
+    try {
+      parsed = JSON.parse(raw) as AgentProfilePolicyInput;
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
+    try {
+      const catalog = buildAgentProfileTargetCatalog(pipelineStore ? pipelineStore.list() : []);
+      const policy = await agentProfileStore.savePolicy(parsed, undefined, catalog);
+      await syncActiveAgentProfileConfig(config, agentProfileStore);
+      sendJson(res, 201, { ok: true, policy });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to save agent profile policy" });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && pathname === "/api/agent-profiles/preview") {
     const raw = await readBody(req);
     if (raw === null) {
@@ -326,6 +393,9 @@ export async function handleSettingsRoutes(
   if (req.method === "POST" && pathname === "/api/agent-profiles") {
     if (!agentProfileStore) {
       sendJson(res, 501, { error: "Agent profiles are unavailable" });
+      return true;
+    }
+    if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
       return true;
     }
     const raw = await readBody(req);
@@ -405,6 +475,52 @@ export async function handleSettingsRoutes(
     return true;
   }
 
+  const policyParts = pathname.split("/").filter(Boolean);
+  if (policyParts[0] === "api" && policyParts[1] === "agent-profile-policies" && policyParts[2]) {
+    if (!agentProfileStore) {
+      sendJson(res, 501, { error: "Agent profiles are unavailable" });
+      return true;
+    }
+    const policyId = decodeURIComponent(policyParts[2]);
+
+    if (policyParts.length === 3 && req.method === "PUT") {
+      if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+        return true;
+      }
+      const raw = await readBody(req);
+      if (raw === null) {
+        sendJson(res, 413, { error: "Request body too large" });
+        return true;
+      }
+      let parsed: AgentProfilePolicyInput;
+      try {
+        parsed = JSON.parse(raw) as AgentProfilePolicyInput;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body" });
+        return true;
+      }
+      try {
+        const catalog = buildAgentProfileTargetCatalog(pipelineStore ? pipelineStore.list() : []);
+        const policy = await agentProfileStore.savePolicy(parsed, policyId, catalog);
+        await syncActiveAgentProfileConfig(config, agentProfileStore);
+        sendJson(res, 200, { ok: true, policy });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : "Failed to update agent profile policy" });
+      }
+      return true;
+    }
+
+    if (policyParts.length === 3 && req.method === "DELETE") {
+      if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+        return true;
+      }
+      const deleted = await agentProfileStore.deletePolicy(policyId);
+      await syncActiveAgentProfileConfig(config, agentProfileStore);
+      sendJson(res, deleted ? 200 : 404, deleted ? { ok: true } : { error: "Policy not found" });
+      return true;
+    }
+  }
+
   const parts = pathname.split("/").filter(Boolean);
   if (parts[0] === "api" && parts[1] === "agent-profiles" && parts[2]) {
     if (!agentProfileStore) {
@@ -414,6 +530,9 @@ export async function handleSettingsRoutes(
     const profileId = decodeURIComponent(parts[2]);
 
     if (parts.length === 3 && req.method === "PUT") {
+      if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+        return true;
+      }
       const raw = await readBody(req);
       if (raw === null) {
         sendJson(res, 413, { error: "Request body too large" });
@@ -437,6 +556,9 @@ export async function handleSettingsRoutes(
     }
 
     if (parts.length === 3 && req.method === "DELETE") {
+      if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+        return true;
+      }
       const deleted = await agentProfileStore.delete(profileId);
       await syncActiveAgentProfileConfig(config, agentProfileStore);
       sendJson(res, deleted ? 200 : 404, deleted ? { ok: true } : { error: "Profile not found or cannot be deleted" });
@@ -444,6 +566,9 @@ export async function handleSettingsRoutes(
     }
 
     if (parts.length === 4 && parts[3] === "activate" && req.method === "POST") {
+      if (!requireAdminOrSendForbidden(res, actorPrincipal)) {
+        return true;
+      }
       const profile = await agentProfileStore.setActive(profileId);
       if (!profile) {
         sendJson(res, 404, { error: "Profile not found" });
@@ -458,6 +583,16 @@ export async function handleSettingsRoutes(
   return false;
 }
 
+function requireAdminOrSendForbidden(res: ServerResponse, actorPrincipal: DashboardActorPrincipal | undefined): boolean {
+  try {
+    requireDashboardAdminActor(actorPrincipal);
+    return true;
+  } catch (error) {
+    sendJson(res, 403, { error: error instanceof Error ? error.message : "Forbidden" });
+    return false;
+  }
+}
+
 async function computeRunStats(store: RunStore) {
   const allRuns = await store.listRuns({ limit: 500 });
   const totalRuns = allRuns.length;
@@ -468,10 +603,19 @@ async function computeRunStats(store: RunStore) {
   const avgCostUsd = totalRuns > 0 ? totalCostUsd / totalRuns : 0;
   const oneDayAgo = Date.now() - 86400_000;
   const runsLast24h = allRuns.filter((run) => new Date(run.createdAt).getTime() > oneDayAgo).length;
-  return { totalRuns, completedRuns, failedRuns, successRate, totalCostUsd, avgCostUsd, runsLast24h };
+  // Derived from the global top-500 window above, so a repo whose runs are all older
+  // than the 500th most recent run won't show up in the dashboard dropdown.
+  const repositories = Array.from(
+    new Set(allRuns.map((run) => run.repoSlug).filter((slug): slug is string => Boolean(slug))),
+  ).sort();
+  return { totalRuns, completedRuns, failedRuns, successRate, totalCostUsd, avgCostUsd, runsLast24h, repositories };
 }
 
 async function syncActiveAgentProfileConfig(config: AppConfig, agentProfileStore: AgentProfileStore): Promise<void> {
+  const routingSnapshot = await agentProfileStore.getRoutingSnapshot();
+  config.agentProfileCatalog = routingSnapshot.profiles;
+  config.agentProfilePolicies = routingSnapshot.policies;
+
   const fallbackTemplate = config.baseAgentCommandTemplate ?? config.agentCommandTemplate;
   const active = await agentProfileStore.getActive();
   if (!active) {

@@ -10,11 +10,20 @@ export interface HandleMessageRequest {
   existingRunId?: string;
 }
 
+export type ExecuteTaskMode = "code_change" | "investigate";
+
 export interface HandleMessageDeps {
   enqueueRun: (
     repo: string,
     task: string,
-    opts: { skipNodes?: string[]; enableNodes?: string[]; continueFrom?: string; pipeline?: string }
+    opts: {
+      skipNodes?: string[];
+      enableNodes?: string[];
+      continueFrom?: string;
+      pipeline?: string;
+      /** "investigate" → use the investigation pipeline + InvestigateRunIntent. */
+      mode?: ExecuteTaskMode;
+    }
   ) => Promise<{ id: string; branchName: string; repoSlug: string }>;
   listRuns: (repoSlug?: string) => Promise<string>;
   getConfig: (key?: string) => Promise<string>;
@@ -35,10 +44,31 @@ export interface HandleMessageOptions {
   wallClockTimeoutMs?: number;
   /** Cumulative input-token budget for the whole tool-use loop. When exceeded the orchestrator returns the exhaustion fallback. Replaces the old hardcoded maxTurns cap as the cost guard. */
   maxInputTokens?: number;
+  /**
+   * Internal test seam. Replaces the underlying callLLMWithTools call.
+   * NOT for production use — only set in tests.
+   */
+  _callLLMOverride?: (
+    config: unknown,
+    request: {
+      tools: Array<{ function: { name: string } }>;
+      executeTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+      [key: string]: unknown;
+    },
+  ) => Promise<{
+    content: string;
+    messages: ChatMessage[];
+    turnsUsed: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    perModelUsage: Array<{ model: string; input: number; output: number }>;
+  }>;
 }
 
 export interface HandleMessageResult {
   response: string;
   runsQueued: Array<{ id: string; branchName: string; repoSlug: string }>;
   messages: ChatMessage[];
+  /** Per-model token usage from this turn's tool-use loop. */
+  tokenUsage: Array<{ model: string; input: number; output: number }>;
 }

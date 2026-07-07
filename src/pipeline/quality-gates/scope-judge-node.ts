@@ -20,6 +20,7 @@ import {
 import type { ScopeJudgeResult } from "./scope-judge.js";
 import { callLLMForJSON, type LLMCallerConfig } from "../../llm/caller.js";
 import { logInfo, logError } from "../../logger.js";
+import { describeAgentProfileSelection, resolveLLMProfileSelection } from "../../agent-profile-resolver.js";
 
 export async function scopeJudgeNode(
   nodeConfig: NodeConfig,
@@ -38,11 +39,22 @@ export async function scopeJudgeNode(
     return { outcome: "skipped" };
   }
 
-  // Require API key
-  if (!config.openrouterApiKey) {
+  const nc = nodeConfig.config as Record<string, unknown> | undefined;
+  const nodeConfiguredModel = (nc?.["model"] as string) ?? config.scopeJudgeModel;
+  const llmSelection = resolveLLMProfileSelection(
+    config,
+    deps.agentProfileTarget,
+    "llm_json",
+    nodeConfiguredModel,
+    15_000,
+  );
+
+  if (!llmSelection) {
     await appendLog(logFile, "\n[gate:scope_judge] skipped (no OPENROUTER_API_KEY)\n");
     return { outcome: "skipped" };
   }
+
+  await appendLog(logFile, "\n[agent-profile] " + describeAgentProfileSelection(llmSelection) + "\n");
 
   // Get diff and changed files
   const diffResult = await runShellCapture("git diff HEAD", { cwd: repoDir, logFile });
@@ -60,15 +72,8 @@ export async function scopeJudgeNode(
   const changedFiles = changedFilesResult.stdout.trim().split("\n").filter(Boolean);
 
   // Build LLM request
-  const llmConfig: LLMCallerConfig = {
-    apiKey: config.openrouterApiKey,
-    defaultModel: config.scopeJudgeModel,
-    defaultTimeoutMs: 15_000,
-    providerPreferences: config.openrouterProviderPreferences
-  };
-
-  const nc = nodeConfig.config as Record<string, unknown> | undefined;
-  const model = (nc?.["model"] as string) ?? config.scopeJudgeModel;
+  const llmConfig: LLMCallerConfig = llmSelection.llmConfig;
+  const model = llmSelection.model;
   const minPassScore = (nc?.["min_pass_score"] as number) ?? config.scopeJudgeMinPassScore;
   const escalateBelow = (nc?.["escalate_below_confidence"] as number) ?? 0.7;
   const escalationModel = (nc?.["escalation_model"] as string) ?? "anthropic/claude-sonnet-4-6";

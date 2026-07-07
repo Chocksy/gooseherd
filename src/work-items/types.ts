@@ -3,6 +3,8 @@ export type WorkItemWorkflow = "product_discovery" | "feature_delivery";
 export const GITHUB_PR_ADOPTED_FLAG = "github_pr_adopted";
 export const AI_ASSIST_ENABLED_FLAG = "ai_assist_enabled";
 export const AI_ASSIST_DISABLED_FLAG = "ai_assist_disabled";
+export const CI_RERUN_EXHAUSTED_FLAG = "ci_rerun_exhausted";
+export const CI_TRIAGE_FIX_DECIDED_FLAG = "ci_triage_fix_decided";
 
 export type ProductDiscoveryState =
   | "backlog"
@@ -33,7 +35,7 @@ export const FEATURE_DELIVERY_AUTO_REVIEW_SUBSTATES = [
   "ci_green_pending_self_review",
   "applying_review_feedback",
   "ci_failed",
-  "revalidating_after_rebase",
+  "ci_rerunning",
 ] as const;
 
 export type FeatureDeliveryAutoReviewSubstate =

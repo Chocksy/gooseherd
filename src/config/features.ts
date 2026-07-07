@@ -66,9 +66,12 @@ type FeatureConfigSlice = Pick<
   | "ciMaxWaitSeconds"
   | "ciCheckFilter"
   | "ciMaxFixRounds"
+  | "ciFixAgentBailEnabled"
   | "featureDeliveryResetEngineeringReviewOnNewCommits"
   | "featureDeliveryResetQaReviewOnNewCommits"
   | "featureDeliverySkipProductReview"
+  | "featureDeliverySelfReviewEnabled"
+  | "featureDeliveryApplyReviewFeedbackEnabled"
   | "workItemGithubAdoptionLabels"
   | "autoReviewBranchSyncEnabled"
   | "autoReviewBranchSyncMaxBehindCommits"
@@ -149,6 +152,7 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     ciMaxWaitSeconds: parseInteger(parsed.CI_MAX_WAIT_SECONDS, 1800),
     ciCheckFilter: parseList(parsed.CI_CHECK_FILTER),
     ciMaxFixRounds: parseInteger(parsed.CI_MAX_FIX_ROUNDS, 2),
+    ciFixAgentBailEnabled: parseBoolean(parsed.CI_FIX_AGENT_BAIL_ENABLED, false),
     featureDeliveryResetEngineeringReviewOnNewCommits: parseBoolean(
       parsed.FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS,
       false,
@@ -159,6 +163,14 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     ),
     featureDeliverySkipProductReview: parseBoolean(
       parsed.FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW,
+      false,
+    ),
+    featureDeliverySelfReviewEnabled: parseBoolean(
+      parsed.FEATURE_DELIVERY_SELF_REVIEW_ENABLED,
+      false,
+    ),
+    featureDeliveryApplyReviewFeedbackEnabled: parseBoolean(
+      parsed.FEATURE_DELIVERY_APPLY_REVIEW_FEEDBACK_ENABLED,
       false,
     ),
     workItemGithubAdoptionLabels: workItemGithubAdoptionLabels.length > 0

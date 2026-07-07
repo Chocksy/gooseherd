@@ -1,5 +1,5 @@
 import type { Database } from "../db/index.js";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { workItemEvents } from "../db/schema.js";
 import type { AppendWorkItemEventInput, WorkItemEventRecord } from "./types.js";
 
@@ -34,5 +34,36 @@ export class WorkItemEventsStore {
       .where(eq(workItemEvents.workItemId, workItemId))
       .orderBy(desc(workItemEvents.createdAt));
     return rows.map(rowToRecord);
+  }
+
+  async listForWorkItemByEventType(
+    workItemId: string,
+    eventType: string,
+  ): Promise<WorkItemEventRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(workItemEvents)
+      .where(and(
+        eq(workItemEvents.workItemId, workItemId),
+        eq(workItemEvents.eventType, eventType),
+      ))
+      .orderBy(desc(workItemEvents.createdAt));
+    return rows.map(rowToRecord);
+  }
+
+  async countForWorkItemByEventTypeAndHeadSha(
+    workItemId: string,
+    eventType: string,
+    headSha: string,
+  ): Promise<number> {
+    const rows = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(workItemEvents)
+      .where(and(
+        eq(workItemEvents.workItemId, workItemId),
+        eq(workItemEvents.eventType, eventType),
+        sql`${workItemEvents.payload}->>'headSha' = ${headSha}`,
+      ));
+    return rows[0]?.count ?? 0;
   }
 }

@@ -129,12 +129,15 @@ export const envSchema = z.object({
   CI_MAX_WAIT_SECONDS: z.string().optional(),
   CI_CHECK_FILTER: z.string().optional(),
   CI_MAX_FIX_ROUNDS: z.string().optional(),
+  CI_FIX_AGENT_BAIL_ENABLED: z.string().optional(),
   WORK_ITEMS_ENABLED: z.string().optional(),
   EVAL_ENABLED: z.string().optional(),
   SESSIONS_ENABLED: z.string().optional(),
   FEATURE_DELIVERY_RESET_ENGINEERING_REVIEW_ON_NEW_COMMITS: z.string().optional(),
   FEATURE_DELIVERY_RESET_QA_REVIEW_ON_NEW_COMMITS: z.string().optional(),
   FEATURE_DELIVERY_SKIP_PRODUCT_REVIEW: z.string().optional(),
+  FEATURE_DELIVERY_SELF_REVIEW_ENABLED: z.string().optional(),
+  FEATURE_DELIVERY_APPLY_REVIEW_FEEDBACK_ENABLED: z.string().optional(),
   WORK_ITEM_GITHUB_ADOPTION_LABELS: z.string().optional(),
   AUTO_REVIEW_BRANCH_SYNC_ENABLED: z.string().optional(),
   AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: z.string().optional(),
@@ -164,10 +167,16 @@ export const envSchema = z.object({
   ENCRYPTION_KEY_FILE: z.string().optional(),
 
   KUBERNETES_RUNNER_IMAGE: z.string().optional(),
+  KUBERNETES_RUNNER_IMAGE_SERVER: z.string().optional(),
   KUBERNETES_INTERNAL_BASE_URL: z.string().optional(),
   KUBERNETES_NAMESPACE: z.string().optional(),
   KUBERNETES_RUNNER_ENV_SECRET: z.string().optional(),
   KUBERNETES_RUNNER_ENV_CONFIGMAP: z.string().optional(),
+
+  KUBERNETES_RUNNER_POOL_SIZE: z.string().optional(),
+  RUNNER_DB_PG_URL: z.string().optional(),
+  RUNNER_DB_CH_URL: z.string().optional(),
+  RUNNER_DB_REDIS_URL: z.string().optional(),
 });
 
 export type ParsedEnv = z.infer<typeof envSchema>;

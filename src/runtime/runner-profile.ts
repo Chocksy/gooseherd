@@ -1,0 +1,171 @@
+/**
+ * Per-repo runner profile — what image to use, whether the Run needs an
+ * isolated test-DB slot, and how to template per-Run env vars from that
+ * slot. Single source of truth for repo-specific runner behaviour;
+ * adding a new repo means adding a new profile here, not editing
+ * downstream wiring.
+ */
+
+import { logInfo } from "../logger.js";
+
+export interface DbConnectionInfo {
+  host: string;
+  port: number;
+  user?: string;
+  password?: string;
+  protocol: string;
+}
+
+export interface RunnerDbHosts {
+  pg: DbConnectionInfo;
+  clickhouse: DbConnectionInfo;
+  redis: DbConnectionInfo;
+}
+
+export interface RunnerProfile {
+  /** Env-var name that holds the image tag for this profile. */
+  imageEnv: string;
+  /** Env-var name that holds the CPU request/limit override (e.g. "2"). */
+  cpuEnv?: string;
+  /** Env-var name that holds the memory request/limit override (e.g. "3Gi"). */
+  memoryEnv?: string;
+  /**
+   * Env-var name that holds the V8 old-space heap cap in MB (e.g. "1536").
+   * When set, the runner pod gets `NODE_OPTIONS=--max-old-space-size=<value>`
+   * so Node leaves room for sibling processes (Ruby/RSpec) sharing the
+   * container memory budget instead of auto-sizing to ~75% of the cgroup.
+   */
+  nodeHeapMbEnv?: string;
+  /** Whether the Run needs an isolated test-DB slot (PG/CH/Redis). */
+  needsDbSlot: boolean;
+  /** Builds env vars that the runner pod sees for this Run. */
+  envTemplate?: (slot: number, hosts: RunnerDbHosts) => Record<string, string>;
+}
+
+const DEFAULT_PROFILE: RunnerProfile = {
+  imageEnv: "KUBERNETES_RUNNER_IMAGE",
+  needsDbSlot: false,
+};
+
+const HUBSTAFF_SERVER_PROFILE: RunnerProfile = {
+  imageEnv: "KUBERNETES_RUNNER_IMAGE_SERVER",
+  cpuEnv: "KUBERNETES_RUNNER_CPU_SERVER",
+  memoryEnv: "KUBERNETES_RUNNER_MEMORY_SERVER",
+  nodeHeapMbEnv: "KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER",
+  needsDbSlot: true,
+  envTemplate: (slot, hosts) => {
+    const dbName = `goose_${String(slot)}`;
+    const pgUrl = formatPgUrl(hosts.pg, dbName);
+    return {
+      ENABLE_CLICKHOUSE: "1",
+      DATABASE_URL: pgUrl,
+      READER_DATABASE_URL: pgUrl,
+      INTERNAL_READER_DATABASE_URL: pgUrl,
+      REPORTS_READER_DATABASE_URL: pgUrl,
+      DATABASE_CLEANER_ALLOW_REMOTE_DATABASE_URL: "true",
+      CLICKHOUSE_URL: formatChUrl(hosts.clickhouse),
+      CLICKHOUSE_DATABASE: dbName,
+      REDIS_DEFAULT_URL: formatRedisUrl(hosts.redis, slot),
+      REDIS_INTERNAL_URL: formatRedisUrl(hosts.redis, slot),
+    };
+  },
+};
+
+const PROFILES: Record<string, RunnerProfile> = {
+  "NetsoftHoldings/hubstaff-server": HUBSTAFF_SERVER_PROFILE,
+};
+
+export function resolveRunnerProfile(repoSlug: string): RunnerProfile {
+  return PROFILES[repoSlug] ?? DEFAULT_PROFILE;
+}
+
+/**
+ * Resolves per-repo runner CPU/memory overrides from the profile's env vars.
+ * Returns `undefined` for either dimension when the profile has no override
+ * configured or the env var is unset/blank — call sites should fall back to
+ * built-in sandbox defaults in that case.
+ */
+export function resolveRunnerResources(repoSlug: string): { cpu?: string; memory?: string } {
+  const profile = resolveRunnerProfile(repoSlug);
+  const cpu = profile.cpuEnv ? process.env[profile.cpuEnv]?.trim() : undefined;
+  const memory = profile.memoryEnv ? process.env[profile.memoryEnv]?.trim() : undefined;
+  return {
+    cpu: cpu ? cpu : undefined,
+    memory: memory ? memory : undefined,
+  };
+}
+
+/**
+ * Resolves the per-repo Node.js heap cap (in MB) from the profile's env var.
+ * Returns `undefined` when the profile has no `nodeHeapMbEnv` or the env is
+ * unset/blank — call sites should leave Node's default cgroup-aware sizing
+ * alone in that case.
+ */
+export function resolveRunnerNodeHeapMb(repoSlug: string): string | undefined {
+  const profile = resolveRunnerProfile(repoSlug);
+  if (!profile.nodeHeapMbEnv) return undefined;
+  const raw = process.env[profile.nodeHeapMbEnv]?.trim();
+  return raw ? raw : undefined;
+}
+
+/**
+ * Backward-compat — kept so existing call sites (kubernetes-backend.execute)
+ * keep working until they switch to the profile API. Reads the same env
+ * map under the hood.
+ */
+export function resolveRunnerImage(repoSlug: string, defaultImage: string): string {
+  const profile = resolveRunnerProfile(repoSlug);
+  if (profile === DEFAULT_PROFILE) {
+    return defaultImage;
+  }
+  const override = process.env[profile.imageEnv]?.trim();
+  if (!override) {
+    return defaultImage;
+  }
+  logInfo("runner-image: using repo-specific image", {
+    repoSlug,
+    envKey: profile.imageEnv,
+    image: override,
+  });
+  return override;
+}
+
+function formatPgUrl(info: DbConnectionInfo, dbName: string): string {
+  const auth = info.user ? `${encodeURIComponent(info.user)}${info.password ? `:${encodeURIComponent(info.password)}` : ""}@` : "";
+  return `postgres://${auth}${info.host}:${String(info.port)}/${dbName}`;
+}
+
+function formatChUrl(info: DbConnectionInfo): string {
+  const auth = info.user ? `${encodeURIComponent(info.user)}${info.password ? `:${encodeURIComponent(info.password)}` : ""}@` : "";
+  return `${info.protocol}//${auth}${info.host}:${String(info.port)}`;
+}
+
+function formatRedisUrl(info: DbConnectionInfo, slot: number): string {
+  const auth = info.user || info.password
+    ? `${info.user ? encodeURIComponent(info.user) : ""}${info.password ? `:${encodeURIComponent(info.password)}` : ""}@`
+    : "";
+  return `${info.protocol}//${auth}${info.host}:${String(info.port)}/${String(slot)}`;
+}
+
+/**
+ * Parses a connection URL into a structured connection object. Supports:
+ *  - postgres://user:pass@host:5432/dbname
+ *  - http(s)://user:pass@host:8123
+ *  - redis://[user:pass@]host:6379
+ * If the URL is missing or unparseable, returns null.
+ */
+export function parseDbConnectionUrl(rawUrl: string | undefined, defaultPort: number): DbConnectionInfo | null {
+  if (!rawUrl) return null;
+  try {
+    const u = new URL(rawUrl);
+    return {
+      protocol: u.protocol,
+      host: u.hostname,
+      port: u.port ? Number.parseInt(u.port, 10) : defaultPort,
+      user: u.username ? decodeURIComponent(u.username) : undefined,
+      password: u.password ? decodeURIComponent(u.password) : undefined,
+    };
+  } catch {
+    return null;
+  }
+}

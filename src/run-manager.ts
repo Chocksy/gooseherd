@@ -14,9 +14,14 @@ import type { LearningStore } from "./observer/learning-store.js";
 import { getRuntimeBackend, type RuntimeRegistry } from "./runtime/backend.js";
 import type { RunContextPrefetcher } from "./runtime/run-context-prefetcher.js";
 import type { RunPrefetchContext } from "./runtime/run-context-types.js";
-import { isFeatureDeliveryAutoReviewOrRepairCiRun, selectPipelineIdForIntent } from "./runs/run-intent.js";
+import { isFeatureDeliveryAutoReviewOrRepairCiRun, isInvestigateRun, selectPipelineIdForIntent, type RunIntent } from "./runs/run-intent.js";
 import type { EmitRunCheckpointInput, RunCheckpointStore } from "./runs/run-checkpoint-store.js";
 import type { RunCheckpointProcessor } from "./runs/run-checkpoint-processor.js";
+import { resolveRunnerProfile } from "./runtime/runner-profile.js";
+import type { RunnerDbSlotManager } from "./runtime/runner-db-slot-manager.js";
+
+/** Delay before re-checking the runner DB slot pool when it was full. */
+const RUNNER_DB_SLOT_REQUEUE_DELAY_MS = 10_000;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -32,11 +37,19 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
     result: { category: "clone", friendly: "Failed to clone repository", suggestion: "Check that the repo exists and your GitHub credentials (GITHUB_TOKEN or GitHub App) have access." }
   },
   {
+    test: /timed out waiting for kubernetes job/i,
+    result: {
+      category: "kubernetes_wait_timeout",
+      friendly: "Kubernetes job did not reach a terminal state in time",
+      suggestion: "The runner pod likely never reported Complete/Failed. Check pod status (RBAC, image-pull, scheduling, db-slot exhaustion) and, if needed, raise KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS (default 600s)."
+    }
+  },
+  {
     test: /timed out|timeout:|exceeded \d+s.*terminating|\[timeout[^\]]*\]/i,
     result: { category: "timeout", friendly: "Agent timed out", suggestion: "The task may be too complex. Try breaking it into smaller steps or increase AGENT_TIMEOUT_SECONDS." }
   },
   {
-    test: /no meaningful changes|no file changes|whitespace-only|mass deletion detected/i,
+    test: /no meaningful changes|no file changes|whitespace-only|mass deletion detected|made no (?:further )?changes|no candidate changes to push/i,
     result: { category: "no_changes", friendly: "Agent produced no useful changes", suggestion: "Try rephrasing the task with more specific instructions." }
   },
   {
@@ -52,7 +65,11 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
     result: { category: "push", friendly: "Push to remote was rejected", suggestion: "The branch may have conflicts or branch protection rules. Check repository settings." }
   },
   {
-    test: /pr.*failed|pull request.*failed|create_pr.*failed/i,
+    test: /\bprefetch\b.*\bfailed\b/i,
+    result: { category: "prefetch", friendly: "External context prefetch failed", suggestion: "Check GitHub/Jira integration configuration and permissions for the linked work item." }
+  },
+  {
+    test: /\bpull request\b.*failed|\bPR\b.*failed|create_pr.*failed|failed to create (?:a )?pull request/i,
     result: { category: "pr", friendly: "Failed to create pull request", suggestion: "Check that your GitHub credentials (GITHUB_TOKEN or GitHub App) have permission to create PRs on this repo." }
   },
 ];
@@ -195,6 +212,14 @@ export class RunManager {
   private readonly statusChangeCallbacks: RunStatusChangeCallback[] = [];
   /** AbortControllers for in-progress runs — enables cancellation. */
   private readonly runAbortControllers = new Map<string, AbortController>();
+  /**
+   * In-memory marker linking a freshly-enqueued retry run to the original
+   * runId. Lives only in this orchestrator process: processRun consumes it
+   * once and clears it. Used to flip on retry-only diagnostics (e.g.
+   * RUN_LOG_MIRROR_STDOUT in the runner pod env) without persisting a new
+   * column in the runs table.
+   */
+  private readonly retryMarkers = new Map<string, string>();
   private readonly runContextPrefetcher: Pick<RunContextPrefetcher, "prefetch">;
 
   constructor(
@@ -208,6 +233,7 @@ export class RunManager {
     runContextPrefetcher?: Pick<RunContextPrefetcher, "prefetch">,
     private readonly checkpointStore?: RunCheckpointStore,
     private readonly checkpointProcessor?: RunCheckpointProcessor,
+    private readonly runnerDbSlotManager?: RunnerDbSlotManager,
   ) {
     this.runContextPrefetcher = runContextPrefetcher ?? NOOP_RUN_CONTEXT_PREFETCHER;
     this.queue = new PQueue({ concurrency: config.runnerConcurrency });
@@ -328,12 +354,12 @@ export class RunManager {
    * Checks the PipelineStore first (for custom pipelines), falls back to disk.
    * For store-only pipelines, writes the YAML to a temp file in the run's work dir.
    */
-  private async resolvePipeline(hint: string | undefined, runId: string): Promise<string> {
-    if (!hint) return this.config.pipelineFile;
+  private async resolvePipeline(hint: string | undefined, runId: string): Promise<{ file: string; id?: string }> {
+    if (!hint) return { file: this.config.pipelineFile };
 
     if (!/^[a-zA-Z0-9_-]+$/.test(hint)) {
       logInfo("Invalid pipelineHint, using default", { hint });
-      return this.config.pipelineFile;
+      return { file: this.config.pipelineFile };
     }
 
     // Check pipeline store for custom (non-built-in) pipelines
@@ -345,12 +371,12 @@ export class RunManager {
         const tmpYaml = path.join(runDir, `pipeline-${hint}.yml`);
         await writeFile(tmpYaml, stored.yaml, "utf8");
         logInfo("Using custom pipeline from store", { hint, file: tmpYaml });
-        return tmpYaml;
+        return { file: tmpYaml, id: stored.id };
       }
     }
 
     // Built-in: resolve from pipelines/ directory on disk
-    return path.resolve("pipelines", `${hint}.yml`);
+    return { file: path.resolve("pipelines", `${hint}.yml`), id: hint };
   }
 
   /**
@@ -419,21 +445,96 @@ export class RunManager {
   }
 
   async enqueueRun(input: EnqueueRunInput): Promise<RunRecord> {
-    const runtime = input.runtime ?? this.config.sandboxRuntime;
-    this.getBackend(runtime);
-    const record = await this.store.createRun({ ...input, runtime }, this.config.branchPrefix);
-
-    this.queue.add(async () => {
-      await this.processRun(record.id);
-    });
-
+    const record = await this.createRunRecord(input);
+    this.scheduleRunProcessing(record.id);
     return record;
   }
 
-  requeueExistingRun(runId: string): void {
+  private async createRunRecord(
+    input: EnqueueRunInput,
+    existingBranchName?: string
+  ): Promise<RunRecord> {
+    const runtime = input.runtime ?? this.config.sandboxRuntime;
+    this.getBackend(runtime);
+    return this.store.createRun({ ...input, runtime }, this.config.branchPrefix, existingBranchName);
+  }
+
+  private scheduleRunProcessing(runId: string): void {
+    // PQueue rethrows whatever the worker throws; not catching here turns
+    // any escape from processRun into an unhandled rejection that crashes
+    // the orchestrator. processRun owns its own error handling — this is
+    // last-resort logging.
     this.queue.add(async () => {
       await this.processRun(runId);
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logError("Unhandled error in processRun", { runId, error: message });
     });
+  }
+
+  requeueExistingRun(runId: string): void {
+    this.scheduleRunProcessing(runId);
+  }
+
+  async getOrCreateConversationRun(input: {
+    channelId: string;
+    threadTs: string;
+    requestedBy: string;
+    firstMessage: string;
+  }): Promise<RunRecord> {
+    const existing = await this.store.findRunByThread(input.channelId, input.threadTs);
+    if (existing && existing.status === "conversation") {
+      return existing;
+    }
+    return this.store.createConversationRun({
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      requestedBy: input.requestedBy,
+      firstMessage: input.firstMessage,
+      defaultBaseBranch: this.config.defaultBaseBranch,
+      branchPrefix: this.config.branchPrefix,
+      parentRunId: existing?.id,
+    });
+  }
+
+  /** Returns the thread's run if it's currently in conversation status, else undefined. */
+  async findActiveConversationRunForThread(channelId: string, threadTs: string): Promise<RunRecord | undefined> {
+    const existing = await this.store.findRunByThread(channelId, threadTs);
+    return existing && existing.status === "conversation" ? existing : undefined;
+  }
+
+  async recordConversationTurn(
+    runId: string,
+    tokenUsages: Array<{ model: string; input: number; output: number }>,
+  ): Promise<void> {
+    for (const usage of tokenUsages) {
+      if (usage.input <= 0 && usage.output <= 0) continue;
+      await this.store.addTokenUsage(runId, {
+        model: usage.model,
+        input: usage.input,
+        output: usage.output,
+        source: "quality_gate",
+      });
+    }
+  }
+
+  async promoteConversationToBuild(
+    runId: string,
+    input: {
+      repoSlug: string;
+      synthesizedTask: string;
+      intent: RunIntent;
+      branchName?: string;
+    },
+  ): Promise<RunRecord> {
+    const promoted = await this.store.promoteConversationRun(runId, {
+      repoSlug: input.repoSlug,
+      task: input.synthesizedTask,
+      intent: input.intent,
+      branchName: input.branchName,
+    });
+    this.requeueExistingRun(runId);
+    return promoted;
   }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
@@ -451,7 +552,14 @@ export class RunManager {
       return undefined;
     }
 
-    return this.enqueueRun({
+    // Forward every run-defining field so the retry routes through the same
+    // pipeline and stays attached to the same work item. Intentionally omitted:
+    // - prefetchContext: refreshed on dispatch (see refreshRunForDispatch).
+    //
+    // Set the retry marker BEFORE scheduling processRun: enqueueRun's
+    // PQueue can dispatch the worker before this function's continuation
+    // resumes, so doing the assignment after enqueueRun would race.
+    const newRun = await this.createRunRecord({
       repoSlug: original.repoSlug,
       task: original.task,
       baseBranch: original.baseBranch,
@@ -460,8 +568,18 @@ export class RunManager {
       threadTs: original.threadTs,
       runtime: this.config.sandboxRuntime,
       skipNodes: original.skipNodes,
-      enableNodes: original.enableNodes
-    });
+      enableNodes: original.enableNodes,
+      workItemId: original.workItemId,
+      intent: original.intent,
+      pipelineHint: original.pipelineHint,
+      prUrl: original.prUrl,
+      prNumber: original.prNumber,
+      autoReviewSourceSubstate: original.autoReviewSourceSubstate,
+      teamId: original.teamId,
+    }, original.branchName);
+    this.retryMarkers.set(newRun.id, original.id);
+    this.scheduleRunProcessing(newRun.id);
+    return newRun;
   }
 
   async continueRun(
@@ -494,9 +612,7 @@ export class RunManager {
       parent.branchName
     );
 
-    this.queue.add(async () => {
-      await this.processRun(record.id);
-    });
+    this.scheduleRunProcessing(record.id);
 
     return record;
   }
@@ -616,11 +732,57 @@ export class RunManager {
     if (!existingRun) {
       return;
     }
-    let run = existingRun;
+    const retriedFromRunId = this.retryMarkers.get(existingRun.id);
+    let run: RunRecord = retriedFromRunId
+      ? { ...existingRun, retriedFromRunId }
+      : existingRun;
     const stableRunId = run.id;
     if (run.status === "cancelled" || run.status === "completed" || run.status === "failed") {
+      this.retryMarkers.delete(stableRunId);
       return;
     }
+
+    // Per-Run isolated test DB: acquire slot before doing anything that
+    // would mark the Run as "running". On pool exhaustion, leave the
+    // Run in `queued` and re-enqueue after a delay — the existing
+    // PQueue picks it up like any other queued Run. On a real
+    // provisioning error (e.g. ClickHouse permission denied) fail just
+    // this Run rather than letting the rejection escape PQueue and
+    // crash the orchestrator.
+    if (this.runnerDbSlotManager) {
+      const profile = resolveRunnerProfile(run.repoSlug);
+      if (profile.needsDbSlot) {
+        const existingSlot = await this.runnerDbSlotManager.getSlotForRun(stableRunId);
+        if (existingSlot === null) {
+          let slotId: number | null;
+          try {
+            slotId = await this.runnerDbSlotManager.acquireForRun(stableRunId, profile);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Unknown error";
+            logError("Failed to acquire runner DB slot", { runId: stableRunId, error: message });
+            const failedRun = await this.store.updateRun(stableRunId, {
+              status: "failed",
+              phase: "failed",
+              finishedAt: new Date().toISOString(),
+              error: `DB slot provisioning failed: ${message}`,
+            });
+            this.retryMarkers.delete(stableRunId);
+            this.fireStatusChangeCallbacks(failedRun.id, "failed", failedRun.runtime);
+            this.fireTerminalCallbacks(failedRun.id, "failed", failedRun.runtime);
+            return;
+          }
+          if (slotId === null) {
+            setTimeout(() => this.requeueExistingRun(stableRunId), RUNNER_DB_SLOT_REQUEUE_DELAY_MS).unref?.();
+            return;
+          }
+        }
+      }
+    }
+
+    // Past the requeue path — the retry marker has done its job, drop it so
+    // the map can't grow unbounded across long-running orchestrator processes.
+    this.retryMarkers.delete(stableRunId);
+
     let statusMessageTs: string | undefined = run.statusMessageTs;
     let heartbeatTick = 0;
     let currentPhase = "cloning";
@@ -699,10 +861,17 @@ export class RunManager {
         });
       };
 
-      const pipelineFile = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
+      const pipeline = await this.resolvePipeline(selectPipelineIdForIntent(run.intent, run.pipelineHint), run.id);
       run = await this.refreshRunForDispatch(stableRunId, run, abortController.signal);
       const backend = this.getBackend(run.runtime);
-      const result = await backend.execute(run, {
+      // retriedFromRunId is in-memory only; refreshRunForDispatch and the
+      // status updates above re-fetch from the DB and drop it. Re-attach
+      // here so the runtime backend can gate retry-only behavior on it
+      // (e.g. RUN_LOG_MIRROR_STDOUT in the runner pod env).
+      const runForBackend: RunRecord = retriedFromRunId
+        ? { ...run, retriedFromRunId }
+        : run;
+      const result = await backend.execute(runForBackend, {
         onPhase: phaseCallback,
         onCheckpoint: checkpointCallback,
         onDetail,
@@ -710,7 +879,8 @@ export class RunManager {
           run = await this.store.addTokenUsage(stableRunId, entry);
         },
         abortSignal: abortController.signal,
-        pipelineFile
+        pipelineFile: pipeline.file,
+        pipelineId: pipeline.id
       });
       stopHeartbeat();
       this.runAbortControllers.delete(stableRunId);
@@ -842,7 +1012,36 @@ export class RunManager {
     try {
       const lines: string[] = [];
 
-      if (run.status === "completed") {
+      if (run.status === "completed" && isInvestigateRun(run)) {
+        lines.push(`*Investigation complete* for *${run.repoSlug}*`);
+
+        if (run.task) {
+          const taskPreview = (run.task.length > 120 ? run.task.slice(0, 120) + "..." : run.task)
+            .split("\n").map((l) => `> ${l}`).join("\n");
+          lines.push(taskPreview);
+        }
+
+        const answer = result?.answer?.trim();
+        if (answer) {
+          lines.push("");
+          lines.push(answer);
+        } else {
+          lines.push("");
+          lines.push("_The agent didn't produce an answer. Check the run logs for details._");
+        }
+
+        if (run.startedAt && run.finishedAt) {
+          const duration = formatDuration(run.startedAt, run.finishedAt);
+          if (duration) {
+            lines.push("");
+            lines.push(`*Duration:* ${duration}`);
+          }
+        }
+
+        lines.push("");
+        lines.push("---");
+        lines.push(`Reply in this thread to ask a follow-up.`);
+      } else if (run.status === "completed") {
         lines.push(`*Run complete* for *${run.repoSlug}*`);
 
         if (run.task) {

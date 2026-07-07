@@ -47,10 +47,15 @@ configs:
       AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS: "900000"
       SANDBOX_RUNTIME: "kubernetes"
       KUBERNETES_NAMESPACE: '{{ .Release.Namespace }}'
-      KUBERNETES_RUNNER_IMAGE: '{{ .Values.werf.image.runner | default "gooseherd/k8s-runner:dev" }}'
+      KUBERNETES_RUNNER_IMAGE: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest'
+      KUBERNETES_RUNNER_IMAGE_SERVER: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server:latest'
+      KUBERNETES_RUNNER_CPU_SERVER: "2"
+      KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi"
+      KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "1536"
       KUBERNETES_INTERNAL_BASE_URL: 'http://gooseherd.{{ .Release.Namespace }}.svc.cluster.local:8787'
       KUBERNETES_RUNNER_ENV_SECRET: "gooseherd-env"
       KUBERNETES_RUNNER_ENV_CONFIGMAP: "gooseherd-config"
+      KUBERNETES_RUNNER_POOL_SIZE: "16"
       AGENT_COMMAND_TEMPLATE: 'bash scripts/dummy-agent.sh {{ "{{repo_dir}}" }} {{ "{{prompt_file}}" }} {{ "{{run_id}}" }}'
       MAX_TASK_CHARS: "4000"
       AGENT_TIMEOUT_SECONDS: "1200"
@@ -72,3 +77,6 @@ secrets:
       DASHBOARD_TOKEN: "DASHBOARD_TOKEN"
       JIRA_USER: "JIRA_USER"
       JIRA_API_TOKEN: "JIRA_API_TOKEN"
+      RUNNER_DB_PG_URL: "RUNNER_DB_PG_URL"
+      RUNNER_DB_CH_URL: "RUNNER_DB_CH_URL"
+      RUNNER_DB_REDIS_URL: "RUNNER_DB_REDIS_URL"

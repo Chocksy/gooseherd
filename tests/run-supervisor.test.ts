@@ -29,6 +29,39 @@ test("classifyFailureWithRetryability: no_changes errors are NOT retryable", () 
   assert.equal(result.retryStrategy, "none");
 });
 
+test("classifyFailureWithRetryability: 'CI fix agent made no changes' is no_changes", () => {
+  const result = classifyFailureWithRetryability("CI fix agent made no changes");
+  assert.equal(result.category, "no_changes");
+  assert.equal(result.retryable, false);
+  assert.equal(result.retryStrategy, "none");
+});
+
+test("classifyFailureWithRetryability: 'made no further changes' (round-2 variant) is no_changes", () => {
+  const result = classifyFailureWithRetryability(
+    "CI fix agent made no further changes after local test failed in round 1"
+  );
+  assert.equal(result.category, "no_changes");
+  assert.equal(result.retryable, false);
+});
+
+test("classifyFailureWithRetryability: 'no candidate changes to push' (bail variant) is no_changes", () => {
+  const result = classifyFailureWithRetryability(
+    "CI fix agent requested local-test bail but produced no candidate changes to push"
+  );
+  assert.equal(result.category, "no_changes");
+  assert.equal(result.retryable, false);
+});
+
+test("classifyFailureWithRetryability: Kubernetes job wait timeout suggests KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS, not AGENT_TIMEOUT_SECONDS", () => {
+  const result = classifyFailureWithRetryability(
+    "Timed out waiting for Kubernetes job gooseherd-run-ea5866c8"
+  );
+  assert.equal(result.category, "kubernetes_wait_timeout");
+  assert.equal(result.retryable, false);
+  assert.match(result.suggestion, /KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS/);
+  assert.doesNotMatch(result.suggestion, /AGENT_TIMEOUT_SECONDS/);
+});
+
 test("classifyFailureWithRetryability: validation errors are NOT retryable", () => {
   const result = classifyFailureWithRetryability("Validation failed after 2 retry rounds");
   assert.equal(result.category, "validation");
@@ -55,6 +88,15 @@ test("classifyFailureWithRetryability: pr errors are retryable (full)", () => {
   assert.equal(result.category, "pr");
   assert.equal(result.retryable, true);
   assert.equal(result.retryStrategy, "full");
+});
+
+test("classifyFailureWithRetryability: prefetch errors are NOT retryable", () => {
+  const result = classifyFailureWithRetryability(
+    "Jira prefetch failed for work item abc: 404 Not Found"
+  );
+  assert.equal(result.category, "prefetch");
+  assert.equal(result.retryable, false);
+  assert.equal(result.retryStrategy, "none");
 });
 
 test("classifyFailureWithRetryability: unknown errors are NOT retryable", () => {

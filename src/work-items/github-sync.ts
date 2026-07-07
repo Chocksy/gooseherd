@@ -1,6 +1,7 @@
 import type { Database } from "../db/index.js";
 import type { GitHubService } from "../github.js";
 import {
+  isAiAssistAutomationEnabled,
   shouldResetEngineeringReviewOnNewCommits,
   shouldResetQaReviewOnNewCommits,
 } from "./feature-delivery-policy.js";
@@ -73,6 +74,8 @@ export interface GitHubWorkItemSyncOptions {
   resetEngineeringReviewOnNewCommits?: boolean;
   resetQaReviewOnNewCommits?: boolean;
   skipProductReview?: boolean;
+  selfReviewEnabled?: boolean;
+  applyReviewFeedbackEnabled?: boolean;
   reconcileWorkItem?: (workItemId: string, reason: string) => Promise<void> | void;
   resolveDeliveryContext: (input: {
     jiraIssueKey?: string;
@@ -179,6 +182,8 @@ export class GitHubWorkItemSync {
   private readonly githubService?: Pick<GitHubService, "getPullRequestCiSnapshot" | "updatePullRequestBody">;
   private readonly resolveDeliveryContext: GitHubWorkItemSyncOptions["resolveDeliveryContext"];
   private readonly skipProductReview: boolean;
+  private readonly selfReviewEnabled: boolean;
+  private readonly applyReviewFeedbackEnabled: boolean;
   private readonly resetEngineeringReviewOnNewCommits?: boolean;
   private readonly resetQaReviewOnNewCommits?: boolean;
   private readonly reconcileWorkItem?: GitHubWorkItemSyncOptions["reconcileWorkItem"];
@@ -214,6 +219,8 @@ export class GitHubWorkItemSync {
     this.readyForMergeHandler = options.readyForMergeHandler;
     this.resolveDeliveryContext = options.resolveDeliveryContext;
     this.skipProductReview = options.skipProductReview ?? false;
+    this.selfReviewEnabled = options.selfReviewEnabled ?? false;
+    this.applyReviewFeedbackEnabled = options.applyReviewFeedbackEnabled ?? false;
     this.resetEngineeringReviewOnNewCommits = options.resetEngineeringReviewOnNewCommits;
     this.resetQaReviewOnNewCommits = options.resetQaReviewOnNewCommits;
     this.reconcileWorkItem = options.reconcileWorkItem;
@@ -240,7 +247,7 @@ export class GitHubWorkItemSync {
 
     const existing = await this.findExistingWorkItemForPullRequest(payload.repo, prNumber, payload.prUrl);
     if (existing) {
-      const automationWasEnabled = this.isAiAssistAutomationEnabled(existing);
+      const automationWasEnabled = isAiAssistAutomationEnabled(existing);
       let current = await this.syncStoredPullRequestContext(existing, {
         repo: payload.repo,
         githubPrUrl: payload.prUrl,
@@ -284,7 +291,7 @@ export class GitHubWorkItemSync {
       if (
         existing.state !== "cancelled" &&
         !automationWasEnabled &&
-        this.isAiAssistAutomationEnabled(current) &&
+        isAiAssistAutomationEnabled(current) &&
         current.state === "auto_review"
       ) {
         await this.reconcileIfConfigured(current.id, "github.automation_enabled");
@@ -352,8 +359,9 @@ export class GitHubWorkItemSync {
           },
         });
         await this.appendWorkItemLinkToPullRequestBody(updated, payload);
-        await this.reconcileIfConfigured(updated.id, "github.pr_adopted");
-        return updated;
+        const advanced = await this.maybeBypassSelfReviewAfterAdoption(updated);
+        await this.reconcileIfConfigured(advanced.id, "github.pr_adopted");
+        return advanced;
       }
 
       if (adoptionCandidates.length > 1) {
@@ -466,8 +474,35 @@ export class GitHubWorkItemSync {
     });
 
     await this.appendWorkItemLinkToPullRequestBody(adopted, payload);
-    await this.reconcileIfConfigured(adopted.id, "github.pr_adopted");
-    return adopted;
+    const advancedAdopted = await this.maybeBypassSelfReviewAfterAdoption(adopted);
+    await this.reconcileIfConfigured(advancedAdopted.id, "github.pr_adopted");
+    return advancedAdopted;
+  }
+
+  private async maybeBypassSelfReviewAfterAdoption(
+    workItem: WorkItemRecord,
+  ): Promise<WorkItemRecord> {
+    if (this.selfReviewEnabled) return workItem;
+    if (workItem.workflow !== "feature_delivery") return workItem;
+    if (workItem.state !== "auto_review") return workItem;
+    if (workItem.substate !== "ci_green_pending_self_review") return workItem;
+
+    const decision = reduceFeatureDelivery(
+      workItem,
+      {
+        type: "github.ci_completed",
+        conclusion: "success",
+        hasActiveSystemRun: false,
+        automationEnabled: isAiAssistAutomationEnabled(workItem),
+      },
+      this.reducerPolicy(),
+    );
+    if (decision.patches.length === 0 && decision.commands.length === 0) {
+      return workItem;
+    }
+    const advanced = await applyWorkItemDecision(this.workItems, workItem, decision);
+    await this.executeFeatureDeliveryCommands(advanced, decision);
+    return advanced;
   }
 
   private async handleCheckSuite(payload: GitHubWorkItemWebhookPayload): Promise<WorkItemRecord | undefined> {
@@ -498,7 +533,7 @@ export class GitHubWorkItemSync {
     }
 
     const conclusion = await this.resolveCheckSuiteConclusion(payload, workItem);
-    const automationEnabled = this.isAiAssistAutomationEnabled(workItem);
+    const automationEnabled = isAiAssistAutomationEnabled(workItem);
     if (conclusion === "success" || conclusion === "failure") {
       const hasActiveSystemRun = workItem.state === "auto_review"
         ? await this.hasActiveSystemRun(workItem.id)
@@ -535,11 +570,19 @@ export class GitHubWorkItemSync {
   private async resolveInitialAutoReviewStatus(
     payload: GitHubWorkItemWebhookPayload,
   ): Promise<{
-    substate: "pr_adopted" | "ci_failed" | "ci_green_pending_self_review";
+    substate: "pr_adopted" | "waiting_ci" | "ci_failed" | "ci_green_pending_self_review";
     flagsToAdd: string[];
   }> {
+    // When self-review is disabled, pre-stamp `self_review_done` and land in `waiting_ci` instead of
+    // `pr_adopted`: the latter is on `shouldAutoLaunchSystemRun`'s eligibility list and would trigger an
+    // unwanted self-review run, while `waiting_ci` lets `reduceSuccessfulCi` advance straight to
+    // `engineering_review` once CI turns green.
+    const pendingStatus = this.selfReviewEnabled
+      ? { substate: "pr_adopted" as const, flagsToAdd: [] }
+      : { substate: "waiting_ci" as const, flagsToAdd: ["self_review_done"] };
+
     if (!payload.repo || !payload.headSha || !this.githubService?.getPullRequestCiSnapshot) {
-      return { substate: "pr_adopted", flagsToAdd: [] };
+      return pendingStatus;
     }
 
     try {
@@ -556,14 +599,14 @@ export class GitHubWorkItemSync {
       if (snapshot.conclusion === "success") {
         return { substate: "ci_green_pending_self_review", flagsToAdd: ["ci_green"] };
       }
-      return { substate: "pr_adopted", flagsToAdd: [] };
+      return pendingStatus;
     } catch (error) {
       logError("Failed to resolve PR adoption CI snapshot", {
         repo: payload.repo,
         headSha: payload.headSha,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { substate: "pr_adopted", flagsToAdd: [] };
+      return pendingStatus;
     }
   }
 
@@ -600,7 +643,7 @@ export class GitHubWorkItemSync {
       {
         type: "github.review_submitted",
         reviewState,
-        automationEnabled: this.isAiAssistAutomationEnabled(workItem),
+        automationEnabled: isAiAssistAutomationEnabled(workItem),
       },
       this.reducerPolicy(),
     );
@@ -803,7 +846,7 @@ export class GitHubWorkItemSync {
     labels: string[] | undefined,
   ): Promise<WorkItemRecord> {
     const hasAdoptionLabel = this.hasAdoptionLabel(labels);
-    const automationEnabled = this.isAiAssistAutomationEnabled(workItem);
+    const automationEnabled = isAiAssistAutomationEnabled(workItem);
 
     if (hasAdoptionLabel && automationEnabled && !workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
       return workItem;
@@ -845,14 +888,16 @@ export class GitHubWorkItemSync {
     }
 
     if (payload.action === "labeled" && hasAdoptionLabel && workItem.state === "cancelled") {
+      const initial = await this.resolveInitialAutoReviewStatus(payload);
       const revived = await this.workItems.updateState(workItem.id, {
         state: "auto_review",
-        substate: "pr_adopted",
-        flagsToAdd: [AI_ASSIST_ENABLED_FLAG],
+        substate: initial.substate,
+        flagsToAdd: [AI_ASSIST_ENABLED_FLAG, ...initial.flagsToAdd],
         flagsToRemove: [AI_ASSIST_DISABLED_FLAG],
       });
-      await this.reconcileIfConfigured(revived.id, "github.automation_restored");
-      return revived;
+      const advanced = await this.maybeBypassSelfReviewAfterAdoption(revived);
+      await this.reconcileIfConfigured(advanced.id, "github.automation_restored");
+      return advanced;
     }
 
     return workItem;
@@ -984,6 +1029,8 @@ export class GitHubWorkItemSync {
       skipProductReview: this.skipProductReview,
       resetEngineeringReviewOnNewCommits: this.shouldResetEngineeringReviewOnNewCommits(),
       resetQaReviewOnNewCommits: this.shouldResetQaReviewOnNewCommits(),
+      selfReviewEnabled: this.selfReviewEnabled,
+      applyReviewFeedbackEnabled: this.applyReviewFeedbackEnabled,
     };
   }
 
@@ -1041,14 +1088,6 @@ export class GitHubWorkItemSync {
       isFeatureDeliveryAutoReviewOrRepairCiRun(run) &&
       ACTIVE_WORK_ITEM_SYSTEM_RUN_STATUSES.has(run.status)
     );
-  }
-
-  private isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {
-    if (workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
-      return false;
-    }
-
-    return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
   }
 
   private async resolveCheckSuiteConclusion(

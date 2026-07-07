@@ -1,5 +1,10 @@
 import { runShell, runShellCapture, shellEscape } from "./shell.js";
-import { buildGitAddPathspecs, filterInternalGeneratedFiles, listInternalGeneratedFiles } from "./internal-generated-files.js";
+import {
+  filterInternalGeneratedFiles,
+  listInternalGeneratedFiles,
+  restoreInternalGeneratedFiles,
+  snapshotInternalGeneratedFiles,
+} from "./internal-generated-files.js";
 
 export interface CommitResult {
   commitSha: string;
@@ -28,37 +33,47 @@ export async function commitCaptureAndPush(
     .filter(Boolean);
   const internalArtifacts = listInternalGeneratedFiles(allChangedFiles);
 
-  const pathspecArgs = buildGitAddPathspecs().map(shellEscape).join(" ");
-  await runShell(`git add -A -- ${pathspecArgs}`, { cwd: repoDir, logFile });
+  // Lift harness-written files (AGENTS.md, …) off the working tree before
+  // staging. A bare `git add -A` then can't pick them up, and we sidestep
+  // the gitignore-warn-and-fail trap that `git add -A -- '.' ':(exclude)…'`
+  // hits when the host repo already lists them in .gitignore. Restore in
+  // `finally` so downstream agent nodes (fix_browser, ci-fix outer loop,
+  // decide_recovery) still find their pi-agent context.
+  const internalSnapshot = await snapshotInternalGeneratedFiles(repoDir);
+  try {
+    await runShell("git add -A", { cwd: repoDir, logFile });
 
-  const stagedFilesResult = await runShellCapture("git diff --cached --name-only", { cwd: repoDir, logFile });
-  const stagedFiles = filterInternalGeneratedFiles(
-    stagedFilesResult.stdout
-      .split("\n")
-      .map(f => f.trim())
-      .filter(Boolean)
-  );
+    const stagedFilesResult = await runShellCapture("git diff --cached --name-only", { cwd: repoDir, logFile });
+    const stagedFiles = filterInternalGeneratedFiles(
+      stagedFilesResult.stdout
+        .split("\n")
+        .map(f => f.trim())
+        .filter(Boolean)
+    );
 
-  if (stagedFiles.length === 0) {
-    throw new Error("No committable user changes remain after filtering internal-generated files.");
+    if (stagedFiles.length === 0) {
+      throw new Error("No committable user changes remain after filtering internal-generated files.");
+    }
+
+    await runShell(`git commit -m ${shellEscape(commitMsg)}`, { cwd: repoDir, logFile });
+
+    const shaResult = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
+    const commitSha = shaResult.stdout.trim().split("\n").pop()?.trim() ?? "";
+
+    if (pushBranch) {
+      await runShell(`git push origin ${shellEscape(pushBranch)}`, { cwd: repoDir, logFile });
+    }
+
+    const filesResult = await runShellCapture("git show --name-only --pretty='' HEAD", { cwd: repoDir, logFile });
+    const changedFiles = filterInternalGeneratedFiles(
+      filesResult.stdout
+        .split("\n")
+        .map(f => f.trim())
+        .filter(f => f.length > 0 && !f.startsWith("---"))
+    );
+
+    return { commitSha, changedFiles, internalArtifacts };
+  } finally {
+    await restoreInternalGeneratedFiles(repoDir, internalSnapshot);
   }
-
-  await runShell(`git commit -m ${shellEscape(commitMsg)}`, { cwd: repoDir, logFile });
-
-  const shaResult = await runShellCapture("git rev-parse HEAD", { cwd: repoDir, logFile });
-  const commitSha = shaResult.stdout.trim().split("\n").pop()?.trim() ?? "";
-
-  if (pushBranch) {
-    await runShell(`git push origin ${shellEscape(pushBranch)}`, { cwd: repoDir, logFile });
-  }
-
-  const filesResult = await runShellCapture("git show --name-only --pretty='' HEAD", { cwd: repoDir, logFile });
-  const changedFiles = filterInternalGeneratedFiles(
-    filesResult.stdout
-      .split("\n")
-      .map(f => f.trim())
-      .filter(f => f.length > 0 && !f.startsWith("---"))
-  );
-
-  return { commitSha, changedFiles, internalArtifacts };
 }

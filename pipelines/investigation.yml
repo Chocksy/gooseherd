@@ -1,0 +1,26 @@
+version: 1
+name: "investigation"
+description: "Read-only investigation pipeline. Clones the repo, runs the agent in research mode, captures the agent's answer in ExecutionResult.answer, and the run summary surfaces it in the Slack thread. No commits, no PR."
+
+nodes:
+  - id: clone
+    type: deterministic
+    action: clone
+
+  - id: setup_sandbox
+    type: deterministic
+    action: setup_sandbox
+    if: "config.sandboxEnabled"
+
+  - id: generate_title
+    type: deterministic
+    action: generate_title
+    on_soft_fail: warn
+
+  - id: hydrate
+    type: deterministic
+    action: hydrate_context
+
+  - id: investigate
+    type: agentic
+    action: investigate

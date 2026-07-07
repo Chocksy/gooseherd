@@ -1,4 +1,9 @@
-import type { WorkItemRecord } from "./types.js";
+import {
+  AI_ASSIST_DISABLED_FLAG,
+  AI_ASSIST_ENABLED_FLAG,
+  GITHUB_PR_ADOPTED_FLAG,
+  type WorkItemRecord,
+} from "./types.js";
 
 type FeatureDeliveryState = Extract<WorkItemRecord["state"],
   | "auto_review"
@@ -14,6 +19,16 @@ const AUTO_REBASE_REQUIRED_FLAGS = ["engineering_review_done", "qa_review_done"]
 export function canAutoRebaseFeatureDeliveryBranch(flags: readonly string[]): boolean {
   const flagSet = new Set(flags);
   return AUTO_REBASE_REQUIRED_FLAGS.every((flag) => flagSet.has(flag));
+}
+
+// AI_ASSIST_DISABLED_FLAG always wins. The OR with GITHUB_PR_ADOPTED_FLAG covers
+// PRs adopted before AI_ASSIST_ENABLED_FLAG was introduced — adoption now sets
+// both flags together (see github-sync.ts), so new rows pass on AI_ASSIST_ENABLED_FLAG alone.
+export function isAiAssistAutomationEnabled(workItem: Pick<WorkItemRecord, "flags">): boolean {
+  if (workItem.flags.includes(AI_ASSIST_DISABLED_FLAG)) {
+    return false;
+  }
+  return workItem.flags.includes(AI_ASSIST_ENABLED_FLAG) || workItem.flags.includes(GITHUB_PR_ADOPTED_FLAG);
 }
 
 export function nextFeatureDeliveryStateAfterAutoReview(input: {
@@ -103,12 +118,6 @@ export function advanceFeatureDeliveryStateAfterQaEntry(
   }
 
   return state;
-}
-
-export function nextFeatureDeliveryStateAfterReadyForMergeRecovery(
-  _reason: "branch_stale" | "conflicts" | "ci_failed_after_rebase"
-): FeatureDeliveryState {
-  return "auto_review";
 }
 
 export function shouldResetEngineeringReviewOnNewCommits(

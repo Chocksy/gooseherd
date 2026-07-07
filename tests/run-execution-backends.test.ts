@@ -10,6 +10,7 @@ type PipelineCall = {
   onPhase: (phase: PipelinePhase) => Promise<void>;
   pipelineFile?: string;
   onDetail?: (detail: string) => Promise<void>;
+  pipelineId?: string;
   skipNodes?: string[];
   enableNodes?: string[];
   abortSignal?: AbortSignal;
@@ -22,12 +23,13 @@ const mockPipelineEngine: Pick<PipelineEngine, "execute"> = {
     run: RunRecord,
     onPhase: (phase: PipelinePhase) => Promise<void>,
     pipelineFile?: string,
+    pipelineId?: string,
     onDetail?: (detail: string) => Promise<void>,
     skipNodes?: string[],
     enableNodes?: string[],
     abortSignal?: AbortSignal
   ): Promise<ExecutionResult> => {
-    mockPipelineCalls.push({ run, onPhase, pipelineFile, onDetail, skipNodes, enableNodes, abortSignal });
+    mockPipelineCalls.push({ run, onPhase, pipelineFile, pipelineId, onDetail, skipNodes, enableNodes, abortSignal });
     return {
       branchName: run.branchName,
       logsPath: "/tmp/run.log",
@@ -60,7 +62,8 @@ const mockContext = {
   onPhase: async (_phase: PipelinePhase) => {},
   onDetail: async (_detail: string) => {},
   abortSignal: new AbortController().signal,
-  pipelineFile: "pipelines/runtime-test.yml"
+  pipelineFile: "pipelines/runtime-test.yml",
+  pipelineId: "stored-runtime-test"
 };
 
 test("local backend executes pipeline without sandbox creation", async () => {
@@ -73,6 +76,7 @@ test("local backend executes pipeline without sandbox creation", async () => {
   assert.equal(mockPipelineCalls[0]?.onPhase, mockContext.onPhase);
   assert.equal(mockPipelineCalls[0]?.onDetail, mockContext.onDetail);
   assert.equal(mockPipelineCalls[0]?.pipelineFile, mockContext.pipelineFile);
+  assert.equal(mockPipelineCalls[0]?.pipelineId, mockContext.pipelineId);
   assert.deepEqual(mockPipelineCalls[0]?.skipNodes, run.skipNodes);
   assert.deepEqual(mockPipelineCalls[0]?.enableNodes, run.enableNodes);
   assert.equal(mockPipelineCalls[0]?.abortSignal, mockContext.abortSignal);
@@ -88,6 +92,7 @@ test("docker backend requires sandbox-capable pipeline wiring", async () => {
   assert.equal(mockPipelineCalls[0]?.onPhase, mockContext.onPhase);
   assert.equal(mockPipelineCalls[0]?.onDetail, mockContext.onDetail);
   assert.equal(mockPipelineCalls[0]?.pipelineFile, mockContext.pipelineFile);
+  assert.equal(mockPipelineCalls[0]?.pipelineId, mockContext.pipelineId);
   assert.deepEqual(mockPipelineCalls[0]?.skipNodes, run.skipNodes);
   assert.deepEqual(mockPipelineCalls[0]?.enableNodes, run.enableNodes);
   assert.equal(mockPipelineCalls[0]?.abortSignal, mockContext.abortSignal);

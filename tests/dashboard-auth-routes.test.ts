@@ -13,9 +13,21 @@ import { createTestDb } from "./helpers/test-db.js";
 import { users } from "../src/db/schema.js";
 import type { WorkItemEventRecord, WorkItemRecord } from "../src/work-items/types.js";
 
-let nextPort = 32500 + Math.floor(Math.random() * 1000);
-function getPort(): number {
-  return nextPort++;
+async function getPort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = http.createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("failed to allocate test server port"));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 function makeConfig(port: number, dataDir: string): AppConfig {
@@ -306,7 +318,7 @@ describe("dashboard auth routes", () => {
   test("login page renders admin and slack options", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
     t.after(async () => {
       server.close();
@@ -325,7 +337,7 @@ describe("dashboard auth routes", () => {
   test("webhook routes are served on dashboard port without dashboard auth", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const config = makeConfig(port, dataDir);
     config.observerGithubWebhookSecret = "github-secret";
     const observer = {
@@ -361,7 +373,7 @@ describe("dashboard auth routes", () => {
   test("admin login creates db-backed session and logout clears it", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
     t.after(async () => {
       server.close();
@@ -386,7 +398,7 @@ describe("dashboard auth routes", () => {
   test("slack sign up creates user and session even when no mapped team exists", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
     t.after(async () => {
       server.close();
@@ -437,7 +449,7 @@ describe("dashboard auth routes", () => {
   test("slack sign up creates user and session when mapped team exists", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     await testDb.db.insert((await import("../src/db/schema.js")).teams).values({
       id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
       name: "devops",
@@ -512,7 +524,7 @@ describe("dashboard auth routes", () => {
   test("slack sign in succeeds for an existing user without team memberships", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     await testDb.db.insert(users).values({
       id: "22222222-2222-4222-8222-222222222222",
       displayName: "Existing Teamless User",
@@ -564,7 +576,7 @@ describe("dashboard auth routes", () => {
   test("slack sign in rejects unknown user", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
     t.after(async () => {
       server.close();
@@ -608,7 +620,7 @@ describe("dashboard auth routes", () => {
   test("admin password session may override state using the session-derived admin principal", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     let seenActor: { principalType: string; authMethod: string; sessionId?: string } | undefined;
     const workItemsSource = makeDashboardWorkItemsSource({
       guardedOverrideState: async ({ actor }) => {
@@ -646,7 +658,7 @@ describe("dashboard auth routes", () => {
   test("admin password session cannot create discovery items", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const createDiscoveryWorkItem = mock.fn(async () => makeWorkItem());
     const workItemsSource = makeDashboardWorkItemsSource({ createDiscoveryWorkItem });
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db, workItemsSource);
@@ -671,7 +683,7 @@ describe("dashboard auth routes", () => {
   test("admin password session cannot respond to review requests as a workflow participant", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const respondToReviewRequest = mock.fn(async () => makeWorkItem());
     const workItemsSource = makeDashboardWorkItemsSource({ respondToReviewRequest });
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db, workItemsSource);
@@ -696,7 +708,7 @@ describe("dashboard auth routes", () => {
   test("users page redirects anonymous requests to login and renders for admin password session", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const server = startAuthTestServer(makeConfig(port, dataDir), testDb.db);
     t.after(async () => {
       server.close();
@@ -721,7 +733,7 @@ describe("dashboard auth routes", () => {
   test("user session cannot access admin-only users endpoints", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const userId = "33333333-3333-4333-8333-333333333333";
     await testDb.db.insert(users).values({
       id: "44444444-4444-4444-8444-444444444444",
@@ -753,7 +765,7 @@ describe("dashboard auth routes", () => {
   test("admin password session can list, create, and update users through admin-only endpoints", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     await testDb.db.insert(users).values({
       id: "55555555-5555-4555-8555-555555555555",
       displayName: "Alpha User",
@@ -805,7 +817,7 @@ describe("dashboard auth routes", () => {
   test("user session may create discovery items through the session-derived identity", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const userId = "11111111-1111-4111-8111-111111111111";
     let seenActorUserId: string | undefined;
     const workItemsSource = makeDashboardWorkItemsSource({
@@ -835,7 +847,7 @@ describe("dashboard auth routes", () => {
   test("user session may respond to review requests through the session-derived identity", async (t) => {
     const testDb = await createTestDb();
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "dashboard-auth-"));
-    const port = getPort();
+    const port = await getPort();
     const userId = "22222222-2222-4222-8222-222222222222";
     let seenActorUserId: string | undefined;
     const workItemsSource = makeDashboardWorkItemsSource({

@@ -1,6 +1,6 @@
 dependencies:
 - name: common
   repository: s3://hubstaff-internal-helm-charts
-  version: 1.2.0
-digest: sha256:78ab0db2323eceb31d05c4cf51b74d8ab22a8341a76ec6321b4e36fbf7389c65
-generated: "2026-04-23T01:15:07.159124+03:00"
+  version: 1.4.5
+digest: sha256:2de60fbec5c24639f0b86ef08b193c6dabd8e45e7f2a0abb087644ffa9f5d543
+generated: "2026-05-14T01:22:13.08901+02:00"

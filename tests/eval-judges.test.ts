@@ -4,7 +4,7 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { runJudge, runAllJudges } from "../src/eval/judges.js";
+import { runJudge, runAllJudges, extractJsonObject } from "../src/eval/judges.js";
 import type { RunRecord } from "../src/types.js";
 import type { JudgeContext } from "../src/eval/judges.js";
 
@@ -214,6 +214,66 @@ describe("Eval Judges", () => {
     assert.equal(verdict.pass, false);
   });
 
+  // ── expected_outcome judge ──
+
+  test("expected_outcome passes when run error matches context_conflict", async () => {
+    const ctx = makeCtx({
+      run: makeRun({ status: "failed", error: "Agent reported context conflict: task assumes a feature that does not exist" }),
+    });
+    const verdict = await runJudge(
+      { type: "expected_outcome", expect: ["no_changes", "context_conflict"] },
+      ctx
+    );
+    assert.equal(verdict.pass, true);
+    assert.equal(verdict.score, 100);
+    assert.ok(verdict.reason.includes("context_conflict"));
+  });
+
+  test("expected_outcome passes when run error matches no_changes", async () => {
+    const ctx = makeCtx({
+      run: makeRun({ status: "failed", error: "Agent exited 0 but made no meaningful changes. Signals: none" }),
+    });
+    const verdict = await runJudge(
+      { type: "expected_outcome", expect: ["no_changes", "context_conflict"] },
+      ctx
+    );
+    assert.equal(verdict.pass, true);
+    assert.equal(verdict.score, 100);
+    assert.ok(verdict.reason.includes("no_changes"));
+  });
+
+  test("expected_outcome passes on completed run with empty diff when allow_empty_diff", async () => {
+    const ctx = makeCtx({ run: makeRun({ status: "completed", error: undefined }), diff: "   \n  " });
+    const verdict = await runJudge(
+      { type: "expected_outcome", expect: ["no_changes", "context_conflict"], allow_empty_diff: true },
+      ctx
+    );
+    assert.equal(verdict.pass, true);
+    assert.ok(verdict.reason.includes("empty diff"));
+  });
+
+  test("expected_outcome fails when the agent invented work (non-empty diff, no matching error)", async () => {
+    const ctx = makeCtx({
+      run: makeRun({ status: "completed", error: undefined }),
+      diff: "+<button class='dark-mode-toggle'>Toggle</button>",
+    });
+    const verdict = await runJudge(
+      { type: "expected_outcome", expect: ["no_changes", "context_conflict"], allow_empty_diff: true },
+      ctx
+    );
+    assert.equal(verdict.pass, false);
+    assert.equal(verdict.score, 0);
+  });
+
+  test("expected_outcome does not pass on empty diff when allow_empty_diff is unset", async () => {
+    const ctx = makeCtx({ run: makeRun({ status: "completed", error: undefined }), diff: "" });
+    const verdict = await runJudge(
+      { type: "expected_outcome", expect: ["no_changes", "context_conflict"] },
+      ctx
+    );
+    assert.equal(verdict.pass, false);
+  });
+
   // ── runAllJudges ──
 
   test("runAllJudges runs all judges and returns verdicts", async () => {
@@ -245,4 +305,13 @@ describe("Eval Judges", () => {
     assert.equal(verdicts[0]!.pass, false);
     assert.equal(verdicts[1]!.pass, false);
   });
+});
+
+test("extractJsonObject: strips markdown fences and isolates the object", () => {
+  assert.equal(
+    extractJsonObject('```json\n{ "pass": true, "score": 72, "reason": "ok" }\n```'),
+    '{ "pass": true, "score": 72, "reason": "ok" }'
+  );
+  assert.equal(extractJsonObject('{"pass":false}'), '{"pass":false}');
+  assert.equal(extractJsonObject('noise before {"pass":true} noise after'), '{"pass":true}');
 });

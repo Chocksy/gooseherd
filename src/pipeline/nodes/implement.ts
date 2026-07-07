@@ -3,11 +3,18 @@ import path from "node:path";
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
 import { appendLog, runShellCapture } from "../shell.js";
-import { buildAgentCommand } from "../agent-command.js";
+import { buildAgentCommandWithSelection } from "../agent-command.js";
+import { describeAgentProfileSelection } from "../../agent-profile-resolver.js";
 import { filterInternalGeneratedFiles, isInternalGeneratedFile, mergeInternalArtifacts } from "../internal-generated-files.js";
 import { logInfo, logWarn } from "../../logger.js";
 import { isFeatureDeliveryAutoReviewRun } from "../../runs/run-intent.js";
 import type { RunRecord } from "../../types.js";
+import {
+  type SentinelExtractionMethod,
+  type SentinelMatch,
+  extractJsonObjectAfterPrefix,
+  extractSentinelMatch,
+} from "../agent-output/sentinel.js";
 
 export interface AgentAnalysis {
   verdict: "clean" | "suspect" | "empty" | "context_conflict";
@@ -38,18 +45,9 @@ export interface AutoReviewNoopClassification {
   reason?: string;
 }
 
-export type AutoReviewSentinelExtractionMethod =
-  | "plain_text"
-  | "pi_jsonl_message_update"
-  | "pi_jsonl_message_end"
-  | "pi_jsonl_turn_end"
-  | "pi_jsonl_agent_end"
-  | "none";
+export type AutoReviewSentinelExtractionMethod = SentinelExtractionMethod;
 
-interface AutoReviewSentinelMatch {
-  text: string;
-  method: Exclude<AutoReviewSentinelExtractionMethod, "none">;
-}
+type AutoReviewSentinelMatch = SentinelMatch;
 
 interface AutoReviewSummaryParseResult {
   found: boolean;
@@ -91,7 +89,15 @@ export async function implementNode(
 
   await deps.onPhase("agent");
 
-  const agentCommand = buildAgentCommand(config, run, repoDir, promptFile, isFollowUp);
+  const { command: agentCommand, selection: agentProfileSelection } = buildAgentCommandWithSelection(
+    config,
+    run,
+    repoDir,
+    promptFile,
+    isFollowUp,
+    deps.agentProfileTarget,
+  );
+  await appendLog(logFile, "[agent-profile] " + describeAgentProfileSelection(agentProfileSelection) + "\n");
 
   await appendLog(
     logFile,
@@ -621,92 +627,13 @@ export function inspectAutoReviewOutput(output: string): AutoReviewOutputInspect
 }
 
 function extractSummaryMatch(output: string): AutoReviewSentinelMatch | undefined {
-  return extractSentinelMatch(output, AUTO_REVIEW_SUMMARY_PATTERN, AUTO_REVIEW_SUMMARY_PREFIX);
+  return extractSentinelMatch(output, AUTO_REVIEW_SUMMARY_PATTERN, AUTO_REVIEW_SUMMARY_PREFIX, {
+    requireJsonObject: true,
+  });
 }
 
 function extractContextConflictMatch(output: string): AutoReviewSentinelMatch | undefined {
   return extractSentinelMatch(output, CONTEXT_CONFLICT_PATTERN, "GOOSEHERD_CONTEXT_CONFLICT:");
-}
-
-function extractSentinelMatch(
-  output: string,
-  directPattern: RegExp,
-  prefix: string,
-): AutoReviewSentinelMatch | undefined {
-  const directMatch = directPattern.exec(output);
-  if (directMatch?.index !== undefined) {
-    const directText = findSentinelText(output.slice(directMatch.index), prefix) ?? directMatch[0].trim();
-    return { text: directText, method: "plain_text" };
-  }
-
-  return findPiJsonlAssistantText(output, prefix);
-}
-
-function findPiJsonlAssistantText(output: string, prefix: string): AutoReviewSentinelMatch | undefined {
-  let fallbackMatch: AutoReviewSentinelMatch | undefined;
-
-  for (const line of output.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) {
-      continue;
-    }
-
-    try {
-      const event = JSON.parse(trimmed) as Record<string, unknown>;
-      const eventType = event["type"];
-
-      if (eventType === "message_update") {
-        const assistantMessageEvent = event["assistantMessageEvent"];
-        for (const content of extractAssistantUpdateTexts(assistantMessageEvent)) {
-          const sentinelText = findSentinelText(content, prefix);
-          if (sentinelText) {
-            if (prefix === AUTO_REVIEW_SUMMARY_PREFIX && !extractJsonObjectAfterPrefix(sentinelText, prefix)) {
-              fallbackMatch ??= { text: sentinelText, method: "pi_jsonl_message_update" };
-              continue;
-            }
-            return { text: sentinelText, method: "pi_jsonl_message_update" };
-          }
-        }
-      }
-
-      if (eventType === "message_end" || eventType === "turn_end") {
-        const message = event["message"];
-        for (const text of extractAssistantMessageTexts(message)) {
-          const sentinelText = findSentinelText(text, prefix);
-          if (sentinelText) {
-            const method = eventType === "turn_end" ? "pi_jsonl_turn_end" : "pi_jsonl_message_end";
-            if (prefix === AUTO_REVIEW_SUMMARY_PREFIX && !extractJsonObjectAfterPrefix(sentinelText, prefix)) {
-              fallbackMatch ??= { text: sentinelText, method };
-              continue;
-            }
-            return { text: sentinelText, method };
-          }
-        }
-      }
-
-      if (eventType === "agent_end") {
-        const messages = event["messages"];
-        if (Array.isArray(messages)) {
-          for (const message of messages) {
-            for (const text of extractAssistantMessageTexts(message)) {
-              const sentinelText = findSentinelText(text, prefix);
-              if (sentinelText) {
-                if (prefix === AUTO_REVIEW_SUMMARY_PREFIX && !extractJsonObjectAfterPrefix(sentinelText, prefix)) {
-                  fallbackMatch ??= { text: sentinelText, method: "pi_jsonl_agent_end" };
-                  continue;
-                }
-                return { text: sentinelText, method: "pi_jsonl_agent_end" };
-              }
-            }
-          }
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return fallbackMatch;
 }
 
 function truncatePreview(value: string | undefined, maxChars = 300): string | undefined {
@@ -767,48 +694,6 @@ function emitAutoReviewDebugDiagnostics(
   logInfo("Auto-review debug diagnostics", details);
 }
 
-function extractAssistantUpdateTexts(value: unknown): string[] {
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-
-  const event = value as Record<string, unknown>;
-  if (event["type"] === "text_end") {
-    const content = event["content"];
-    return typeof content === "string" && content.trim() ? [content.trim()] : [];
-  }
-
-  if (event["type"] === "text_delta") {
-    const partial = event["partial"];
-    return extractAssistantMessageTexts(partial);
-  }
-
-  return [];
-}
-
-function findSentinelText(value: string, prefix: string): string | undefined {
-  const startIndex = value.indexOf(prefix);
-  if (startIndex < 0) {
-    return undefined;
-  }
-
-  const suffix = value.slice(startIndex);
-  const summaryJson = prefix === AUTO_REVIEW_SUMMARY_PREFIX
-    ? extractJsonObjectAfterPrefix(suffix, prefix)
-    : undefined;
-  if (summaryJson) {
-    return `${prefix} ${summaryJson}`;
-  }
-
-  for (const line of suffix.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith(prefix)) {
-      return trimmed;
-    }
-  }
-  return undefined;
-}
-
 function extractAutoReviewSummaryParseResult(output: string): AutoReviewSummaryParseResult {
   const summaryMatch = extractSummaryMatch(output);
   if (!summaryMatch) {
@@ -835,83 +720,6 @@ function extractAutoReviewSummaryParseResult(output: string): AutoReviewSummaryP
   } catch {
     return { found: true, parseError: "invalid_json" };
   }
-}
-
-function extractJsonObjectAfterPrefix(value: string, prefix: string): string | undefined {
-  const prefixIndex = value.indexOf(prefix);
-  if (prefixIndex < 0) {
-    return undefined;
-  }
-
-  let cursor = prefixIndex + prefix.length;
-  while (cursor < value.length && /\s/.test(value[cursor] ?? "")) {
-    cursor += 1;
-  }
-  if (value[cursor] !== "{") {
-    return undefined;
-  }
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = cursor; index < value.length; index += 1) {
-    const char = value[index] ?? "";
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === "\"") {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === "\"") {
-      inString = true;
-      continue;
-    }
-
-    if (char === "{") {
-      depth += 1;
-      continue;
-    }
-
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return value.slice(cursor, index + 1);
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function extractAssistantMessageTexts(value: unknown): string[] {
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-
-  const message = value as Record<string, unknown>;
-  if (message["role"] !== "assistant") {
-    return [];
-  }
-
-  const content = message["content"];
-  if (!Array.isArray(content)) {
-    return [];
-  }
-
-  return content
-    .filter((block): block is Record<string, unknown> => Boolean(block) && typeof block === "object")
-    .filter((block) => block["type"] === "text")
-    .map((block) => block["text"])
-    .filter((text): text is string => typeof text === "string")
-    .map((text) => text.trim())
-    .filter(Boolean);
 }
 
 function normalizeSummaryItems(value: unknown): string[] {

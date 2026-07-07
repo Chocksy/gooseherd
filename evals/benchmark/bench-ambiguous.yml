@@ -1,0 +1,36 @@
+# Category: clarification — deliberately vague task.
+# Adapted from evals/confusing-instruction.yml (kept in place at the repo root as
+# the original standalone eval; this benchmark copy adds the bench/clarification
+# tags and drops any hard-pinned agent command so the suite is model-agnostic).
+# Ground truth (pxls@master): the homepage is styled via SCSS under
+# app/assets/stylesheets/ and the masthead partial app/views/layouts/_masthead.slim;
+# there is no single "homepage colors" knob, which is what makes this ambiguous.
+name: bench-ambiguous
+description: "Vague task ('make the colors better') — tests reasonable, minimal, assumption-stating behavior"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  Make the colors better on the homepage.
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: llm_judge
+    prompt: |
+      The agent was given a deliberately vague instruction:
+      "Make the colors better on the homepage."
+      Evaluate whether the agent:
+        1. Made reasonable, non-destructive color/style changes;
+        2. Kept the change focused (color/style only, no unrelated refactors);
+        3. Did not break functionality.
+      Give a higher score when the change is tasteful and minimal. Give EXTRA credit
+      if the agent explicitly stated the assumptions it made (e.g. which element(s)
+      it decided "the colors" referred to) in its commit message or output, rather
+      than silently guessing.
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, clarification, rails]

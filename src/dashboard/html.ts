@@ -159,6 +159,12 @@ export function dashboardHtml(config: AppConfig): string {
       flex-wrap: wrap;
       justify-content: flex-end;
     }
+    .top-controls-tail {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
     .view-switch {
       display: flex;
       border: 1px solid var(--border);
@@ -188,6 +194,28 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 13px;
       margin-right: 2px;
       white-space: nowrap;
+    }
+    .repo-filter {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .repo-filter .material-symbols-rounded {
+      color: var(--muted);
+      font-size: 17px;
+      flex-shrink: 0;
+    }
+    .repo-filter select {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 28px 6px 9px;
+      font-size: 12px;
+      font-family: var(--font-ui);
+      max-width: 230px;
+      min-width: 170px;
     }
     .material-symbols-rounded {
       font-variation-settings:
@@ -474,6 +502,7 @@ export function dashboardHtml(config: AppConfig): string {
       background: color-mix(in srgb, var(--panel) 92%, transparent);
       border-radius: 14px;
       min-height: 240px;
+      min-width: 0;
       padding: 12px;
       display: grid;
       gap: 10px;
@@ -498,6 +527,7 @@ export function dashboardHtml(config: AppConfig): string {
     .board-column-items {
       display: grid;
       gap: 10px;
+      min-width: 0;
     }
     .board-card {
       border: 1px solid var(--border);
@@ -506,6 +536,8 @@ export function dashboardHtml(config: AppConfig): string {
       padding: 12px;
       display: grid;
       gap: 8px;
+      min-width: 0;
+      overflow: hidden;
       box-shadow: var(--shadow);
       cursor: pointer;
       transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
@@ -538,12 +570,14 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 14px;
       font-weight: 700;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .board-card-summary {
       font-size: 12px;
       color: var(--muted);
       line-height: 1.45;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .board-card-meta {
       display: flex;
@@ -607,6 +641,8 @@ export function dashboardHtml(config: AppConfig): string {
       top: 0;
       display: grid;
       gap: 12px;
+      min-width: 0;
+      overflow: hidden;
     }
     .board-detail.is-hidden {
       display: none !important;
@@ -618,6 +654,7 @@ export function dashboardHtml(config: AppConfig): string {
       font-size: 18px;
       font-weight: 700;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .board-detail-meta {
       display: flex;
@@ -864,6 +901,11 @@ export function dashboardHtml(config: AppConfig): string {
       background: color-mix(in srgb, var(--err) 18%, transparent);
       border-color: color-mix(in srgb, var(--err) 40%, var(--border));
       color: color-mix(in srgb, var(--err) 82%, var(--text));
+    }
+    .status-pill.conversation {
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+      color: color-mix(in srgb, var(--accent) 80%, var(--text));
     }
     .status-pill.running,
     .status-pill.validating,
@@ -1775,6 +1817,12 @@ export function dashboardHtml(config: AppConfig): string {
       </div>
       <div class="top-controls">
         <div class="top-meta" id="top-meta">0 runs</div>
+        <label class="repo-filter" for="repo-filter" title="Repository filter">
+          <span class="material-symbols-rounded">source</span>
+          <select id="repo-filter">
+            <option value="all">All repositories</option>
+          </select>
+        </label>
         <div class="view-switch" id="view-switch">
           <button class="view-btn active" data-view="runs">Runs</button>
           <button class="view-btn" data-view="board">Board</button>
@@ -1803,20 +1851,22 @@ export function dashboardHtml(config: AppConfig): string {
           <span class="material-symbols-rounded">link</span>
           <span>Report issue</span>
         </a>
-        <div class="theme-switch" id="theme-switch">
-          <button class="theme-btn" data-theme-val="light" title="Light mode">
-            <span class="material-symbols-rounded">light_mode</span>
-          </button>
-          <button class="theme-btn" data-theme-val="system" title="System mode">
-            <span class="material-symbols-rounded">desktop_windows</span>
-          </button>
-          <button class="theme-btn" data-theme-val="dark" title="Dark mode">
-            <span class="material-symbols-rounded">dark_mode</span>
+        <div class="top-controls-tail">
+          <div class="theme-switch" id="theme-switch">
+            <button class="theme-btn" data-theme-val="light" title="Light mode">
+              <span class="material-symbols-rounded">light_mode</span>
+            </button>
+            <button class="theme-btn" data-theme-val="system" title="System mode">
+              <span class="material-symbols-rounded">desktop_windows</span>
+            </button>
+            <button class="theme-btn" data-theme-val="dark" title="Dark mode">
+              <span class="material-symbols-rounded">dark_mode</span>
+            </button>
+          </div>
+          <button class="top-btn danger" id="logout-btn" title="Logout">
+            <span class="material-symbols-rounded">power_settings_new</span>
           </button>
         </div>
-        <button class="top-btn danger" id="logout-btn" title="Logout">
-          <span class="material-symbols-rounded">power_settings_new</span>
-        </button>
       </div>
     </header>
     <aside class="sidebar">
@@ -2215,6 +2265,8 @@ export function dashboardHtml(config: AppConfig): string {
       themePreference: 'system',
       viewMode: 'runs',
       boardWorkflow: 'feature_delivery',
+      selectedRepository: 'all',
+      repositoryOptions: [],
     };
 
     var logStreamState = { runId: null, offset: 0 };
@@ -2236,6 +2288,7 @@ export function dashboardHtml(config: AppConfig): string {
       appRoot: document.getElementById('app-root'),
       meta: document.getElementById('meta'),
       topMeta: document.getElementById('top-meta'),
+      repoFilter: document.getElementById('repo-filter'),
       sidebarTitle: document.getElementById('sidebar-title'),
       runs: document.getElementById('runs'),
       viewSwitch: document.getElementById('view-switch'),
@@ -2495,6 +2548,73 @@ export function dashboardHtml(config: AppConfig): string {
       return null;
     }
 
+    function workflowFromPathSegment(value) {
+      if (value === 'product-discovery') return 'product_discovery';
+      return 'feature_delivery';
+    }
+
+    function workflowToPathSegment(value) {
+      return value === 'product_discovery' ? 'product-discovery' : 'feature-delivery';
+    }
+
+    function repoPathParts(repo) {
+      if (!repo || repo === 'all') return null;
+      var parts = String(repo).split('/');
+      if (parts.length < 2 || !parts[0] || !parts[1]) return null;
+      return [parts[0], parts[1]];
+    }
+
+    function parseDashboardPath(pathname) {
+      var parts = (pathname || '/').split('/').filter(Boolean).map(decodeURIComponent);
+      var route = { selectedRepository: 'all', viewMode: 'runs', boardWorkflow: 'feature_delivery' };
+      if (parts.length === 0) return route;
+      if (parts[0] === 'runs') return route;
+      if (parts[0] === 'board' && parts[1]) {
+        route.viewMode = 'board';
+        route.boardWorkflow = workflowFromPathSegment(parts[1]);
+        return route;
+      }
+      if (parts[0] !== 'repo' || !parts[1] || !parts[2]) return route;
+      route.selectedRepository = parts[1] + '/' + parts[2];
+      if (parts[3] === 'board' && parts[4]) {
+        route.viewMode = 'board';
+        route.boardWorkflow = workflowFromPathSegment(parts[4]);
+        return route;
+      }
+      route.viewMode = 'runs';
+      return route;
+    }
+
+    function dashboardPath() {
+      var repoParts = repoPathParts(selectedRepository());
+      var suffix = state.viewMode === 'board'
+        ? '/board/' + workflowToPathSegment(state.boardWorkflow || 'feature_delivery')
+        : '/runs';
+      if (!repoParts) return suffix;
+      return '/repo/' + encodeURIComponent(repoParts[0]) + '/' + encodeURIComponent(repoParts[1]) + suffix;
+    }
+
+    function syncDashboardPath(replace) {
+      var nextPath = dashboardPath();
+      var nextUrl = nextPath + (window.location.hash || '');
+      var currentUrl = window.location.pathname + (window.location.hash || '');
+      if (nextUrl === currentUrl) return;
+      if (replace) {
+        window.history.replaceState(null, '', nextUrl);
+      } else {
+        window.history.pushState(null, '', nextUrl);
+      }
+    }
+
+    function applyDashboardPath() {
+      var route = parseDashboardPath(window.location.pathname);
+      state.selectedRepository = route.selectedRepository;
+      state.viewMode = route.viewMode;
+      state.boardWorkflow = route.boardWorkflow;
+      if (el.boardWorkflow) el.boardWorkflow.value = state.boardWorkflow;
+      if (el.repoFilter) el.repoFilter.value = state.selectedRepository;
+    }
+
     function branchRefForUrl(value) {
       return encodeURIComponent(value).replace(/%2F/g, '/');
     }
@@ -2532,6 +2652,77 @@ export function dashboardHtml(config: AppConfig): string {
         return;
       }
       setLinkState(el.reportBtn, 'https://github.com/' + run.repoSlug + '/issues/new');
+    }
+
+    function selectedRepository() {
+      return state.selectedRepository && state.selectedRepository !== 'all' ? state.selectedRepository : '';
+    }
+
+    function matchesRepositoryFilter(record) {
+      var repo = record ? (record.repoSlug || record.repo || '') : '';
+      var selected = selectedRepository();
+      return !selected || repo === selected;
+    }
+
+    function repositoryFilterQueryParam() {
+      var selected = selectedRepository();
+      return selected ? '&repo=' + encodeURIComponent(selected) : '';
+    }
+
+    function repositoryApiPrefix() {
+      var parts = repoPathParts(selectedRepository());
+      if (!parts) return '';
+      return '/api/repo/' + encodeURIComponent(parts[0]) + '/' + encodeURIComponent(parts[1]);
+    }
+
+    function runsListEndpoint() {
+      var prefix = repositoryApiPrefix();
+      return prefix ? prefix + '/runs?limit=200' : '/api/runs?limit=200';
+    }
+
+    function workItemsListEndpoint(workflow) {
+      var prefix = repositoryApiPrefix();
+      return prefix
+        ? prefix + '/work-items?workflow=' + encodeURIComponent(workflow)
+        : '/api/work-items?workflow=' + encodeURIComponent(workflow);
+    }
+
+    function rememberRepositoryOptions(records) {
+      var seen = {};
+      if (selectedRepository()) {
+        seen[selectedRepository()] = true;
+      }
+      for (var i = 0; i < state.repositoryOptions.length; i++) {
+        seen[state.repositoryOptions[i]] = true;
+      }
+      for (var j = 0; j < records.length; j++) {
+        var repo = records[j] ? (records[j].repoSlug || records[j].repo || '') : '';
+        if (repo) seen[repo] = true;
+      }
+      state.repositoryOptions = Object.keys(seen).sort();
+      populateRepositoryFilter();
+    }
+
+    function populateRepositoryFilter() {
+      if (!el.repoFilter) return;
+      var current = state.selectedRepository || 'all';
+      while (el.repoFilter.options.length > 0) el.repoFilter.remove(0);
+
+      var all = document.createElement('option');
+      all.value = 'all';
+      all.textContent = 'All repositories';
+      el.repoFilter.appendChild(all);
+
+      for (var i = 0; i < state.repositoryOptions.length; i++) {
+        var repo = state.repositoryOptions[i];
+        var option = document.createElement('option');
+        option.value = repo;
+        option.textContent = repo;
+        el.repoFilter.appendChild(option);
+      }
+
+      el.repoFilter.value = current === 'all' || state.repositoryOptions.includes(current) ? current : 'all';
+      state.selectedRepository = el.repoFilter.value;
     }
 
     function normalizeThemePreference(value) {
@@ -3158,6 +3349,7 @@ export function dashboardHtml(config: AppConfig): string {
 
     function getFilteredRuns() {
       return state.runs.filter(function(run) {
+        if (!matchesRepositoryFilter(run)) return false;
         if (currentStatusFilter !== 'all') {
           if (currentStatusFilter === 'running') {
             if (run.status !== 'running' && run.status !== 'queued' && run.status !== 'validating' && run.status !== 'pushing' && run.status !== 'awaiting_ci' && run.status !== 'ci_fixing') return false;
@@ -3662,29 +3854,36 @@ export function dashboardHtml(config: AppConfig): string {
 
     async function loadRuns() {
       const [runsData, statsData] = await Promise.all([
-        fetchJson('/api/runs?limit=200'),
+        fetchJson(runsListEndpoint()),
         fetchJson('/api/stats').catch(function() { return {}; }),
       ]);
       state.runs = runsData.runs || [];
-      el.meta.textContent = state.runs.length + ' runs';
+      if (Array.isArray(statsData.repositories)) {
+        rememberRepositoryOptions(statsData.repositories.map(function(slug) {
+          return { repoSlug: slug };
+        }));
+      }
+      rememberRepositoryOptions(state.runs);
+      var filteredRuns = getFilteredRuns();
+      el.meta.textContent = filteredRuns.length + ' runs';
       if (el.topMeta) {
-        var parts = [state.runs.length + ' runs'];
+        var parts = [filteredRuns.length + ' runs'];
         if (statsData.successRate !== undefined) parts.push(statsData.successRate + '% success');
         if (statsData.totalCostUsd > 0) parts.push('$' + statsData.totalCostUsd.toFixed(2) + ' total');
         el.topMeta.textContent = parts.join(' | ');
       }
-      if (state.selectedId && !state.runs.some((run) => run.id === state.selectedId)) {
+      if (state.selectedId && !filteredRuns.some((run) => run.id === state.selectedId)) {
         state.selectedId = null;
       }
-      if (!state.selectedId && state.runs.length > 0) {
+      if (!state.selectedId && filteredRuns.length > 0) {
         var hashTarget = currentHashTarget();
         if (hashTarget && hashTarget.type === 'run') {
           var prefix = hashTarget.prefix;
-          var match = state.runs.find(function(r) { return r.id.startsWith(prefix); });
+          var match = filteredRuns.find(function(r) { return r.id.startsWith(prefix); });
           if (match) { state.selectedId = match.id; }
-          else { state.selectedId = state.runs[0].id; }
+          else { state.selectedId = filteredRuns[0].id; }
         } else {
-          state.selectedId = state.runs[0].id;
+          state.selectedId = filteredRuns[0].id;
         }
       }
       renderRuns();
@@ -3694,7 +3893,7 @@ export function dashboardHtml(config: AppConfig): string {
       var workflow = state.boardWorkflow || 'feature_delivery';
       var data;
       try {
-        data = await fetchJson('/api/work-items?workflow=' + encodeURIComponent(workflow));
+        data = await fetchJson(workItemsListEndpoint(workflow));
       } catch (error) {
         if (isWorkItemsUnavailableError(error)) {
           state.workItemsAvailable = false;
@@ -3718,6 +3917,7 @@ export function dashboardHtml(config: AppConfig): string {
 
       state.workItemsAvailable = true;
       state.workItems = Array.isArray(data.workItems) ? data.workItems : [];
+      rememberRepositoryOptions(state.workItems);
       var hashTarget = currentHashTarget();
       if (hashTarget && hashTarget.type === 'workItem') {
         var hashMatch = state.workItems.find(function(item) {
@@ -3737,10 +3937,10 @@ export function dashboardHtml(config: AppConfig): string {
         state.selectedWorkItemRuns = [];
       }
       if (el.boardMeta) {
-        el.boardMeta.textContent = state.workItems.length + ' work items';
+        el.boardMeta.textContent = state.workItems.filter(matchesRepositoryFilter).length + ' work items';
       }
       if (state.viewMode === 'board' && el.topMeta) {
-        el.topMeta.textContent = state.workItems.length + ' work items';
+        el.topMeta.textContent = state.workItems.filter(matchesRepositoryFilter).length + ' work items';
       }
       renderBoard();
       if (state.selectedWorkItemId) {
@@ -3764,7 +3964,7 @@ export function dashboardHtml(config: AppConfig): string {
       for (var i = 0; i < columns.length; i++) {
         var columnState = columns[i];
         var items = state.workItems.filter(function(item) {
-          return item.state === columnState;
+          return item.state === columnState && matchesRepositoryFilter(item);
         });
 
         var column = document.createElement('section');
@@ -3903,7 +4103,7 @@ export function dashboardHtml(config: AppConfig): string {
       ]);
 
       state.selectedWorkItem = results[0].workItem || null;
-      state.selectedWorkItemRuns = Array.isArray(results[1].runs) ? results[1].runs : [];
+      state.selectedWorkItemRuns = (Array.isArray(results[1].runs) ? results[1].runs : []).filter(matchesRepositoryFilter);
       state.selectedWorkItemReviewRequests = Array.isArray(results[2].reviewRequests) ? results[2].reviewRequests : [];
       state.selectedWorkItemEvents = Array.isArray(results[3].events) ? results[3].events : [];
       state.selectedWorkItemReviewComments = {};
@@ -4021,6 +4221,7 @@ export function dashboardHtml(config: AppConfig): string {
       state.viewMode = 'runs';
       state.selectedId = runId;
       window.location.hash = '#run/' + runId.slice(0, 8);
+      syncDashboardPath(true);
       updateDashboardChrome();
       renderRuns();
       refreshSelected().catch(console.error);
@@ -4680,6 +4881,7 @@ export function dashboardHtml(config: AppConfig): string {
         var button = e.target.closest('[data-view]');
         if (!button) return;
         state.viewMode = button.getAttribute('data-view') === 'board' ? 'board' : 'runs';
+        syncDashboardPath(false);
         updateDashboardChrome();
         refreshCurrentView().catch(console.error);
         scheduleRefresh(nextRefreshDelayMs());
@@ -4690,7 +4892,21 @@ export function dashboardHtml(config: AppConfig): string {
       el.boardWorkflow.onchange = function() {
         state.boardWorkflow = el.boardWorkflow.value || 'feature_delivery';
         setBoardStatusMessage('');
+        syncDashboardPath(false);
         loadWorkItems().catch(console.error);
+        scheduleRefresh(nextRefreshDelayMs());
+      };
+    }
+
+    if (el.repoFilter) {
+      el.repoFilter.onchange = function() {
+        state.selectedRepository = el.repoFilter.value || 'all';
+        state.selectedId = null;
+        state.selectedWorkItemId = null;
+        state.selectedWorkItem = null;
+        state.selectedWorkItemRuns = [];
+        syncDashboardPath(false);
+        refreshCurrentView().catch(console.error);
         scheduleRefresh(nextRefreshDelayMs());
       };
     }
@@ -5004,6 +5220,12 @@ export function dashboardHtml(config: AppConfig): string {
       }
     }
     window.addEventListener('hashchange', applyHashSelection);
+    window.addEventListener('popstate', function() {
+      applyDashboardPath();
+      updateDashboardChrome();
+      refreshCurrentView().catch(console.error);
+      scheduleRefresh(nextRefreshDelayMs());
+    });
 
     el.logoutBtn.onclick = async () => {
       try {
@@ -5655,9 +5877,11 @@ export function dashboardHtml(config: AppConfig): string {
     }
 
     initTheme();
+    applyDashboardPath();
     if (el.boardWorkflow) {
       el.boardWorkflow.value = state.boardWorkflow;
     }
+    syncDashboardPath(true);
     updateDashboardChrome();
     document.addEventListener('visibilitychange', function() {
       if (document.hidden) {

@@ -5,6 +5,7 @@ import type { GitHubService } from "../github.js";
 import type { RunLifecycleHooks } from "../hooks/run-lifecycle.js";
 import type { ContextBag } from "./context-bag.js";
 import type { RunCheckpointType } from "../runs/run-checkpoints.js";
+import type { RuntimeAgentProfileTarget } from "../agent-profile-targets.js";
 
 // ── Node categories ──
 
@@ -75,6 +76,8 @@ export interface NodeDeps {
   requestSandbox?: (image: string) => Promise<void>;
   /** Container manager reference for image resolution (build/check). */
   containerManager?: import("../sandbox/container-manager.js").ContainerManager;
+  /** Current routing target for per-workflow/per-node agent-profile selection. */
+  agentProfileTarget?: RuntimeAgentProfileTarget;
 }
 
 export type NodeHandler = (

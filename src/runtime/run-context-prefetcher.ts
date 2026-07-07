@@ -1,5 +1,6 @@
 import type { GitHubService, PullRequestCiSnapshot, PullRequestDiscussionComment, PullRequestDetails, PullRequestReview, PullRequestReviewComment } from "../github.js";
 import type { JiraClient, JiraComment, JiraIssueDetails } from "../jira.js";
+import { logWarn } from "../logger.js";
 import type { RunPrefetchContext } from "./run-context-types.js";
 import type { RunRecord } from "../types.js";
 import type { WorkItemStore } from "../work-items/store.js";
@@ -66,10 +67,32 @@ export class RunContextPrefetcher {
       prefetch.meta.sources.push("github_pr", "github_ci");
     }
 
-    if (hasJiraSource) {
-      if (this.deps.jira) {
-        prefetch.jira = await this.fetchJiraContext(workItem.id, workItem.jiraIssueKey!, signal);
-        prefetch.meta.sources.push("jira");
+    if (hasJiraSource && this.deps.jira) {
+      try {
+        const jiraContext = await this.fetchJiraContext(this.deps.jira, workItem.jiraIssueKey!, signal);
+        if (jiraContext) {
+          prefetch.jira = jiraContext;
+          prefetch.meta.sources.push("jira");
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === "Run cancelled") {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (!hasGitHubSource) {
+          throw new Error(
+            `Jira prefetch failed for work item ${workItem.id}: ${message}`
+          );
+        }
+        logWarn("Jira prefetch failed; continuing without Jira context", {
+          workItemId: workItem.id,
+          issueKey: workItem.jiraIssueKey,
+          error: message,
+        });
+        prefetch.meta.warnings ??= [];
+        prefetch.meta.warnings.push(
+          `Jira prefetch skipped for ${workItem.jiraIssueKey}: ${message}`
+        );
       }
     }
 
@@ -118,15 +141,10 @@ export class RunContextPrefetcher {
   }
 
   private async fetchJiraContext(
-    workItemId: string,
+    jira: JiraDeps,
     issueKey: string,
     signal?: AbortSignal,
   ): Promise<RunPrefetchContext["jira"]> {
-    const jira = this.deps.jira;
-    if (!jira) {
-      throw new Error(`Jira prefetch failed for work item ${workItemId}: Jira client is not configured`);
-    }
-
     try {
       const [issue, comments] = await Promise.all([
         jira.getIssue(issueKey, signal),
@@ -142,9 +160,7 @@ export class RunContextPrefetcher {
       if (isAbortError(error, signal)) {
         throw new Error("Run cancelled");
       }
-      throw new Error(
-        `Jira prefetch failed for work item ${workItemId}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      throw error;
     }
   }
 }

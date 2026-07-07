@@ -83,6 +83,15 @@ export class RunCheckpointStore {
     return row !== undefined;
   }
 
+  async hasCheckpointOfType(runId: string, checkpointType: RunCheckpointType): Promise<boolean> {
+    const rows = await this.db
+      .select({ runId: runCheckpoints.runId })
+      .from(runCheckpoints)
+      .where(and(eq(runCheckpoints.runId, runId), eq(runCheckpoints.checkpointType, checkpointType)))
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async listUnprocessed(limit = 500): Promise<RunCheckpointRecord[]> {
     const rows = await this.db
       .select()

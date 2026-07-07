@@ -20,6 +20,16 @@ import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
 import { readKubernetesTerminalFact } from "./kubernetes/runtime-facts.js";
 import { buildRunnerConfigPayload } from "./runner-config-payload.js";
+import {
+  parseDbConnectionUrl,
+  resolveRunnerImage,
+  resolveRunnerNodeHeapMb,
+  resolveRunnerProfile,
+  resolveRunnerResources,
+  type RunnerDbHosts,
+} from "./runner-profile.js";
+import { resolveRunnerDbUrls } from "./runner-db-env.js";
+import type { RunnerDbSlotManager } from "./runner-db-slot-manager.js";
 import { isRecord } from "../utils/type-guards.js";
 import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
 
@@ -34,11 +44,12 @@ interface KubernetesExecutionBackendDeps {
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
   namespace?: string;
-  runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile">;
+  runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile" | "agentProfileCatalog" | "agentProfilePolicies">;
   resourceClient?: Pick<KubernetesResourceClient, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret">;
   pollIntervalMs?: number;
   waitTimeoutMs?: number;
   completionWaitMs?: number;
+  runnerDbSlotManager?: RunnerDbSlotManager;
 }
 
 export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernetes"> {
@@ -84,6 +95,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
         autoReviewSourceSubstate: payload.autoReviewSourceSubstate,
         intent: payload.intent,
         intentKind: payload.intentKind,
+        ...(ctx.pipelineId ? { pipelineId: ctx.pipelineId } : {}),
         ...(this.deps.runnerConfigSource ? { runnerConfig: buildRunnerConfigPayload(this.deps.runnerConfigSource) } : {}),
       },
       runtime: "kubernetes",
@@ -99,10 +111,11 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       secretName,
       runToken: token.token,
     });
+    const extraEnv = await this.buildExtraEnv(run);
     const job = buildRunJobSpec({
       runId: run.id,
       namespace: this.namespace,
-      image: this.deps.runnerImage,
+      image: resolveRunnerImage(run.repoSlug, this.deps.runnerImage),
       secretName,
       internalBaseUrl: normalizeBaseUrl(this.deps.internalBaseUrl),
       pipelineFile: ctx.pipelineFile ?? "pipelines/pipeline.yml",
@@ -110,6 +123,9 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       runnerEnvSecretName: this.deps.runnerEnvSecretName,
       runnerEnvConfigMapName: this.deps.runnerEnvConfigMapName,
       jobName,
+      extraEnv,
+      resources: resolveRunnerResources(run.repoSlug),
+      nodeHeapMb: resolveRunnerNodeHeapMb(run.repoSlug),
     });
     await writeFile(manifestPath, renderManifestYaml(redactSecretToken(secret), job), "utf8");
     let lastDrainedEventSequence = 0;
@@ -136,6 +152,37 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
     return this.resourceClientInstance;
   }
 
+  private async buildExtraEnv(run: RunRecord & { runtime: "kubernetes" }): Promise<Record<string, string> | undefined> {
+    // Retry runs get full per-run logFile mirrored to pod stdout so the
+    // logs survive after the pod is reaped — see RunManager.retryMarkers
+    // and src/pipeline/shell.ts. Mirror is off by default for first attempts
+    // to keep Loki volume sane.
+    const retryEnv: Record<string, string> = run.retriedFromRunId
+      ? { RUN_LOG_MIRROR_STDOUT: "true" }
+      : {};
+
+    const profile = resolveRunnerProfile(run.repoSlug);
+    if (!profile.needsDbSlot || !profile.envTemplate || !this.deps.runnerDbSlotManager) {
+      return Object.keys(retryEnv).length > 0 ? retryEnv : undefined;
+    }
+    const slotId = await this.deps.runnerDbSlotManager.getSlotForRun(run.id);
+    if (slotId === null) {
+      return Object.keys(retryEnv).length > 0 ? retryEnv : undefined;
+    }
+    const dbUrls = resolveRunnerDbUrls();
+    const hosts: RunnerDbHosts | null = (() => {
+      const pg = parseDbConnectionUrl(dbUrls.pg, 5432);
+      const ch = parseDbConnectionUrl(dbUrls.clickhouse, 8123);
+      const redis = parseDbConnectionUrl(dbUrls.redis, 6379);
+      if (!pg || !ch || !redis) return null;
+      return { pg, clickhouse: ch, redis };
+    })();
+    if (!hosts) {
+      return Object.keys(retryEnv).length > 0 ? retryEnv : undefined;
+    }
+    return { ...profile.envTemplate(slotId, hosts), ...retryEnv };
+  }
+
   private async waitForTerminalFact(
     runId: string,
     jobName: string,
@@ -159,7 +206,12 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       await sleep(this.pollIntervalMs);
     }
 
-    throw new Error(`Timed out waiting for Kubernetes job ${jobName}`);
+    const seconds = Math.round(this.waitTimeoutMs / 1000);
+    throw new Error(
+      `Timed out waiting for Kubernetes job ${jobName} after ${String(seconds)}s. ` +
+        `Set KUBERNETES_RUN_WAIT_TIMEOUT_SECONDS to a larger value if the workload legitimately needs longer; ` +
+        `otherwise inspect pod RBAC, image-pull state, scheduling, and db-slot allocation.`
+    );
   }
 
   private async readRuntimeFact(jobName: string): Promise<TerminalFact> {

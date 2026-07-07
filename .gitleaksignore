@@ -16,3 +16,4 @@ tests/control-plane-store.test.ts:generic-api-key:479
 
 # False positive: example placeholder, not a real key
 kubernetes/local/gooseherd-secret.example.yaml:generic-api-key:9
+tests/shell.test.ts:github-pat:336

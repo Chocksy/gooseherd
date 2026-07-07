@@ -102,9 +102,16 @@ test("dashboard HTML includes work item board controls and data fetch hooks", ()
 
   assert.match(html, /Board/);
   assert.match(html, /id="view-switch"/);
+  assert.match(html, /id="repo-filter"/);
   assert.match(html, /id="board-workflow"/);
   assert.match(html, /id="board-columns"/);
   assert.match(html, /\/api\/work-items\?workflow=/);
+  assert.match(html, /selectedRepository:/);
+  assert.match(html, /populateRepositoryFilter/);
+  assert.match(html, /matchesRepositoryFilter/);
+  assert.match(html, /parseDashboardPath/);
+  assert.match(html, /syncDashboardPath/);
+  assert.match(html, /function openWorkItemRun\(runId\) \{[\s\S]*window\.location\.hash = '#run\/' \+ runId\.slice\(0, 8\);\n      syncDashboardPath\(true\);/);
   assert.match(html, /id="board-detail"/);
   assert.match(html, /id="board-detail-reviews"/);
   assert.match(html, /id="board-detail-runs"/);

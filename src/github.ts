@@ -243,6 +243,17 @@ export class GitHubService {
     return auth.token;
   }
 
+  /**
+   * Resolve a clone URL for `git clone`. Returned URL embeds a fresh
+   * installation token (App auth) or PAT. Exposed as a method (rather than
+   * inlined at the call site) so tests can substitute a `file://` URL
+   * pointing at a local bare repo.
+   */
+  async getCloneUrl(repoSlug: string): Promise<string> {
+    const token = await this.getToken();
+    return buildAuthenticatedGitUrl(repoSlug, token);
+  }
+
   async createPullRequest(params: PullRequestParams): Promise<PullRequestResult> {
     const { owner, repo } = parseRepoSlug(params.repoSlug);
     const response = await this.octokit.pulls.create({
@@ -463,13 +474,11 @@ export class GitHubService {
       return { headSha, conclusion: "no_ci" };
     }
 
-    const failedRuns = checkRuns.filter(run => isFailedCheckRun(run));
-    const hasPendingRuns = checkRuns.some(run =>
-      run.status !== "completed" ||
-      run.conclusion === null ||
-      run.conclusion === "cancelled"
-    );
+    if (checkRuns.some(isPendingCheckRun)) {
+      return { headSha, conclusion: "pending" };
+    }
 
+    const failedRuns = checkRuns.filter(run => isFailedCheckRun(run));
     if (failedRuns.length > 0) {
       return {
         headSha,
@@ -478,8 +487,8 @@ export class GitHubService {
       };
     }
 
-    if (hasPendingRuns) {
-      return { headSha, conclusion: "pending" };
+    if (!checkRuns.some(isPositiveCheckRun)) {
+      return { headSha, conclusion: "no_ci" };
     }
 
     return { headSha, conclusion: "success" };
@@ -641,6 +650,72 @@ export class GitHubService {
       job_id: jobId
     });
     return typeof response.data === "string" ? response.data : String(response.data);
+  }
+
+  async resolveWorkflowRunIdsForJobIds(
+    repoSlug: string,
+    jobIds: number[],
+    signal?: AbortSignal,
+  ): Promise<{ runIds: number[]; unresolvedJobIds: number[] }> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    const runIds = new Set<number>();
+    const unresolvedJobIds: number[] = [];
+    const settled = await Promise.allSettled(
+      jobIds.map((jobId) => this.octokit.actions.getJobForWorkflowRun({
+        owner,
+        repo,
+        job_id: jobId,
+        ...(signal ? { request: { signal } } : {}),
+      })),
+    );
+    for (let i = 0; i < settled.length; i += 1) {
+      const result = settled[i];
+      const jobId = jobIds[i]!;
+      if (result.status === "fulfilled") {
+        const runId = result.value.data.run_id;
+        if (typeof runId === "number" && Number.isFinite(runId)) {
+          runIds.add(runId);
+        } else {
+          unresolvedJobIds.push(jobId);
+        }
+      } else {
+        unresolvedJobIds.push(jobId);
+      }
+    }
+    return { runIds: Array.from(runIds), unresolvedJobIds };
+  }
+
+  async rerunWorkflowFailedJobs(
+    repoSlug: string,
+    runId: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const { owner, repo } = parseRepoSlug(repoSlug);
+    await this.octokit.actions.reRunWorkflowFailedJobs({
+      owner,
+      repo,
+      run_id: runId,
+      ...(signal ? { request: { signal } } : {}),
+    });
+  }
+
+  async rerunFailedJobsForCheckRuns(
+    repoSlug: string,
+    jobIds: number[],
+    signal?: AbortSignal,
+  ): Promise<{ rerunRunIds: number[]; unresolvedJobIds: number[]; failedRunIds: number[] }> {
+    const { runIds, unresolvedJobIds } = await this.resolveWorkflowRunIdsForJobIds(repoSlug, jobIds, signal);
+    const rerunRunIds: number[] = [];
+    const failedRunIds: number[] = [];
+    for (const runId of runIds) {
+      try {
+        await this.rerunWorkflowFailedJobs(repoSlug, runId, signal);
+        rerunRunIds.push(runId);
+      } catch {
+        failedRunIds.push(runId);
+      }
+    }
+    return { rerunRunIds, unresolvedJobIds, failedRunIds };
   }
 
   private async resolveRepoCiIgnoreChecks(
@@ -986,6 +1061,16 @@ function sortByCreatedAt<T extends { createdAt?: string }>(left: T, right: T): n
 
 function isFailedCheckRun(run: CICheckRun): boolean {
   return run.conclusion === "failure" || run.conclusion === "timed_out";
+}
+
+function isPendingCheckRun(run: CICheckRun): boolean {
+  return run.status !== "completed" || run.conclusion === null;
+}
+
+function isPositiveCheckRun(run: CICheckRun): boolean {
+  return run.conclusion === "success"
+    || run.conclusion === "neutral"
+    || run.conclusion === "skipped";
 }
 
 function normalizeFailedRun(run: CICheckRun): FailedCIRun {

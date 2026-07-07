@@ -537,6 +537,86 @@ test("hydrateContextNode: auto-review runs require structured review summary out
   assert.match(content, /do not put .*environment.*validation.*selectedFindings/i, "Should keep environment validation limits out of selectedFindings");
 });
 
+test("hydrateContextNode: plain implement runs get task-verification guardrails with the conflict sentinel", async (t) => {
+  const dir = await makeTempRepo();
+  const repoDir = path.join(dir, "repo");
+  await mkdir(repoDir, { recursive: true });
+  const promptFile = path.join(dir, "task.md");
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const ctx = new ContextBag({ repoDir, promptFile });
+  const deps = makeMockDeps({ logFile });
+
+  await hydrateContextNode({ id: "hydrate", type: "deterministic", action: "hydrate_context" }, ctx, deps);
+
+  const content = await readFile(promptFile, "utf8");
+  assert.ok(content.includes("Task verification (before you implement)"), "Should include the task-verification block");
+  assert.ok(content.includes("confirm that what the task references actually exists"), "Should instruct verifying the premise first");
+  assert.ok(content.includes("GOOSEHERD_CONTEXT_CONFLICT"), "Should document the refusal sentinel for plain implement runs");
+  assert.ok(content.includes("Do not fabricate the missing feature"), "Should forbid fabricating a non-existent feature");
+  assert.match(content, /reasonable interpretation DOES exist/i, "Should keep the sensible-interpretation nuance so vague tasks still proceed");
+});
+
+test("hydrateContextNode: repair_ci runs also get task-verification guardrails", async (t) => {
+  const dir = await makeTempRepo();
+  const repoDir = path.join(dir, "repo");
+  await mkdir(repoDir, { recursive: true });
+  const promptFile = path.join(dir, "task.md");
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const ctx = new ContextBag({ repoDir, promptFile });
+  const deps = makeMockDeps({
+    logFile,
+    run: {
+      ...makeMockDeps().run,
+      intent: {
+        version: 1,
+        kind: "feature_delivery.repair_ci",
+        source: "work_item",
+        workItemId: "11111111-1111-1111-1111-111111111111",
+        repo: "owner/repo",
+        prNumber: 7,
+        prUrl: "https://github.com/owner/repo/pull/7",
+        sourceSubstate: "ci_failed",
+      },
+    },
+  });
+
+  await hydrateContextNode({ id: "hydrate", type: "deterministic", action: "hydrate_context" }, ctx, deps);
+
+  const content = await readFile(promptFile, "utf8");
+  assert.ok(content.includes("Task verification (before you implement)"), "CI-fix runs should also verify the task premise");
+});
+
+test("hydrateContextNode: auto-review runs omit the task-verification block (they carry their own reconciliation wording)", async (t) => {
+  const dir = await makeTempRepo();
+  const repoDir = path.join(dir, "repo");
+  await mkdir(repoDir, { recursive: true });
+  const promptFile = path.join(dir, "task.md");
+  const logFile = path.join(dir, "test.log");
+  await writeFile(logFile, "", "utf8");
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const ctx = new ContextBag({ repoDir, promptFile });
+  const deps = makeMockDeps({
+    logFile,
+    run: {
+      ...makeMockDeps().run,
+      requestedBy: "work-item:auto-review",
+    },
+  });
+
+  await hydrateContextNode({ id: "hydrate", type: "deterministic", action: "hydrate_context" }, ctx, deps);
+
+  const content = await readFile(promptFile, "utf8");
+  assert.ok(!content.includes("Task verification (before you implement)"), "Auto-review runs should not get the plain-implement task-verification block");
+  assert.ok(content.includes("GOOSEHERD_REVIEW_SUMMARY"), "Auto-review runs keep their structured summary protocol");
+});
+
 test("hydrateContextNode: auto-review summary instructions are enabled by intent", async (t) => {
   const dir = await makeTempRepo();
   const repoDir = path.join(dir, "repo");

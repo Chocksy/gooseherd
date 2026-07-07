@@ -115,6 +115,53 @@ test("buildRunJobSpec uses one Job per run with emptyDir workspace and runner en
   );
 });
 
+test("buildRunJobSpec pins DRY_RUN as an explicit env that outranks the runner-env configmap", () => {
+  const runId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://host.minikube.internal:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    runnerEnvSecretName: "gooseherd-env",
+    runnerEnvConfigMapName: "gooseherd-config",
+  });
+
+  const container = spec.spec.template.spec.containers[0];
+  // The runner-env configmap/secret are wired via envFrom …
+  assert.deepEqual(container?.envFrom, [
+    { secretRef: { name: "gooseherd-env" } },
+    { configMapRef: { name: "gooseherd-config" } },
+  ]);
+  // … but DRY_RUN is ALSO set as an explicit env entry, which Kubernetes resolves
+  // with higher precedence — so a stray DRY_RUN=true in that configmap can never
+  // silently flip a production run into dry-run mode.
+  assert.deepEqual(
+    (container?.env ?? []).find((entry) => entry.name === "DRY_RUN"),
+    { name: "DRY_RUN", value: "false" },
+  );
+});
+
+test("buildRunJobSpec passes an explicitly requested dry-run through to the runner", () => {
+  const runId = "ffffffff-1111-2222-3333-444444444444";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://host.minikube.internal:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: true,
+  });
+
+  assert.deepEqual(
+    (spec.spec.template.spec.containers[0]?.env ?? []).find((entry) => entry.name === "DRY_RUN"),
+    { name: "DRY_RUN", value: "true" },
+  );
+});
+
 test("buildRunJobSpec applies cpu/memory override as both request and limit (Guaranteed QoS)", () => {
   const runId = "12345678-1234-5678-9abc-def012345678";
   const spec = buildRunJobSpec({

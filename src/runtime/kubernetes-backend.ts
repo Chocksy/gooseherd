@@ -32,6 +32,7 @@ import { resolveRunnerDbUrls } from "./runner-db-env.js";
 import type { RunnerDbSlotManager } from "./runner-db-slot-manager.js";
 import { isRecord } from "../utils/type-guards.js";
 import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
+import { logError } from "../logger.js";
 
 interface KubernetesExecutionBackendDeps {
   controlPlaneStore: Pick<ControlPlaneStore, "createRunEnvelope" | "issueRunToken" | "getLatestCompletion" | "revokeRunToken" | "listEventsAfterSequence">;
@@ -40,7 +41,15 @@ interface KubernetesExecutionBackendDeps {
   workRoot: string;
   runnerImage: string;
   internalBaseUrl: string;
+  /**
+   * Whether runs dispatched by this backend should execute in dry-run mode (no
+   * push/PR). The PRODUCTION server pins this to false so an ambient DRY_RUN on
+   * the server pod can never silently reach runner pods; only explicit
+   * local-trigger/eval launches pass a requested dry-run through.
+   */
   dryRun: boolean;
+  /** Human-readable origin of `dryRun`, surfaced in the loud dry-run log line. */
+  dryRunSource?: string;
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
   namespace?: string;
@@ -71,6 +80,17 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
   async execute(run: RunRecord & { runtime: "kubernetes" }, ctx: RunExecutionContext): Promise<ExecutionResult> {
     await ctx.onPhase("agent");
     await ctx.onDetail?.("Launching Kubernetes job.");
+
+    // A kubernetes run should only ever be in dry-run mode when a launcher
+    // explicitly asked for it (local-trigger/eval). The production server pins
+    // this false, so if we see true here it must be attributed — never silent.
+    if (this.deps.dryRun) {
+      logError("Kubernetes run dispatched in DRY_RUN mode — no changes will be pushed", {
+        runId: run.id,
+        repoSlug: run.repoSlug,
+        dryRunSource: this.deps.dryRunSource ?? "unspecified",
+      });
+    }
 
     const runDir = path.resolve(this.deps.workRoot, run.id);
     await mkdir(runDir, { recursive: true });

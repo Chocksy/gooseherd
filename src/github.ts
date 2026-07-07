@@ -765,7 +765,7 @@ export class GitHubService {
         repoIgnoreChecks = [];
       }
     }
-    return mergeIgnoreChecks(this.ciIgnoreChecks, repoIgnoreChecks);
+    return mergeIgnoreChecks(this.ciIgnoreChecks ?? [], repoIgnoreChecks);
   }
 
   private async resolveRepoConfigRef(

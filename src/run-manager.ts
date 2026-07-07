@@ -45,8 +45,24 @@ const ERROR_PATTERNS: Array<{ test: RegExp; result: ClassifiedError }> = [
     }
   },
   {
+    test: /completion missing after terminal/i,
+    result: {
+      category: "runner_completion_missing",
+      friendly: "Runner finished but never reported a result",
+      suggestion: "The runner pod reached a terminal state without a recorded completion. Check for OOMKill/eviction (raise the runner memory request) or a lost completion callback (control-plane connectivity), then retry."
+    }
+  },
+  {
     test: /timed out|timeout:|exceeded \d+s.*terminating|\[timeout[^\]]*\]/i,
     result: { category: "timeout", friendly: "Agent timed out", suggestion: "The task may be too complex. Try breaking it into smaller steps or increase AGENT_TIMEOUT_SECONDS." }
+  },
+  {
+    test: /context conflict/i,
+    result: {
+      category: "context_conflict",
+      friendly: "Task conflicts with the codebase",
+      suggestion: "The agent found that the task references something that doesn't exist or contradicts the code, so it made no changes. Retrying won't help — correct the task premise and re-run."
+    }
   },
   {
     test: /no meaningful changes|no file changes|whitespace-only|mass deletion detected|made no (?:further )?changes|no candidate changes to push/i,

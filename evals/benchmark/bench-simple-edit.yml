@@ -1,0 +1,34 @@
+# Category: delivery — precise single-file text change.
+# Ground truth (pxls@master): the newsletter blurb in the footer partial has a
+# typo "RECIEVE" that should read "RECEIVE".
+#   app/views/layouts/_footer.slim:30
+#     small.info YOU WILL RECIEVE FREE AND PREMIUM PRODUCTS EACH WEEK.
+# The string "RECIEVE" appears exactly once in app/ (verified by grep).
+name: bench-simple-edit
+description: "Fix a one-word typo in the footer newsletter blurb — exact single-file edit"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  In the website footer there is a newsletter note that reads
+  "YOU WILL RECIEVE FREE AND PREMIUM PRODUCTS EACH WEEK." — the word "RECIEVE"
+  is misspelled. Fix the spelling to "RECEIVE". Change nothing else.
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: files_changed
+    expect_any:
+      - "app/views/layouts/_footer.slim"
+
+  - type: diff_contains
+    patterns:
+      - "RECEIVE"
+
+config_overrides:
+  # Judge model only. Agent model is chosen at launch via AGENT_COMMAND_TEMPLATE
+  # (env) so one suite definition serves any model — see docs/benchmark.md.
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, delivery, rails]

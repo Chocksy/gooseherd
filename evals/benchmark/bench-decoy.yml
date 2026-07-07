@@ -1,0 +1,46 @@
+# Category: exploration — the naive grep target is the WRONG file.
+# Ground truth (pxls@master): the homepage headline text is NOT in any view.
+#   app/helpers/seo_helper.rb:138-153  — def heading_masthead ... 'Ship amazing
+#     designs faster.' (line 150) ... content_tag(:h1, text) (line 153)
+#   app/views/layouts/_masthead.slim:9  — = heading_masthead   <-- the DECOY:
+#     an agent that greps for "<h1" finds nothing, and greps the masthead partial
+#     would be tempted to hard-code the h1 here instead of editing the helper.
+# The literal string "Ship amazing designs faster." occurs exactly once in app/
+# (verified by grep), inside the helper — that is the correct edit site.
+name: bench-decoy
+description: "Change the homepage headline — text lives in a helper, not the view the agent will reach for"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  Change the main homepage headline from "Ship amazing designs faster." to
+  "Design assets that ship." Keep the change minimal and edit it in the right place.
+
+judges:
+  - type: status
+    expect: completed
+
+  # The correct edit site is the SEO helper, not the masthead view partial.
+  - type: files_changed
+    expect_any:
+      - "app/helpers/seo_helper.rb"
+
+  - type: diff_contains
+    patterns:
+      - "Design assets that ship."
+
+  - type: llm_judge
+    prompt: |
+      The homepage headline "Ship amazing designs faster." is rendered by
+      `content_tag(:h1, text)` inside the `heading_masthead` helper in
+      app/helpers/seo_helper.rb. The view app/views/layouts/_masthead.slim only
+      calls `= heading_masthead`; it does not contain the text.
+      PASS (high score) if the agent changed the headline string in seo_helper.rb.
+      Penalize if the agent instead hard-coded a new <h1> or the headline text into
+      the _masthead.slim partial (or any view), bypassing the helper — that is the
+      decoy and indicates it did not trace the value to its real source.
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, exploration, rails]

@@ -1,0 +1,55 @@
+# Category: delivery — change requiring 2+ coordinated file edits that must agree.
+# Ground truth (pxls@master): static pages follow a fixed wiring pattern.
+#   config/routes.rb:251-255
+#     get 'privacy', to: 'static#privacy'
+#     get 'terms', to: 'static#terms'
+#     get 'licensing', to: 'static#licensing'
+#     get 'bug-bounty', to: 'static#bug_bounty'
+#   app/controllers/static_controller.rb  — empty actions: def privacy; end, etc.
+#   app/views/static/{terms,privacy,licensing}.html.slim  — one view per action
+#   app/views/layouts/_footer.slim:104-121  — "COMPANY" column links to these
+#     static pages via *_path helpers (terms_path, privacy_path, licensing_path).
+# A correct answer must keep route name, controller action, view path and the
+# footer *_path helper mutually consistent — that is the coordination being tested.
+name: bench-multi-file
+description: "Add an Accessibility static page and link it from the footer — coordinated multi-file edit"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  Add a new static "Accessibility" page reachable at /accessibility, following the
+  exact pattern used by the existing Terms, Privacy and Licensing static pages, and
+  add a link to it in the footer's "COMPANY" column next to Terms of Service and
+  Privacy Policy. The page body can be a short placeholder heading; the wiring
+  (route, controller action, view, footer link) is what matters and must be consistent.
+
+judges:
+  - type: status
+    expect: completed
+
+  # Load-bearing files: the route table and the static controller must both change.
+  - type: files_changed
+    expect_any:
+      - "config/routes.rb"
+      - "app/controllers/static_controller.rb"
+
+  - type: llm_judge
+    prompt: |
+      The task was to add an "Accessibility" static page at /accessibility following
+      the existing Terms/Privacy/Licensing pattern AND link it from the footer's
+      COMPANY column.
+      Score PASS (high) only if the change is internally consistent across files:
+        - a route like `get 'accessibility', to: 'static#accessibility'` was added
+          next to the other static-page routes in config/routes.rb;
+        - a matching empty `def accessibility; end` action was added to
+          StaticController (app/controllers/static_controller.rb);
+        - a view file was created for it (e.g. app/views/static/accessibility.html.slim);
+        - a footer link was added using the corresponding path helper
+          (e.g. accessibility_path) in the COMPANY column of _footer.slim.
+      Penalize heavily if the route name, controller action, view path and footer
+      link helper do not agree with each other, or if pieces are missing.
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, delivery, rails]

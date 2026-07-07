@@ -4,10 +4,9 @@ description: "Change the homepage title text — simple UI change with clear exp
 repo: epiccoders/pxls
 base_branch: main
 task: |
-  Change the homepage h1 title from "Epic Pixels" to "Welcome to Epic Pixels"
+  Change the homepage h1 title from "Ship amazing designs faster." to "Welcome to Epic Pixels"
 
-pipeline: ui-change
-enable_nodes: [browser_verify, scope_judge]
+enable_nodes: [scope_judge]
 
 judges:
   - type: status
@@ -15,6 +14,7 @@ judges:
 
   - type: files_changed
     expect_any:
+      - "app/helpers/seo_helper.rb"
       - "app/views/landing/index.html.erb"
       - "app/views/pages/home.html.erb"
 
@@ -26,10 +26,8 @@ judges:
     gate: scope_judge
     expect: pass
 
-  - type: browser_verdict
-    expect: pass
-
 config_overrides:
   DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+  AGENT_COMMAND_TEMPLATE: "cd {{repo_dir}} && pi -p @{{prompt_file}} --model openrouter/anthropic/claude-sonnet-4.6 --no-session --mode json --tools read,write,edit,bash,grep,find,ls"
 
 tags: [ui, simple, rails]

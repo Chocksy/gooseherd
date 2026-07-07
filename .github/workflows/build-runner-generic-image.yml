@@ -5,7 +5,21 @@ on:
   push:
     branches:
       - master
+    # Rebuild whenever anything baked INTO the runner image changes — not just the
+    # Dockerfile. The `runner` target bakes the compiled source (src → dist via the
+    # builder stage), the resolved deps (package.json / package-lock.json), the
+    # TypeScript build config, and the pipelines/ + scripts/ trees (see the COPY
+    # statements in .docker/Dockerfile). Previously this only fired on Dockerfile
+    # changes, so source fixes shipped to the server (deploy.yml, every master push)
+    # but never reached the runner pods that actually run the pipeline — freezing
+    # them at the last Dockerfile edit.
     paths:
+      - src/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - pipelines/**
+      - scripts/**
       - .docker/Dockerfile
       - .github/workflows/build-runner-generic-image.yml
 

@@ -2,12 +2,26 @@ name: Build Runner Server Image
 
 on:
   workflow_dispatch:
+  # Rebuild when this image's own layer definition changes (ruby/bundle tooling).
   push:
     branches:
       - master
     paths:
       - .docker/Dockerfile.server
       - .github/workflows/build-runner-server-image.yml
+  # This image is `FROM <generic runner>:latest` (see Dockerfile.server) — it does
+  # NOT copy src/ itself but inherits gooseherd's compiled dist through that base.
+  # `FROM :latest` is resolved at build time, so a rebuilt generic image does not
+  # retroactively update an already-built server image. Chain this build to run
+  # AFTER the generic build finishes, so gooseherd source changes reach the
+  # hubstaff-server runner via a fresh base. Chaining (rather than a parallel
+  # push trigger) avoids pulling a stale base and a perpetual one-commit lag.
+  workflow_run:
+    workflows: ["Build Runner Generic Image"]
+    types:
+      - completed
+    branches:
+      - master
 
 env:
   AWS_REGION: us-east-1
@@ -18,6 +32,10 @@ jobs:
   build-and-push:
     runs-on: [self-hosted, linux, x64, medium]
     timeout-minutes: 60
+    # When chained off the generic build, only proceed if that build succeeded —
+    # otherwise we'd relayer on top of an unchanged (or missing) base. Other
+    # triggers (dispatch, Dockerfile.server push) always run.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
 

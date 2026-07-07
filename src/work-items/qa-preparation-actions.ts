@@ -3,14 +3,39 @@ import { logError } from "../logger.js";
 import type { WorkItemRecord } from "./types.js";
 
 export interface QaPreparationGitHubService {
-  getPullRequest(repoSlug: string, prNumber: number): Promise<Pick<PullRequestDetails, "title" | "body">>;
+  getPullRequest(repoSlug: string, prNumber: number): Promise<Pick<PullRequestDetails, "title" | "body" | "headSha">>;
   listPullRequestDiscussionComments(
     repoSlug: string,
     prNumber: number,
-  ): Promise<Array<Pick<PullRequestDiscussionComment, "body">>>;
+  ): Promise<Array<Pick<PullRequestDiscussionComment, "id" | "body">>>;
 }
 
 export const QA_UAT_HEADER_RE = /^#{2,6}\s+QA\s*(?:\/|-)?\s*UAT\b/im;
+
+// Invisible marker embedded in the sticky QA/UAT comment so re-runs can find and
+// upsert it, and record the PR head SHA it was generated for. Example:
+//   <!-- hubble:qa-uat sha:0a1b2c3d... -->
+const QA_UAT_MARKER_RE = /<!--\s*hubble:qa-uat\s+sha:([0-9a-fA-F]+)\s*-->/;
+
+/** Build the invisible sticky-comment marker for a given PR head SHA. */
+export function buildQaUatMarker(headSha: string): string {
+  return `<!-- hubble:qa-uat sha:${headSha} -->`;
+}
+
+/** Extract the head SHA recorded in a sticky QA/UAT comment marker, if present. */
+export function parseQaUatMarkerSha(value: string | undefined): string | undefined {
+  const match = QA_UAT_MARKER_RE.exec(value ?? "");
+  return match?.[1];
+}
+
+/** True when the comment carries a QA/UAT marker whose SHA matches `headSha`. */
+export function isQaUatMarkerForHeadSha(value: string | undefined, headSha: string): boolean {
+  if (!headSha) {
+    return false;
+  }
+  const markerSha = parseQaUatMarkerSha(value);
+  return markerSha !== undefined && markerSha.toLowerCase() === headSha.toLowerCase();
+}
 
 export class QaPreparationActions {
   constructor(private readonly deps: {
@@ -31,8 +56,14 @@ export class QaPreparationActions {
       if (hasQaUatInPullRequestBody(pullRequest.body)) {
         return;
       }
+      const headSha = pullRequest.headSha ?? "";
       const comments = await this.deps.githubService.listPullRequestDiscussionComments(workItem.repo, workItem.githubPrNumber);
-      if (hasQaUatInPullRequestConversationComments(comments)) {
+      // Skip ONLY when an up-to-date sticky UAT already exists (marker SHA == current
+      // head SHA). A stale marker, a legacy (marker-less) comment, or no comment all
+      // fall through and queue a run, which upserts the comment in place. Because the
+      // upsert stamps the current head SHA, the next entry for the same SHA skips —
+      // guarding against re-run loops.
+      if (comments.some((comment) => isQaUatMarkerForHeadSha(comment.body, headSha))) {
         return;
       }
 

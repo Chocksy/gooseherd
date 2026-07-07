@@ -85,7 +85,7 @@ test("QaPreparationActions skips queuing when the PR description already has QA 
   assert.equal(calls.length, 0);
 });
 
-test("QaPreparationActions skips queuing when a previous PR comment already has QA UAT", async () => {
+test("QaPreparationActions skips queuing when an up-to-date sticky UAT comment exists", async () => {
   const calls: Array<{ workItemId: string; reason?: string }> = [];
   const actions = new QaPreparationActions({
     githubService: {
@@ -95,11 +95,12 @@ test("QaPreparationActions skips queuing when a previous PR comment already has 
         title: "Add export button",
         body: "## Summary\n\nAdds export button.",
         state: "open",
+        headSha: "abc123def456",
       }),
       listPullRequestDiscussionComments: async () => [
         {
           id: "1",
-          body: "## QA UAT\n\n- Existing generated checks.",
+          body: "<!-- hubble:qa-uat sha:abc123def456 -->\n\n## QA UAT\n\n- Existing generated checks.",
         },
       ],
     },
@@ -111,6 +112,65 @@ test("QaPreparationActions skips queuing when a previous PR comment already has 
   await actions.handleEntry(makeDeliveryWorkItem());
 
   assert.equal(calls.length, 0);
+});
+
+test("QaPreparationActions re-queues when the sticky UAT marker SHA is stale", async () => {
+  const calls: Array<{ workItemId: string; reason?: string }> = [];
+  const actions = new QaPreparationActions({
+    githubService: {
+      getPullRequest: async () => ({
+        number: 123,
+        url: "https://github.com/hubstaff/gooseherd/pull/123",
+        title: "Add export button",
+        body: "## Summary\n\nAdds export button.",
+        state: "open",
+        headSha: "newsha999",
+      }),
+      listPullRequestDiscussionComments: async () => [
+        {
+          id: "1",
+          body: "<!-- hubble:qa-uat sha:oldsha111 -->\n\n## QA UAT\n\n- Stale generated checks.",
+        },
+      ],
+    },
+    queueQaPreparationRun: async (workItemId, reason) => {
+      calls.push({ workItemId, reason });
+    },
+  });
+
+  await actions.handleEntry(makeDeliveryWorkItem());
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].reason, "qa_preparation.entered");
+});
+
+test("QaPreparationActions re-queues to adopt a legacy marker-less QA UAT comment", async () => {
+  const calls: Array<{ workItemId: string; reason?: string }> = [];
+  const actions = new QaPreparationActions({
+    githubService: {
+      getPullRequest: async () => ({
+        number: 123,
+        url: "https://github.com/hubstaff/gooseherd/pull/123",
+        title: "Add export button",
+        body: "## Summary\n\nAdds export button.",
+        state: "open",
+        headSha: "abc123def456",
+      }),
+      listPullRequestDiscussionComments: async () => [
+        {
+          id: "1",
+          body: "## QA UAT\n\n- Legacy checks without a marker.",
+        },
+      ],
+    },
+    queueQaPreparationRun: async (workItemId, reason) => {
+      calls.push({ workItemId, reason });
+    },
+  });
+
+  await actions.handleEntry(makeDeliveryWorkItem());
+
+  assert.equal(calls.length, 1);
 });
 
 test("hasQaUatInPullRequestConversationComments detects existing QA UAT comments", () => {

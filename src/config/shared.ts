@@ -128,6 +128,7 @@ export const envSchema = z.object({
   CI_PATIENCE_TIMEOUT_SECONDS: z.string().optional(),
   CI_MAX_WAIT_SECONDS: z.string().optional(),
   CI_CHECK_FILTER: z.string().optional(),
+  CI_IGNORE_CHECKS: z.string().optional(),
   CI_MAX_FIX_ROUNDS: z.string().optional(),
   CI_FIX_AGENT_BAIL_ENABLED: z.string().optional(),
   WORK_ITEMS_ENABLED: z.string().optional(),

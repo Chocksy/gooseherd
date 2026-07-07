@@ -65,6 +65,7 @@ type FeatureConfigSlice = Pick<
   | "ciPatienceTimeoutSeconds"
   | "ciMaxWaitSeconds"
   | "ciCheckFilter"
+  | "ciIgnoreChecks"
   | "ciMaxFixRounds"
   | "ciFixAgentBailEnabled"
   | "featureDeliveryResetEngineeringReviewOnNewCommits"
@@ -151,6 +152,7 @@ export function loadFeatureConfig(parsed: ParsedEnv, features: AppFeatures): Fea
     ciPatienceTimeoutSeconds: parseInteger(parsed.CI_PATIENCE_TIMEOUT_SECONDS, 300),
     ciMaxWaitSeconds: parseInteger(parsed.CI_MAX_WAIT_SECONDS, 1800),
     ciCheckFilter: parseList(parsed.CI_CHECK_FILTER),
+    ciIgnoreChecks: parseList(parsed.CI_IGNORE_CHECKS),
     ciMaxFixRounds: parseInteger(parsed.CI_MAX_FIX_ROUNDS, 2),
     ciFixAgentBailEnabled: parseBoolean(parsed.CI_FIX_AGENT_BAIL_ENABLED, false),
     featureDeliveryResetEngineeringReviewOnNewCommits: parseBoolean(

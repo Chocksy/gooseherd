@@ -3,7 +3,7 @@
  *   enqueue run → wait for completion → read checkpoint → run judges → store result.
  */
 
-import { logInfo, logError } from "../logger.js";
+import { logInfo, logWarn, logError } from "../logger.js";
 import type { RunManager } from "../run-manager.js";
 import type { LLMCallerConfig } from "../llm/caller.js";
 import type { EvalStore } from "./eval-store.js";
@@ -47,6 +47,21 @@ export class EvalRunner {
       // Build config-derived context AFTER overrides are in process.env, so the
       // agent command template and judge model reflect this scenario's overrides.
       const { runManager, llmConfig, workRoot } = await this.buildContext();
+
+      // Loud prerequisite check: a gate_verdict:scope_judge scenario needs
+      // OPENROUTER_API_KEY. Without it the scope judge fails open to `pass`, so the
+      // gate assertion is judged against nothing and the scope signal is silently
+      // lost. Warn rather than fail so the run still produces its other verdicts.
+      const scopesScopeJudge = scenario.judges.some(
+        (j) => j.type === "gate_verdict" && j.gate === "scope_judge",
+      );
+      const scopeJudgeEnabled = scenario.enableNodes?.includes("scope_judge") ?? false;
+      if (scopesScopeJudge && scopeJudgeEnabled && !process.env.OPENROUTER_API_KEY) {
+        logWarn(
+          "Eval: gate_verdict:scope_judge scenario running WITHOUT OPENROUTER_API_KEY — scope_judge will fail open to pass and scope will not actually be judged",
+          { scenario: scenario.name },
+        );
+      }
 
       // Enqueue run with eval channel (suppresses Slack)
       const threadTs = `eval-${scenario.name}-${String(Date.now())}`;

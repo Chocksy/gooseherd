@@ -171,16 +171,45 @@ async function judgeLlm(config: LlmJudgeConfig, ctx: JudgeContext): Promise<Judg
 
 /**
  * LLM judges sometimes wrap their verdict in ```json fences despite jsonMode.
- * Strip fences and isolate the outermost {...} so JSON.parse gets clean input.
+ * Strip fences and isolate the first balanced {...} so JSON.parse gets clean input.
+ *
+ * Brace-balancing (rather than a naive first-`{` … last-`}` slice) so that a `}`
+ * inside a string value (e.g. a "reason" that mentions "}") and any trailing prose
+ * after the object don't corrupt the slice.
  */
 export function extractJsonObject(content: string): string {
   const unfenced = content.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
   const start = unfenced.indexOf("{");
-  const end = unfenced.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    return unfenced.slice(start, end + 1);
+  if (start < 0) return unfenced;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < unfenced.length; i += 1) {
+    const ch = unfenced[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return unfenced.slice(start, i + 1);
+      }
+    }
   }
-  return unfenced;
+  // Unbalanced — fall back to the remainder from the first brace.
+  return unfenced.slice(start);
 }
 
 /**
@@ -314,7 +343,7 @@ export async function readDiff(workRoot: string, runId: string, baseBranch: stri
 const GATE_NODE_IDS = new Set(["scope_judge", "diff_gate", "forbidden_files", "security_scan", "browser_verify"]);
 
 /** Map a pipeline node outcome to the verdict vocabulary used by gate reports. */
-function outcomeToVerdict(outcome: string): string {
+export function outcomeToVerdict(outcome: string): string {
   switch (outcome) {
     case "success":
       return "pass";
@@ -386,7 +415,10 @@ export async function readCheckpoint(workRoot: string, runId: string): Promise<R
     data = {};
   }
 
-  if (!data.gateReport) {
+  // Fall back to the events-derived gate report when the checkpoint has no gate
+  // report OR persisted an empty one ([]) — an empty array is "missing", not "no
+  // gates ran", so treat it the same as absent.
+  if (!data.gateReport || (Array.isArray(data.gateReport) && data.gateReport.length === 0)) {
     const gateReport = await readGateReportFromEvents(workRoot, runId);
     if (gateReport.length > 0) {
       data = { ...data, gateReport };

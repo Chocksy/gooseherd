@@ -40,8 +40,19 @@
  *   The same OBSERVER_GITHUB_WEBHOOK_SECRET and DATABASE_URL must be visible to
  *   this driver (via env). Webhook target defaults to http://127.0.0.1:8787/webhooks/github.
  *
+ * ─── --mode is NOT a mock/offline switch ───
+ *   --mode real (default): also applies the GitHub labels for real via `gh` (the
+ *     webhook events below still drive the state machine).
+ *   --mode synthetic: webhook-only labels — it skips the real `gh` label writes and
+ *     drives the flow purely through synthesized webhook payloads. It is NOT a dry
+ *     run: it STILL requires a real GitHub PR + green CI on epiccoders/pxls, the `gh`
+ *     CLI (for PR/CI reads and the scratch-branch push), Postgres, and a running
+ *     gooseherd instance receiving webhooks. Neither mode mocks GitHub or the app.
+ *
  * Usage:
  *   npm run label-walk -- --repo epiccoders/pxls [--pr <n>] [--mode synthetic|real]
+ *     --mode synthetic  webhook-only labels; still needs real GitHub CI, gh CLI,
+ *                       Postgres, and a running gooseherd instance (see above).
  */
 
 import { createHmac, randomUUID } from "node:crypto";
@@ -446,10 +457,19 @@ async function main(): Promise<void> {
     await postWebhook("pull_request", labeledPayload(args.repo, fetchPull(args.repo, prNumber), ADOPTION_LABEL));
     const adopted = await poll("work item adoption", 60_000, 2_000, async () => queryWorkItem(sql, args.repo, prNumber));
     workItemId = adopted.id;
+    // Step 1 must land EXACTLY in auto_review. Accepting a further-cascaded state
+    // (engineering_review … ready_for_merge) would mask a violated stepwise
+    // precondition — e.g. a reused work item that had already progressed — and let
+    // a broken adoption transition slip through as a PASS. If the driver is re-run
+    // against an already-progressed item, fail loudly and tell the operator to use
+    // a fresh work item rather than silently passing.
+    const alreadyProgressed = ["engineering_review", "qa_preparation", "qa_review", "ready_for_merge"].includes(adopted.state);
     results.push({
       step: "1. ai:assist → adopted",
-      pass: adopted.state === "auto_review" || ["engineering_review", "qa_preparation", "qa_review", "ready_for_merge"].includes(adopted.state),
-      evidence: `work item ${adopted.id} state=${adopted.state} substate=${String(adopted.substate)} flags=[${adopted.flags.join(",")}]`,
+      pass: adopted.state === "auto_review",
+      evidence: alreadyProgressed
+        ? `work item ${adopted.id} is already at state=${adopted.state} (expected auto_review) — this item has progressed past adoption; re-run against a FRESH work item / PR`
+        : `work item ${adopted.id} state=${adopted.state} substate=${String(adopted.substate)} flags=[${adopted.flags.join(",")}]`,
     });
     log(`  adopted: ${results[0]!.evidence}`);
 

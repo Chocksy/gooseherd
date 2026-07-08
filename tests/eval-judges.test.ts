@@ -4,7 +4,10 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { runJudge, runAllJudges, extractJsonObject } from "../src/eval/judges.js";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { runJudge, runAllJudges, extractJsonObject, readCheckpoint, outcomeToVerdict } from "../src/eval/judges.js";
 import type { RunRecord } from "../src/types.js";
 import type { JudgeContext } from "../src/eval/judges.js";
 
@@ -314,4 +317,123 @@ test("extractJsonObject: strips markdown fences and isolates the object", () => 
   );
   assert.equal(extractJsonObject('{"pass":false}'), '{"pass":false}');
   assert.equal(extractJsonObject('noise before {"pass":true} noise after'), '{"pass":true}');
+});
+
+describe("extractJsonObject brace balancing", () => {
+  test("does not truncate on a '}' inside a string value", () => {
+    const raw = '{"pass":true,"score":80,"reason":"closes the block with a } brace"}';
+    const extracted = extractJsonObject(raw);
+    assert.equal(extracted, raw);
+    const parsed = JSON.parse(extracted) as { reason: string };
+    assert.equal(parsed.reason, "closes the block with a } brace");
+  });
+
+  test("stops at the first balanced object and ignores trailing prose", () => {
+    const extracted = extractJsonObject('{"pass":false,"reason":"nope"} and then the model kept talking {oops');
+    assert.equal(extracted, '{"pass":false,"reason":"nope"}');
+    const parsed = JSON.parse(extracted) as { pass: boolean };
+    assert.equal(parsed.pass, false);
+  });
+
+  test("handles nested objects and escaped quotes", () => {
+    const raw = '{"pass":true,"meta":{"note":"has \\"quotes\\" and a } inside"}}';
+    const extracted = extractJsonObject(raw);
+    assert.equal(extracted, raw);
+    const parsed = JSON.parse(extracted) as { meta: { note: string } };
+    assert.equal(parsed.meta.note, 'has "quotes" and a } inside');
+  });
+});
+
+describe("outcomeToVerdict mapping", () => {
+  test("maps pipeline outcomes to gate-report verdict vocabulary", () => {
+    assert.equal(outcomeToVerdict("success"), "pass");
+    assert.equal(outcomeToVerdict("failure"), "hard_fail");
+    assert.equal(outcomeToVerdict("soft_fail"), "soft_fail");
+    assert.equal(outcomeToVerdict("skipped"), "skipped");
+  });
+
+  test("passes through unknown outcomes unchanged", () => {
+    assert.equal(outcomeToVerdict("weird"), "weird");
+  });
+});
+
+describe("readCheckpoint gate-report reconstruction from events.jsonl", () => {
+  async function makeWorkDir(): Promise<{ workRoot: string; runId: string; cleanup: () => Promise<void> }> {
+    const workRoot = await mkdtemp(path.join(tmpdir(), "eval-judges-"));
+    const runId = "run-1";
+    await mkdir(path.join(workRoot, runId), { recursive: true });
+    return { workRoot, runId, cleanup: () => rm(workRoot, { recursive: true, force: true }) };
+  }
+
+  async function writeEvents(workRoot: string, runId: string, lines: string[]): Promise<void> {
+    await writeFile(path.join(workRoot, runId, "events.jsonl"), lines.join("\n") + "\n", "utf8");
+  }
+
+  async function writeCheckpoint(workRoot: string, runId: string, data: unknown): Promise<void> {
+    const dir = path.join(workRoot, runId, "checkpoints");
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "checkpoint.json"), JSON.stringify({ data }), "utf8");
+  }
+
+  test("reconstructs gate report from node_end events when checkpoint is absent", async () => {
+    const { workRoot, runId, cleanup } = await makeWorkDir();
+    try {
+      await writeEvents(workRoot, runId, [
+        JSON.stringify({ type: "node_start", nodeId: "scope_judge" }),
+        JSON.stringify({ type: "node_end", nodeId: "scope_judge", outcome: "success" }),
+        JSON.stringify({ type: "node_end", nodeId: "diff_gate", outcome: "failure" }),
+        JSON.stringify({ type: "node_end", nodeId: "implement", outcome: "success" }), // not a gate node
+      ]);
+      const data = await readCheckpoint(workRoot, runId);
+      const gateReport = data.gateReport as Array<{ gate: string; verdict: string }>;
+      assert.deepEqual(gateReport, [
+        { gate: "scope_judge", verdict: "pass" },
+        { gate: "diff_gate", verdict: "hard_fail" },
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("keeps the LAST outcome per gate node (fix-loop re-runs a gate)", async () => {
+    const { workRoot, runId, cleanup } = await makeWorkDir();
+    try {
+      await writeEvents(workRoot, runId, [
+        JSON.stringify({ type: "node_end", nodeId: "scope_judge", outcome: "soft_fail" }),
+        JSON.stringify({ type: "node_end", nodeId: "scope_judge", outcome: "success" }),
+      ]);
+      const data = await readCheckpoint(workRoot, runId);
+      assert.deepEqual(data.gateReport, [{ gate: "scope_judge", verdict: "pass" }]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("falls back to events when checkpoint has an EMPTY gateReport array", async () => {
+    const { workRoot, runId, cleanup } = await makeWorkDir();
+    try {
+      await writeCheckpoint(workRoot, runId, { gateReport: [] });
+      await writeEvents(workRoot, runId, [
+        JSON.stringify({ type: "node_end", nodeId: "scope_judge", outcome: "success" }),
+      ]);
+      const data = await readCheckpoint(workRoot, runId);
+      assert.deepEqual(data.gateReport, [{ gate: "scope_judge", verdict: "pass" }]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("prefers a non-empty checkpoint gateReport over events reconstruction", async () => {
+    const { workRoot, runId, cleanup } = await makeWorkDir();
+    try {
+      await writeCheckpoint(workRoot, runId, { gateReport: [{ gate: "scope_judge", verdict: "hard_fail" }] });
+      await writeEvents(workRoot, runId, [
+        JSON.stringify({ type: "node_end", nodeId: "scope_judge", outcome: "success" }),
+      ]);
+      const data = await readCheckpoint(workRoot, runId);
+      assert.deepEqual(data.gateReport, [{ gate: "scope_judge", verdict: "hard_fail" }]);
+    } finally {
+      await cleanup();
+    }
+  });
 });

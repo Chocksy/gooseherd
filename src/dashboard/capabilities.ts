@@ -22,6 +22,7 @@ export function buildDashboardCapabilities(
     | "scopeJudgeEnabled"
     | "ciWaitEnabled"
     | "dryRun"
+    | "sandboxRuntime"
     | "features"
   >,
   actorPrincipal?: DashboardActorPrincipal,
@@ -35,7 +36,10 @@ export function buildDashboardCapabilities(
     ciWait: config.ciWaitEnabled,
     sessions: features.sessions,
     eval: features.eval,
-    dryRun: config.dryRun,
+    // Kubernetes runs pin dryRun false regardless of config.dryRun (see the
+    // production hardening in src/index.ts), so report the effective value the
+    // runner pods actually see — never a stale ambient DRY_RUN=true.
+    dryRun: config.sandboxRuntime === "kubernetes" ? false : config.dryRun,
     manageUsers: isDashboardAdminPrincipal(actorPrincipal),
   };
 }

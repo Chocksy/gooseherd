@@ -9,6 +9,7 @@ import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/ru
 import { isFeatureDeliveryAutoReviewOrRepairCiRun } from "../runs/run-intent.js";
 import { isRecord } from "../utils/type-guards.js";
 import { sleep } from "../utils/sleep.js";
+import { DEFAULT_COMPLETION_WAIT_MS } from "./completion-window.js";
 import { logError } from "../logger.js";
 
 interface RuntimeFactsReader {
@@ -20,15 +21,15 @@ interface RuntimeFactsReader {
  * terminal runtime fact before declaring it genuinely missing, and how often it
  * polls within that window. The runner posts its completion callback over HTTP
  * as its final step, so the record can lag the job/pod reaching a terminal state
- * (and a server restart can race the callback). Mirrors the live backend's
- * completion grace window. Overridable in tests to keep them fast.
+ * (and a server restart can race the callback). Defaults to the shared
+ * DEFAULT_COMPLETION_WAIT_MS so this mirrors the live backend's completion grace
+ * window exactly. Overridable in tests to keep them fast.
  */
 export interface RuntimeReconcilerOptions {
   completionGraceMs?: number;
   completionPollMs?: number;
 }
 
-const DEFAULT_COMPLETION_GRACE_MS = 15_000;
 const DEFAULT_COMPLETION_POLL_MS = 1_500;
 
 function isTerminalRunStatus(status: RunStatus | undefined): boolean {
@@ -51,7 +52,7 @@ export class RuntimeReconciler {
     private readonly checkpointProcessor?: RunCheckpointProcessor,
     options?: RuntimeReconcilerOptions,
   ) {
-    this.completionGraceMs = Math.max(0, options?.completionGraceMs ?? DEFAULT_COMPLETION_GRACE_MS);
+    this.completionGraceMs = Math.max(0, options?.completionGraceMs ?? DEFAULT_COMPLETION_WAIT_MS);
     this.completionPollMs = Math.max(1, options?.completionPollMs ?? DEFAULT_COMPLETION_POLL_MS);
   }
 

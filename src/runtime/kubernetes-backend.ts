@@ -15,6 +15,7 @@ import {
 } from "./kubernetes/job-spec.js";
 import { KubernetesResourceClient } from "./kubernetes/resource-client.js";
 import type { TerminalFact } from "./terminal-fact.js";
+import { DEFAULT_COMPLETION_WAIT_MS } from "./completion-window.js";
 import { sleep } from "../utils/sleep.js";
 import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
@@ -73,7 +74,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
     this.namespace = deps.namespace ?? "default";
     this.pollIntervalMs = Math.max(250, deps.pollIntervalMs ?? 2_000);
     this.waitTimeoutMs = Math.max(5_000, deps.waitTimeoutMs ?? 10 * 60 * 1_000);
-    this.completionWaitMs = Math.max(this.pollIntervalMs, deps.completionWaitMs ?? 30_000);
+    this.completionWaitMs = Math.max(this.pollIntervalMs, deps.completionWaitMs ?? DEFAULT_COMPLETION_WAIT_MS);
     this.resourceClientInstance = deps.resourceClient;
   }
 

@@ -3,6 +3,12 @@ name: Build Runner Server Image
 on:
   workflow_dispatch:
   # Rebuild when this image's own layer definition changes (ruby/bundle tooling).
+  # This push trigger must stay: a master push touching ONLY Dockerfile.server does
+  # not touch the generic build's paths, so the workflow_run chain below never fires
+  # for it. The accepted downside is that a single master push touching both src/**
+  # and Dockerfile.server builds this image twice — once via this push trigger and
+  # once via the chained workflow_run. That rare double-build is deduplicated by the
+  # workflow-level concurrency group below (in-flight pushes are never cancelled).
   push:
     branches:
       - master
@@ -22,6 +28,14 @@ on:
       - completed
     branches:
       - master
+
+# Serialize server-image builds so the rare push + workflow_run overlap on a
+# combined master push collapses to a single tail build. Never cancel an
+# in-flight build: an interrupted `docker build-push-action` can leave a partial
+# :latest tag, so a queued run waits rather than pre-empting the running push.
+concurrency:
+  group: build-runner-server-image
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1

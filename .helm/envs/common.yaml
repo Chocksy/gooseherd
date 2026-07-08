@@ -42,6 +42,7 @@ configs:
       OBSERVER_ENABLED: "true"
       SCOPE_JUDGE_ENABLED: "true"
       CI_WAIT_ENABLED: "true"
+      CI_IGNORE_CHECKS: "pr checker,block autosquash"
       AUTO_REVIEW_BRANCH_SYNC_ENABLED: "true"
       AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: "4"
       AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS: "900000"

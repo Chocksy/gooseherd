@@ -5,9 +5,10 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runJudge, runAllJudges, extractJsonObject, readCheckpoint, outcomeToVerdict } from "../src/eval/judges.js";
+import { runJudge, runAllJudges, extractJsonObject, readCheckpoint, outcomeToVerdict, readDiff } from "../src/eval/judges.js";
 import type { RunRecord } from "../src/types.js";
 import type { JudgeContext } from "../src/eval/judges.js";
 
@@ -277,6 +278,37 @@ describe("Eval Judges", () => {
     assert.equal(verdict.pass, false);
   });
 
+  test("expected_outcome fails a 'did nothing' token match when the diff is NOT empty", async () => {
+    // The error string claims a context conflict, but a non-empty diff proves the
+    // agent actually changed files — the outcome does not hold.
+    const ctx = makeCtx({
+      run: makeRun({ status: "failed", error: "Agent reported context conflict" }),
+      diff: "+<div class='sneaky-refactor'></div>",
+    });
+    const verdict = await runJudge(
+      { type: "expected_outcome", expect: ["no_changes", "context_conflict"] },
+      ctx
+    );
+    assert.equal(verdict.pass, false);
+    assert.equal(verdict.score, 0);
+  });
+
+  test("expected_outcome matches an unknown token only on exact status equality, not substring", async () => {
+    // Exact status token matches.
+    const exact = await runJudge(
+      { type: "expected_outcome", expect: ["failed"] },
+      makeCtx({ run: makeRun({ status: "failed", error: undefined }) })
+    );
+    assert.equal(exact.pass, true);
+
+    // A substring of the status/error must NOT match (would previously false-pass).
+    const substring = await runJudge(
+      { type: "expected_outcome", expect: ["fail"] },
+      makeCtx({ run: makeRun({ status: "failed", error: "something failed badly" }) })
+    );
+    assert.equal(substring.pass, false);
+  });
+
   // ── runAllJudges ──
 
   test("runAllJudges runs all judges and returns verdicts", async () => {
@@ -345,14 +377,16 @@ describe("extractJsonObject brace balancing", () => {
 });
 
 describe("outcomeToVerdict mapping", () => {
-  test("maps pipeline outcomes to gate-report verdict vocabulary", () => {
+  test("maps the outcomes of gates that actually ran", () => {
     assert.equal(outcomeToVerdict("success"), "pass");
     assert.equal(outcomeToVerdict("failure"), "hard_fail");
     assert.equal(outcomeToVerdict("soft_fail"), "soft_fail");
-    assert.equal(outcomeToVerdict("skipped"), "skipped");
   });
 
-  test("passes through unknown outcomes unchanged", () => {
+  test("passes through outcomes with no explicit mapping unchanged", () => {
+    // `skipped` is never mapped here (the reconstruction drops skipped outcomes), so
+    // it — like any other unmapped outcome — falls through unchanged.
+    assert.equal(outcomeToVerdict("skipped"), "skipped");
     assert.equal(outcomeToVerdict("weird"), "weird");
   });
 });
@@ -434,6 +468,58 @@ describe("readCheckpoint gate-report reconstruction from events.jsonl", () => {
       assert.deepEqual(data.gateReport, [{ gate: "scope_judge", verdict: "hard_fail" }]);
     } finally {
       await cleanup();
+    }
+  });
+
+  test("drops a 'skipped' node_end so the gate stays ABSENT (production appends no entry)", async () => {
+    const { workRoot, runId, cleanup } = await makeWorkDir();
+    try {
+      await writeEvents(workRoot, runId, [
+        JSON.stringify({ type: "node_end", nodeId: "scope_judge", outcome: "skipped" }),
+        JSON.stringify({ type: "node_end", nodeId: "diff_gate", outcome: "success" }),
+      ]);
+      const data = await readCheckpoint(workRoot, runId);
+      // scope_judge skipped → no entry; only the gate that actually ran appears.
+      assert.deepEqual(data.gateReport, [{ gate: "diff_gate", verdict: "pass" }]);
+
+      // A gate_verdict judge for the skipped gate must therefore report "not found".
+      const verdict = await runJudge(
+        { type: "gate_verdict", gate: "scope_judge", expect: "pass" },
+        makeCtx({ checkpointData: data })
+      );
+      assert.equal(verdict.pass, false);
+      assert.ok(verdict.reason.includes("not found"));
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("readDiff base-ref fallback safety", () => {
+  test("returns '' instead of a fabricated patch when the base ref cannot be resolved", async () => {
+    // A repo with a single base commit and NO origin remote: `git diff origin/main...`
+    // and `git fetch origin main` both fail, and the commit-count gate can't resolve
+    // origin/main either. The old code ran `git show HEAD` and returned the base
+    // commit's unrelated patch; the gated fallback must return "" instead.
+    const workRoot = await mkdtemp(path.join(tmpdir(), "eval-readdiff-"));
+    const runId = "run-diff";
+    const repoDir = path.join(workRoot, runId, "repo");
+    await mkdir(repoDir, { recursive: true });
+    const git = (...args: string[]): void => {
+      execFileSync("git", args, { cwd: repoDir, stdio: "ignore" });
+    };
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      await writeFile(path.join(repoDir, "README.md"), "base content\n", "utf8");
+      git("add", "-A");
+      git("commit", "-q", "-m", "base commit");
+
+      const diff = await readDiff(workRoot, runId, "main");
+      assert.equal(diff, "");
+    } finally {
+      await rm(workRoot, { recursive: true, force: true });
     }
   });
 });

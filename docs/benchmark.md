@@ -22,13 +22,19 @@ invented a feature, edited a decoy, or refactored out of scope.
 - Postgres for eval results: `postgres://gooseherd:gooseherd@localhost:55432/gooseherd`
 - `DRY_RUN=true` (no real PRs are pushed; scenarios judge the local diff + status).
 - An API key for the judge LLM (`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
-- **`OPENROUTER_API_KEY` is required for the scope scenarios** (`bench-scope-trap`, and
-  the root `evals/homepage-title.yml`). They enable `scope_judge` and assert a
-  `gate_verdict` on it. Without the key the scope judge **fails open to `pass`**
-  (`scope-judge-node.ts` skips with no key, and the events-derived gate report then
-  has no `scope_judge` entry), so the benchmark silently stops judging scope. The eval
-  runner logs a loud warning when a `gate_verdict:scope_judge` scenario runs without
-  `OPENROUTER_API_KEY`, but treat that warning as a failed prerequisite, not noise.
+- **Scope scenarios need BOTH `OPENROUTER_API_KEY` and scope judging enabled.** The
+  scope scenarios (`bench-scope-trap`, and the root `evals/homepage-title.yml`) assert a
+  `gate_verdict` on `scope_judge`. For that to mean anything the node must actually run
+  and judge: it needs `enable_nodes: [scope_judge]` (so the engine doesn't skip it),
+  `SCOPE_JUDGE_ENABLED: "true"` in the scenario's `config_overrides` (so the handler
+  doesn't self-skip — this is baked into those scenarios), and `OPENROUTER_API_KEY` (so
+  it has an LLM). If the key is missing, `scope-judge-node.ts` self-skips with **no gate
+  report entry**, the reconstructed report leaves `scope_judge` **absent**, and the
+  `gate_verdict` assertion **fails** — the scope signal is lost, not silently green.
+  (True fail-open-to-`pass` only happens on an LLM error *after* the judge starts, never
+  from a missing key.) To make this loud rather than a buried failed verdict, the eval
+  runner treats a `gate_verdict:scope_judge` scenario missing any of these prerequisites
+  as a **hard failure** and refuses to run it.
 
 ## Running the suite
 

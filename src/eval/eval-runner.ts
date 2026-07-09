@@ -3,7 +3,8 @@
  *   enqueue run → wait for completion → read checkpoint → run judges → store result.
  */
 
-import { logInfo, logWarn, logError } from "../logger.js";
+import { logInfo, logError } from "../logger.js";
+import { parseBoolean } from "../config/shared.js";
 import type { RunManager } from "../run-manager.js";
 import type { LLMCallerConfig } from "../llm/caller.js";
 import type { EvalStore } from "./eval-store.js";
@@ -44,24 +45,38 @@ export class EvalRunner {
     }
 
     try {
+      // Hard prerequisite check (before building context so it fails fast): a
+      // gate_verdict:scope_judge scenario only produces a real scope verdict when
+      // scope_judge is (a) un-skipped by the engine (enable_nodes), (b) actually
+      // enabled so the handler doesn't self-skip (SCOPE_JUDGE_ENABLED after
+      // config_overrides → config.scopeJudgeEnabled), and (c) has OPENROUTER_API_KEY so
+      // it doesn't skip for lack of an LLM. Missing any of these makes the node
+      // self-skip: it appends NO gate report, the gate ends up absent, and the
+      // assertion fails against nothing — the scope signal is lost, not silently green.
+      // Fail the scenario fast with an actionable message instead of running it.
+      const assertsScopeJudge = scenario.judges.some(
+        (j) => j.type === "gate_verdict" && j.gate === "scope_judge",
+      );
+      if (assertsScopeJudge) {
+        const engineEnabled = scenario.enableNodes?.includes("scope_judge") ?? false;
+        const handlerEnabled = parseBoolean(process.env.SCOPE_JUDGE_ENABLED, false);
+        const hasApiKey = Boolean(process.env.OPENROUTER_API_KEY);
+        if (!engineEnabled || !handlerEnabled || !hasApiKey) {
+          const missing = [
+            engineEnabled ? null : "enable_nodes: [scope_judge]",
+            handlerEnabled ? null : "config_overrides.SCOPE_JUDGE_ENABLED: \"true\"",
+            hasApiKey ? null : "OPENROUTER_API_KEY",
+          ].filter(Boolean);
+          throw new Error(
+            `Scenario asserts gate_verdict:scope_judge but scope judging is not effective — missing: ${missing.join(", ")}. ` +
+              "Without these the scope_judge node self-skips (no gate report) and the assertion fails against nothing.",
+          );
+        }
+      }
+
       // Build config-derived context AFTER overrides are in process.env, so the
       // agent command template and judge model reflect this scenario's overrides.
       const { runManager, llmConfig, workRoot } = await this.buildContext();
-
-      // Loud prerequisite check: a gate_verdict:scope_judge scenario needs
-      // OPENROUTER_API_KEY. Without it the scope judge fails open to `pass`, so the
-      // gate assertion is judged against nothing and the scope signal is silently
-      // lost. Warn rather than fail so the run still produces its other verdicts.
-      const scopesScopeJudge = scenario.judges.some(
-        (j) => j.type === "gate_verdict" && j.gate === "scope_judge",
-      );
-      const scopeJudgeEnabled = scenario.enableNodes?.includes("scope_judge") ?? false;
-      if (scopesScopeJudge && scopeJudgeEnabled && !process.env.OPENROUTER_API_KEY) {
-        logWarn(
-          "Eval: gate_verdict:scope_judge scenario running WITHOUT OPENROUTER_API_KEY — scope_judge will fail open to pass and scope will not actually be judged",
-          { scenario: scenario.name },
-        );
-      }
 
       // Enqueue run with eval channel (suppresses Slack)
       const threadTs = `eval-${scenario.name}-${String(Date.now())}`;

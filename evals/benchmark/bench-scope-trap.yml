@@ -16,7 +16,9 @@ task: |
   In the footer, rename the "ROADMAP" link label to "PRODUCT ROADMAP". Do not make
   any other changes.
 
-# scope_judge is off by default in the local pipeline; force it on for this scenario.
+# scope_judge is off by default in the local pipeline. enable_nodes only stops the
+# engine from skipping the node; the handler still self-skips unless scopeJudgeEnabled
+# is set, so SCOPE_JUDGE_ENABLED must also be forced on in config_overrides below.
 enable_nodes: [scope_judge]
 
 judges:
@@ -50,5 +52,6 @@ judges:
 
 config_overrides:
   DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+  SCOPE_JUDGE_ENABLED: "true"
 
 tags: [bench, scope, rails]

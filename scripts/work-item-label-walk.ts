@@ -51,8 +51,23 @@
  *
  * Usage:
  *   npm run label-walk -- --repo epiccoders/pxls [--pr <n>] [--mode synthetic|real]
+ *                          [--cleanup] [--no-cleanup-on-failure]
  *     --mode synthetic  webhook-only labels; still needs real GitHub CI, gh CLI,
  *                       Postgres, and a running gooseherd instance (see above).
+ *     --cleanup         after the walk, close the scratch PR and delete its
+ *                       hubble-e2e-base-*/hubble-e2e-head-* refs (only when this run
+ *                       CREATED the scratch PR — never touches an operator's --pr).
+ *     --no-cleanup-on-failure  keep the scratch PR/branches on failure for debugging
+ *                       (by default a failed run best-effort deletes what it created).
+ *
+ * ─── Manual cleanup ───
+ *   Scratch resources are named hubble-e2e-base-<ts> / hubble-e2e-head-<ts> and the
+ *   PR titled "Hubble E2E label walk <ts>". By default a scratch PR is left OPEN on
+ *   success (pass --cleanup to tear it down); a FAILED run cleans up unless
+ *   --no-cleanup-on-failure is given. To remove leftovers by hand:
+ *     gh pr close <n> --repo <repo>
+ *     gh api -X DELETE repos/<repo>/git/refs/heads/hubble-e2e-head-<ts>
+ *     gh api -X DELETE repos/<repo>/git/refs/heads/hubble-e2e-base-<ts>
  */
 
 import { createHmac, randomUUID } from "node:crypto";
@@ -65,16 +80,22 @@ interface Args {
   repo: string;
   pr?: number;
   mode: "synthetic" | "real";
+  cleanup: boolean;
+  cleanupOnFailure: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
   let repo = "";
   let pr: number | undefined;
   let mode: "synthetic" | "real" = "real";
+  let cleanup = false;
+  let cleanupOnFailure = true;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--repo") { repo = argv[++i] ?? ""; }
     else if (arg === "--pr") { pr = Number.parseInt(argv[++i] ?? "", 10); }
+    else if (arg === "--cleanup") { cleanup = true; }
+    else if (arg === "--no-cleanup-on-failure") { cleanupOnFailure = false; }
     else if (arg === "--mode") {
       const value = argv[++i];
       if (value !== "synthetic" && value !== "real") throw new Error(`--mode must be synthetic|real, got ${String(value)}`);
@@ -83,7 +104,7 @@ function parseArgs(argv: string[]): Args {
   }
   if (!repo) throw new Error("--repo <owner/name> is required");
   if (pr !== undefined && !Number.isInteger(pr)) throw new Error("--pr must be an integer");
-  return { repo, pr, mode };
+  return { repo, pr, mode, cleanup, cleanupOnFailure };
 }
 
 const WEBHOOK_URL = process.env.GOOSEHERD_WEBHOOK_URL ?? "http://127.0.0.1:8787/webhooks/github";
@@ -411,12 +432,38 @@ async function waitForGreenSnapshot(repo: string, sha: string): Promise<void> {
   });
 }
 
-function commentUrlWithQaUat(repo: string, prNumber: number): string | undefined {
-  const comments = ghJson<Array<{ body: string; html_url: string }>>([
+interface QaUatComment { htmlUrl: string; createdAt: string; updatedAt: string; }
+
+/**
+ * Find a QA/UAT comment that this walk is responsible for — i.e. one whose
+ * created_at (fresh comment) OR updated_at (a sticky comment Gooseherd re-edited in
+ * place) is at/after the walk's start. This prevents step 2 from passing on a
+ * pre-existing QA/UAT comment left over from an earlier run or authored by a human.
+ * Returns the newest such comment, or undefined when none qualifies yet.
+ */
+function findFreshQaUatComment(repo: string, prNumber: number, sinceMs: number): QaUatComment | undefined {
+  const comments = ghJson<Array<{ body: string; html_url: string; created_at: string; updated_at: string }>>([
     "api", `repos/${repo}/issues/${String(prNumber)}/comments`, "--paginate",
   ]);
-  const match = comments.find((c) => QA_UAT_HEADER_RE.test(c.body ?? ""));
-  return match?.html_url;
+  return comments
+    .filter((c) => QA_UAT_HEADER_RE.test(c.body ?? ""))
+    .map((c) => ({ htmlUrl: c.html_url, createdAt: c.created_at, updatedAt: c.updated_at }))
+    .filter((c) => Date.parse(c.updatedAt) >= sinceMs || Date.parse(c.createdAt) >= sinceMs)
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+}
+
+/**
+ * Best-effort teardown of a scratch PR this run created: close the PR and delete
+ * its head/base refs. Only ever called with a ScratchPr we opened ourselves, so it
+ * can never touch an operator-supplied --pr. Tolerates already-closed/deleted state.
+ */
+function cleanupScratch(repo: string, scratch: ScratchPr): void {
+  log(`cleanup: closing scratch PR #${String(scratch.prNumber)} and deleting its refs`);
+  ghTry(["api", "-X", "PATCH", `repos/${repo}/pulls/${String(scratch.prNumber)}`, "-f", "state=closed"]);
+  for (const branch of [scratch.headBranch, scratch.baseBranch]) {
+    const res = ghTry(["api", "-X", "DELETE", `repos/${repo}/git/refs/heads/${branch}`]);
+    log(`  ${res.ok ? "deleted" : "could not delete"} ref ${branch}${res.ok ? "" : ` (${res.out.trim().slice(0, 120)})`}`);
+  }
 }
 
 // ───────────────────────────── the walk ─────────────────────────────
@@ -425,7 +472,10 @@ interface StepResult { step: string; pass: boolean; evidence: string; }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  log(`repo=${args.repo} mode=${args.mode} pr=${args.pr ?? "(create)"}`);
+  // Captured up front: step 2 only accepts a QA/UAT comment created/updated at or
+  // after this instant, so a comment from an earlier run can't satisfy the check.
+  const walkStartMs = Date.now();
+  log(`repo=${args.repo} mode=${args.mode} pr=${args.pr ?? "(create)"} cleanup=${String(args.cleanup)}`);
   log(`webhook=${WEBHOOK_URL}  db=${DATABASE_URL.replace(/:[^:@/]+@/, ":***@")}`);
 
   const sql = postgres(DATABASE_URL, { max: 2 });
@@ -435,13 +485,15 @@ async function main(): Promise<void> {
   let workItemId = "";
   let commitsBefore = 0;
   let commitsAfter = 0;
+  let scratch: ScratchPr | undefined;
+  let walkSucceeded = false;
 
   try {
     await ensureDefaultTeam(sql);
 
     // ── Setup ──
     if (args.pr === undefined) {
-      const scratch = createScratchPr(args.repo);
+      scratch = createScratchPr(args.repo);
       prNumber = scratch.prNumber;
       htmlUrl = scratch.htmlUrl;
     } else {
@@ -484,14 +536,23 @@ async function main(): Promise<void> {
     log("  CI is green; injecting synthetic check_suite=success");
     await postWebhook("check_suite", checkSuiteSuccessPayload(args.repo, pullForCi));
 
-    const qaCommentUrl = await poll("QA/UAT comment on PR", 12 * 60_000, 6_000, async () => commentUrlWithQaUat(args.repo, prNumber));
+    // Wait for a QA/UAT comment this walk is responsible for (fresh created_at, or a
+    // sticky updated_at at/after walkStart) — a pre-existing comment must NOT pass.
+    const qaComment = await poll("fresh QA/UAT comment on PR", 12 * 60_000, 6_000, async () =>
+      findFreshQaUatComment(args.repo, prNumber, walkStartMs),
+    );
+    const qaCommentUrl = qaComment.htmlUrl;
     const afterQa = await queryWorkItem(sql, args.repo, prNumber);
+    // The QA/UAT comment is posted once the cascade reaches qa_preparation, so the
+    // work item must have landed in qa_preparation (or cascaded on to qa_review) —
+    // a comment alongside any other state means a violated stepwise precondition.
+    const qaStateOk = afterQa?.state === "qa_preparation" || afterQa?.state === "qa_review";
     results.push({
       step: "2. code review passed → qa_preparation + QA/UAT comment",
-      pass: Boolean(qaCommentUrl),
-      evidence: `comment=${qaCommentUrl ?? "(none)"} ; work item state=${afterQa?.state ?? "?"} substate=${String(afterQa?.substate)} flags=[${afterQa?.flags.join(",") ?? ""}]`,
+      pass: qaStateOk,
+      evidence: `comment=${qaCommentUrl} (created=${qaComment.createdAt}, updated=${qaComment.updatedAt}, walkStart=${new Date(walkStartMs).toISOString()}) ; work item state=${afterQa?.state ?? "?"} (expected qa_preparation|qa_review) substate=${String(afterQa?.substate)} flags=[${afterQa?.flags.join(",") ?? ""}]`,
     });
-    log(`  QA/UAT comment: ${qaCommentUrl ?? "(none)"}`);
+    log(`  QA/UAT comment: ${qaCommentUrl}`);
 
     // ── Step 3: qa passed → CI green → ready_for_merge → squash → automerge ──
     log(`STEP 3: apply '${QA_PASSED_LABEL}', drive CI green, expect squash + '${AUTOMERGE_LABEL}'`);
@@ -535,7 +596,7 @@ async function main(): Promise<void> {
     }
 
     const allPass = results.every((r) => r.pass);
-    console.log(`\nPR left open for inspection: ${htmlUrl}`);
+    walkSucceeded = true;
     if (!allPass) process.exitCode = 1;
   } catch (error) {
     console.error(`\n[label-walk] FAILED: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
@@ -544,9 +605,25 @@ async function main(): Promise<void> {
       console.log("\nWork item event history:");
       console.log(await workItemStateHistory(sql, workItemId).catch(() => "  (unavailable)"));
     }
-    if (htmlUrl) console.log(`\nPR left open for inspection: ${htmlUrl}`);
     process.exitCode = 1;
   } finally {
+    // Tear down scratch resources we created when asked (--cleanup) or, on a failed
+    // run, by default (unless --no-cleanup-on-failure). Never touches an operator's
+    // --pr, since `scratch` is only set when this run opened the PR itself.
+    if (scratch) {
+      const cleanupNow = args.cleanup || (!walkSucceeded && args.cleanupOnFailure);
+      if (cleanupNow) {
+        try {
+          cleanupScratch(args.repo, scratch);
+        } catch (cleanupError) {
+          console.error(`[label-walk] cleanup error (ignored): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+        }
+      } else {
+        console.log(`\nScratch PR left open for inspection: ${scratch.htmlUrl}`);
+      }
+    } else if (htmlUrl) {
+      console.log(`\nPR left open for inspection: ${htmlUrl}`);
+    }
     await sql.end({ timeout: 5 });
   }
 }

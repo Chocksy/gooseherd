@@ -6,6 +6,9 @@ base_branch: master
 task: |
   Change the homepage h1 title from "Ship amazing designs faster." to "Welcome to Epic Pixels"
 
+# enable_nodes only stops the engine from skipping scope_judge; the handler still
+# self-skips unless scopeJudgeEnabled is set, so SCOPE_JUDGE_ENABLED is forced on in
+# config_overrides below.
 enable_nodes: [scope_judge]
 
 judges:
@@ -29,6 +32,7 @@ judges:
 
 config_overrides:
   DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+  SCOPE_JUDGE_ENABLED: "true"
   AGENT_COMMAND_TEMPLATE: "cd {{repo_dir}} && pi -p @{{prompt_file}} --model openrouter/anthropic/claude-sonnet-4.6 --no-session --mode json --tools read,write,edit,bash,grep,find,ls"
 
 tags: [ui, simple, rails]

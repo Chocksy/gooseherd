@@ -235,3 +235,34 @@ test("buildRunJobSpec falls back to sandbox defaults per dimension when only one
     limits: { cpu: "1", memory: "6Gi" },
   });
 });
+
+test("buildRunJobSpec defaults imagePullPolicy to IfNotPresent", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+  });
+
+  assert.equal(spec.spec.template.spec.containers[0]?.imagePullPolicy, "IfNotPresent");
+});
+
+test("buildRunJobSpec reflects a configured imagePullPolicy of Always", () => {
+  const runId = "12345678-1234-5678-9abc-def012345678";
+  const spec = buildRunJobSpec({
+    runId,
+    namespace: "default",
+    image: "gooseherd/k8s-runner:dev",
+    secretName: defaultSecretName(runId),
+    internalBaseUrl: "http://gooseherd.svc.cluster.local:8787",
+    pipelineFile: "pipelines/pipeline.yml",
+    dryRun: false,
+    imagePullPolicy: "Always",
+  });
+
+  assert.equal(spec.spec.template.spec.containers[0]?.imagePullPolicy, "Always");
+});

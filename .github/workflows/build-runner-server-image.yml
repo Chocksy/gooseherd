@@ -21,7 +21,11 @@ on:
   # retroactively update an already-built server image. Chain this build to run
   # AFTER the generic build finishes, so gooseherd source changes reach the
   # hubstaff-server runner via a fresh base. Chaining (rather than a parallel
-  # push trigger) avoids pulling a stale base and a perpetual one-commit lag.
+  # push trigger) avoids a perpetual one-commit lag. To also avoid relayering on a
+  # STALE cached base, the build below pins BASE_RUNNER_IMAGE to the generic tag
+  # this run was chained off (generic:<workflow_run.head_sha>) and passes
+  # `pull: true`, so BuildKit on the self-hosted runner always fetches the just-
+  # built base rather than reusing a cached generic:latest.
   workflow_run:
     workflows: ["Build Runner Generic Image"]
     types:
@@ -40,7 +44,7 @@ concurrency:
 env:
   AWS_REGION: us-east-1
   ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server
-  BASE_RUNNER_IMAGE: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest"
+  GENERIC_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic
 
 jobs:
   build-and-push:
@@ -60,6 +64,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Resolve base runner image
+        id: base_image
+        # On a chained build, pin the base to the exact generic tag this run was
+        # triggered by so we never relayer on a stale cached :latest; other
+        # triggers (dispatch, Dockerfile.server push) fall back to :latest.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "ref=${{ env.GENERIC_IMAGE }}:${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ env.GENERIC_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve hubstaff-server Gemfile.lock SHA
         id: gemfile_lock
         env:
@@ -78,8 +94,9 @@ jobs:
           file: .docker/Dockerfile.server
           platforms: linux/amd64
           push: true
+          pull: true
           build-args: |
-            BASE_RUNNER_IMAGE=${{ env.BASE_RUNNER_IMAGE }}
+            BASE_RUNNER_IMAGE=${{ steps.base_image.outputs.ref }}
             BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
             GEMFILE_LOCK_SHA=${{ steps.gemfile_lock.outputs.sha }}
           tags: |

@@ -45,6 +45,7 @@ test("QaPreparationActions queues a QA preparation run when the PR description h
         title: "Add export button",
         body: "## Summary\n\nAdds export button.",
         state: "open",
+        headSha: "abc123def456",
       }),
       listPullRequestDiscussionComments: async () => [],
     },
@@ -60,6 +61,31 @@ test("QaPreparationActions queues a QA preparation run when the PR description h
     workItemId: "wi-qa-uat-1",
     reason: "qa_preparation.entered",
   });
+});
+
+test("QaPreparationActions fails closed and does NOT queue when the PR head SHA is missing", async () => {
+  const calls: Array<{ workItemId: string; reason?: string }> = [];
+  const actions = new QaPreparationActions({
+    githubService: {
+      getPullRequest: async () => ({
+        number: 123,
+        url: "https://github.com/hubstaff/gooseherd/pull/123",
+        title: "Add export button",
+        body: "## Summary\n\nAdds export button.",
+        state: "open",
+        // headSha intentionally absent — an empty SHA can never match a marker,
+        // so queuing would spin a re-queue loop.
+      }),
+      listPullRequestDiscussionComments: async () => [],
+    },
+    queueQaPreparationRun: async (workItemId, reason) => {
+      calls.push({ workItemId, reason });
+    },
+  });
+
+  await actions.handleEntry(makeDeliveryWorkItem());
+
+  assert.equal(calls.length, 0);
 });
 
 test("QaPreparationActions skips queuing when the PR description already has QA UAT", async () => {

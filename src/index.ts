@@ -51,6 +51,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunnerImagePullPolicy,
   resolveKubernetesRunWaitTimeoutMs,
 } from "./runtime/kubernetes-env.js";
 import type { WorkItemActor } from "./work-items/actor.js";
@@ -776,6 +777,7 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         dryRunSource: "production-server (pinned false; ambient DRY_RUN ignored)",
         runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
+        imagePullPolicy: resolveKubernetesRunnerImagePullPolicy(),
         namespace: resolveKubernetesNamespace(),
         waitTimeoutMs: resolveKubernetesRunWaitTimeoutMs(),
         runnerConfigSource: config,

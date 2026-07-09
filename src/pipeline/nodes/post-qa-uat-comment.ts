@@ -3,8 +3,8 @@ import type { ContextBag } from "../context-bag.js";
 import { appendLog } from "../shell.js";
 import {
   buildQaUatMarker,
-  hasQaUatHeader,
   hasQaUatInPullRequestBody,
+  isAdoptableLegacyQaUatComment,
   parseQaUatMarkerSha,
 } from "../../work-items/qa-preparation-actions.js";
 
@@ -51,10 +51,13 @@ export async function postQaUatCommentNode(
 
   const comments = await githubService.listPullRequestDiscussionComments(deps.run.repoSlug, deps.run.prNumber);
   // Find the existing sticky comment to upsert: prefer one carrying our marker,
-  // otherwise adopt a legacy (marker-less) QA/UAT comment so we never duplicate.
+  // otherwise adopt a legacy (marker-less) QA/UAT comment ONLY if we can attribute
+  // it to our own bot — never overwrite a human- or third-party-authored comment
+  // that happens to use a QA/UAT heading. Otherwise fall through to a fresh sticky.
+  const botLogin = deps.config.appSlug ? `${deps.config.appSlug}[bot]` : undefined;
   const existing =
     comments.find((comment) => parseQaUatMarkerSha(comment.body) !== undefined) ??
-    comments.find((comment) => hasQaUatHeader(comment.body));
+    comments.find((comment) => isAdoptableLegacyQaUatComment(comment, botLogin));
 
   if (existing) {
     await githubService.updatePullRequestConversationComment({

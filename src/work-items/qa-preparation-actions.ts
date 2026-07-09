@@ -57,6 +57,17 @@ export class QaPreparationActions {
         return;
       }
       const headSha = pullRequest.headSha ?? "";
+      if (!headSha) {
+        // Fail closed: an empty head SHA can never match a sticky marker, so queuing
+        // would re-queue on every entry. Skip and let a later entry (with a resolved
+        // SHA) decide, rather than spin a re-queue loop.
+        logError("Skipping QA preparation: PR head SHA missing", {
+          workItemId: workItem.id,
+          repo: workItem.repo,
+          prNumber: workItem.githubPrNumber,
+        });
+        return;
+      }
       const comments = await this.deps.githubService.listPullRequestDiscussionComments(workItem.repo, workItem.githubPrNumber);
       // Skip ONLY when an up-to-date sticky UAT already exists (marker SHA == current
       // head SHA). A stale marker, a legacy (marker-less) comment, or no comment all
@@ -89,4 +100,24 @@ export function hasQaUatInPullRequestConversationComments(comments: Array<{ body
 
 export function hasQaUatHeader(value: string | undefined): boolean {
   return QA_UAT_HEADER_RE.test(value ?? "");
+}
+
+/**
+ * True when a marker-less QA/UAT comment can be attributed to us and is therefore
+ * safe to adopt (upsert in place). A human- or third-party-authored comment with a
+ * QA/UAT heading must NOT be adopted, or a deploy would overwrite it. Attribution is
+ * by authorship: the comment's author must be our GitHub App bot (`<appSlug>[bot]`).
+ * Marker-carrying comments are handled separately (they are always ours).
+ */
+export function isAdoptableLegacyQaUatComment(
+  comment: { body?: string; authorLogin?: string },
+  botLogin: string | undefined,
+): boolean {
+  if (!hasQaUatHeader(comment.body)) {
+    return false;
+  }
+  if (!botLogin) {
+    return false;
+  }
+  return (comment.authorLogin ?? "").toLowerCase() === botLogin.toLowerCase();
 }

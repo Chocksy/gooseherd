@@ -50,6 +50,8 @@ configs:
       KUBERNETES_NAMESPACE: '{{ .Release.Namespace }}'
       KUBERNETES_RUNNER_IMAGE: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest'
       KUBERNETES_RUNNER_IMAGE_SERVER: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server:latest'
+      # Re-pull the :latest runner images so rebuilt tags reach new runner pods.
+      KUBERNETES_RUNNER_IMAGE_PULL_POLICY: "Always"
       KUBERNETES_RUNNER_CPU_SERVER: "2"
       KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi"
       KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "1536"

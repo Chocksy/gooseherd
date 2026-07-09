@@ -10,10 +10,13 @@ import { buildQaUatMarker, parseQaUatMarkerSha } from "../src/work-items/qa-prep
 import type { NodeDeps } from "../src/pipeline/types.js";
 
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
+const APP_SLUG = "gooseherd-test";
+const BOT_LOGIN = `${APP_SLUG}[bot]`;
 
 interface CommentRecord {
   id: string;
   body: string;
+  authorLogin?: string;
 }
 
 function makeDeps(input: {
@@ -25,7 +28,7 @@ function makeDeps(input: {
 }): NodeDeps {
   const tmpLog = path.join(os.tmpdir(), `gooseherd-qa-uat-node-${String(Date.now())}.log`);
   return {
-    config: { appName: "gooseherd-test" },
+    config: { appName: "gooseherd-test", appSlug: APP_SLUG },
     run: {
       id: "run-1",
       repoSlug: "hubstaff/gooseherd",
@@ -81,7 +84,7 @@ test("postQaUatCommentNode updates the existing sticky comment in place (same id
   const created: string[] = [];
   const updated: Array<{ commentId: string; body: string }> = [];
   const comments: CommentRecord[] = [
-    { id: "555", body: `${buildQaUatMarker("oldsha0")}\n\n## QA UAT\n\n- Old checks.\n\n_QA/UAT updated for \`oldsha0\`_` },
+    { id: "555", body: `${buildQaUatMarker("0ad5aa0")}\n\n## QA UAT\n\n- Old checks.\n\n_QA/UAT updated for \`0ad5aa0\`_` },
   ];
   const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
   const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Fresh checks." });
@@ -97,11 +100,11 @@ test("postQaUatCommentNode updates the existing sticky comment in place (same id
   assert.match(updated[0].body, /- Fresh checks\./);
 });
 
-test("postQaUatCommentNode adopts a legacy marker-less QA UAT comment instead of duplicating", async () => {
+test("postQaUatCommentNode adopts a legacy marker-less QA UAT comment authored by our bot", async () => {
   const created: string[] = [];
   const updated: Array<{ commentId: string; body: string }> = [];
   const comments: CommentRecord[] = [
-    { id: "777", body: "## QA UAT\n\n- Legacy checks from before the marker existed." },
+    { id: "777", body: "## QA UAT\n\n- Legacy checks from before the marker existed.", authorLogin: BOT_LOGIN },
   ];
   const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
   const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
@@ -113,6 +116,40 @@ test("postQaUatCommentNode adopts a legacy marker-less QA UAT comment instead of
   assert.equal(updated.length, 1);
   assert.equal(updated[0].commentId, "777");
   assert.equal(parseQaUatMarkerSha(updated[0].body), HEAD_SHA);
+});
+
+test("postQaUatCommentNode does NOT overwrite a human-authored QA UAT comment", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const comments: CommentRecord[] = [
+    { id: "888", body: "## QA UAT\n\n- Human wrote these steps by hand.", authorLogin: "some-maintainer" },
+  ];
+  const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
+  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
+
+  const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(updated.length, 0);
+  assert.equal(created.length, 1);
+  assert.equal(parseQaUatMarkerSha(created[0]), HEAD_SHA);
+});
+
+test("postQaUatCommentNode creates a fresh sticky when a marker-less QA UAT comment has no attributable author", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const comments: CommentRecord[] = [
+    { id: "999", body: "## QA UAT\n\n- Unattributed checks." },
+  ];
+  const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
+  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
+
+  const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(updated.length, 0);
+  assert.equal(created.length, 1);
+  assert.equal(parseQaUatMarkerSha(created[0]), HEAD_SHA);
 });
 
 test("postQaUatCommentNode skips when PR description already has QA UAT", async () => {

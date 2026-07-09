@@ -12,6 +12,7 @@ import {
   buildRunTokenSecretManifest,
   defaultJobName,
   defaultSecretName,
+  type KubernetesImagePullPolicy,
 } from "./kubernetes/job-spec.js";
 import { KubernetesResourceClient } from "./kubernetes/resource-client.js";
 import type { TerminalFact } from "./terminal-fact.js";
@@ -53,6 +54,8 @@ interface KubernetesExecutionBackendDeps {
   dryRunSource?: string;
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
+  /** Pull policy for the runner pod image. Defaults to `IfNotPresent`. */
+  imagePullPolicy?: KubernetesImagePullPolicy;
   namespace?: string;
   runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile" | "agentProfileCatalog" | "agentProfilePolicies">;
   resourceClient?: Pick<KubernetesResourceClient, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret">;
@@ -143,6 +146,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       dryRun: this.deps.dryRun,
       runnerEnvSecretName: this.deps.runnerEnvSecretName,
       runnerEnvConfigMapName: this.deps.runnerEnvConfigMapName,
+      imagePullPolicy: this.deps.imagePullPolicy,
       jobName,
       extraEnv,
       resources: resolveRunnerResources(run.repoSlug),

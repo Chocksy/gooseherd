@@ -1,5 +1,8 @@
 import { RUNNER_PROTOCOL_VERSION } from "../protocol-version.js";
 
+/** Pull policy for the runner pod image. `Always` re-pulls rebuilt `:latest` tags. */
+export type KubernetesImagePullPolicy = "IfNotPresent" | "Always";
+
 export interface KubernetesRunnerSecretInput {
   runId: string;
   namespace: string;
@@ -37,6 +40,8 @@ export interface KubernetesRunnerJobInput {
    * test runners) sharing the container memory budget.
    */
   nodeHeapMb?: string;
+  /** Runner container image pull policy. Defaults to `IfNotPresent`. */
+  imagePullPolicy?: KubernetesImagePullPolicy;
 }
 
 export interface SecretManifest {
@@ -74,7 +79,7 @@ export interface JobManifest {
         containers: Array<{
           name: "runner";
           image: string;
-          imagePullPolicy: "IfNotPresent";
+          imagePullPolicy: KubernetesImagePullPolicy;
           volumeMounts: Array<{ name: "work"; mountPath: "/work" }>;
           envFrom?: Array<
             | { secretRef: { name: string } }
@@ -203,7 +208,7 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
             {
               name: "runner",
               image: input.image,
-              imagePullPolicy: "IfNotPresent",
+              imagePullPolicy: input.imagePullPolicy ?? "IfNotPresent",
               volumeMounts: [{ name: "work", mountPath: "/work" }],
               ...(envFrom.length > 0 ? { envFrom } : {}),
               securityContext: {

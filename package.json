@@ -30,7 +30,8 @@
     "db:backfill-legacy-setup": "tsx scripts/migrate-legacy-setup-config-sections.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed-json.ts",
-    "eval": "tsx scripts/run-eval.ts"
+    "eval": "tsx scripts/run-eval.ts",
+    "label-walk": "tsx scripts/work-item-label-walk.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^1.0.33",

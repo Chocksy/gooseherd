@@ -4,6 +4,7 @@
  */
 
 import { logInfo, logError } from "../logger.js";
+import { parseBoolean } from "../config/shared.js";
 import type { RunManager } from "../run-manager.js";
 import type { LLMCallerConfig } from "../llm/caller.js";
 import type { EvalStore } from "./eval-store.js";
@@ -12,12 +13,23 @@ import { runAllJudges, readDiff, readCheckpoint } from "./judges.js";
 
 const EVAL_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
+/**
+ * Per-scenario execution context. Rebuilt after each scenario's config_overrides
+ * are applied to process.env, so overrides that are captured at config load time
+ * (e.g. AGENT_COMMAND_TEMPLATE, DEFAULT_LLM_MODEL) actually reach the agent/judges.
+ */
+export interface EvalRunContext {
+  runManager: RunManager;
+  llmConfig: LLMCallerConfig | undefined;
+  workRoot: string;
+}
+
+export type EvalRunContextFactory = () => Promise<EvalRunContext>;
+
 export class EvalRunner {
   constructor(
-    private readonly runManager: RunManager,
     private readonly evalStore: EvalStore,
-    private readonly llmConfig: LLMCallerConfig | undefined,
-    private readonly workRoot: string,
+    private readonly buildContext: EvalRunContextFactory,
   ) {}
 
   async runScenario(scenario: EvalScenario, configLabel?: string): Promise<EvalResult> {
@@ -33,9 +45,42 @@ export class EvalRunner {
     }
 
     try {
+      // Hard prerequisite check (before building context so it fails fast): a
+      // gate_verdict:scope_judge scenario only produces a real scope verdict when
+      // scope_judge is (a) un-skipped by the engine (enable_nodes), (b) actually
+      // enabled so the handler doesn't self-skip (SCOPE_JUDGE_ENABLED after
+      // config_overrides → config.scopeJudgeEnabled), and (c) has OPENROUTER_API_KEY so
+      // it doesn't skip for lack of an LLM. Missing any of these makes the node
+      // self-skip: it appends NO gate report, the gate ends up absent, and the
+      // assertion fails against nothing — the scope signal is lost, not silently green.
+      // Fail the scenario fast with an actionable message instead of running it.
+      const assertsScopeJudge = scenario.judges.some(
+        (j) => j.type === "gate_verdict" && j.gate === "scope_judge",
+      );
+      if (assertsScopeJudge) {
+        const engineEnabled = scenario.enableNodes?.includes("scope_judge") ?? false;
+        const handlerEnabled = parseBoolean(process.env.SCOPE_JUDGE_ENABLED, false);
+        const hasApiKey = Boolean(process.env.OPENROUTER_API_KEY);
+        if (!engineEnabled || !handlerEnabled || !hasApiKey) {
+          const missing = [
+            engineEnabled ? null : "enable_nodes: [scope_judge]",
+            handlerEnabled ? null : "config_overrides.SCOPE_JUDGE_ENABLED: \"true\"",
+            hasApiKey ? null : "OPENROUTER_API_KEY",
+          ].filter(Boolean);
+          throw new Error(
+            `Scenario asserts gate_verdict:scope_judge but scope judging is not effective — missing: ${missing.join(", ")}. ` +
+              "Without these the scope_judge node self-skips (no gate report) and the assertion fails against nothing.",
+          );
+        }
+      }
+
+      // Build config-derived context AFTER overrides are in process.env, so the
+      // agent command template and judge model reflect this scenario's overrides.
+      const { runManager, llmConfig, workRoot } = await this.buildContext();
+
       // Enqueue run with eval channel (suppresses Slack)
       const threadTs = `eval-${scenario.name}-${String(Date.now())}`;
-      const run = await this.runManager.enqueueRun({
+      const run = await runManager.enqueueRun({
         repoSlug: scenario.repo,
         task: scenario.task,
         baseBranch: scenario.baseBranch,
@@ -57,7 +102,7 @@ export class EvalRunner {
         }, EVAL_TIMEOUT_MS);
         timeout.unref?.();
 
-        this.runManager.onRunTerminal((runId, status) => {
+        runManager.onRunTerminal((runId, status) => {
           if (runId === run.id) {
             clearTimeout(timeout);
             resolve(status);
@@ -68,22 +113,22 @@ export class EvalRunner {
       logInfo("Eval: run completed", { scenario: scenario.name, runId: run.id, status: terminalStatus });
 
       // Fetch final run state
-      const finalRun = await this.runManager.getRun(run.id);
+      const finalRun = await runManager.getRun(run.id);
       if (!finalRun) {
         throw new Error(`Run ${run.id} not found after completion`);
       }
 
       // Read checkpoint + diff
-      const checkpointData = await readCheckpoint(this.workRoot, run.id);
-      const diff = await readDiff(this.workRoot, run.id, scenario.baseBranch);
+      const checkpointData = await readCheckpoint(workRoot, run.id);
+      const diff = await readDiff(workRoot, run.id, scenario.baseBranch);
 
       // Run judges
       const verdicts = await runAllJudges(scenario.judges, {
         run: finalRun,
         checkpointData,
         diff,
-        workRoot: this.workRoot,
-        llmConfig: this.llmConfig,
+        workRoot,
+        llmConfig,
       });
 
       const durationMs = Date.now() - startMs;

@@ -102,6 +102,51 @@ function printResults(results: EvalResult[]): void {
   );
 }
 
+/** Benchmark category tags — a result belongs to a category if it carries the tag. */
+const BENCHMARK_CATEGORIES = ["delivery", "exploration", "clarification", "scope"] as const;
+
+/**
+ * Print a per-category summary table (category → scenarios, passed, avg score).
+ * Aggregates from the in-memory results by the benchmark category tags. Only
+ * prints when more than one scenario ran and at least one carries a category tag.
+ */
+function printCategorySummary(results: EvalResult[]): void {
+  if (results.length <= 1) return;
+
+  const rows = BENCHMARK_CATEGORIES.map((category) => {
+    const inCategory = results.filter((r) => r.tags?.includes(category));
+    const passed = inCategory.filter((r) => r.overallPass).length;
+    const avgScore = inCategory.length > 0
+      ? Math.round(inCategory.reduce((s, r) => s + r.overallScore, 0) / inCategory.length)
+      : 0;
+    return { category, scenarios: inCategory.length, passed, avgScore };
+  }).filter((row) => row.scenarios > 0);
+
+  if (rows.length === 0) return;
+
+  const cols = { category: 14, scenarios: 10, passed: 8, score: 9 };
+  const header = [
+    "Category".padEnd(cols.category),
+    "Scenarios".padEnd(cols.scenarios),
+    "Passed".padEnd(cols.passed),
+    "Avg Score".padEnd(cols.score),
+  ].join(" | ");
+  const separator = Object.values(cols).map((w) => "-".repeat(w)).join("-+-");
+
+  console.log("\nPer-category summary\n");
+  console.log(header);
+  console.log(separator);
+  for (const row of rows) {
+    console.log([
+      row.category.padEnd(cols.category),
+      String(row.scenarios).padEnd(cols.scenarios),
+      `${String(row.passed)}/${String(row.scenarios)}`.padEnd(cols.passed),
+      String(row.avgScore).padEnd(cols.score),
+    ].join(" | "));
+  }
+  console.log(separator);
+}
+
 async function main() {
   const { args, flags } = parseArgs(process.argv.slice(2));
 
@@ -127,33 +172,60 @@ async function main() {
 
   console.log(`Loading ${String(scenarios.length)} scenario(s)...`);
 
-  // Init database
+  // Init database (shared across scenarios)
   const config = loadConfig();
   const db = await initDatabase(config.databaseUrl);
 
-  // Create stores
-  const runStore = new RunStore(db);
+  // Shared eval store (results DB)
   const evalStore = new EvalStore(db);
 
-  // Create pipeline engine (imports dynamically to avoid circular deps)
+  // Dynamic imports (avoid circular deps + defer heavy backend modules).
   const { PipelineEngine: PE } = await import("../src/pipeline/pipeline-engine.js");
-  const pipelineEngine = new PE(config);
+  const { LocalExecutionBackend } = await import("../src/runtime/local-backend.js");
+  const { DockerExecutionBackend } = await import("../src/runtime/docker-backend.js");
 
-  // Create run manager (no Slack, no hooks)
-  const runManager = new RunManager(config, runStore, pipelineEngine, undefined);
+  const buildLlmConfig = (cfg: import("../src/config.js").AppConfig): LLMCallerConfig | undefined => {
+    const apiKey = cfg.openrouterApiKey ?? cfg.anthropicApiKey ?? cfg.openaiApiKey;
+    return apiKey
+      ? {
+          apiKey,
+          defaultModel: cfg.defaultLlmModel,
+          defaultTimeoutMs: 30_000,
+          providerPreferences: cfg.openrouterProviderPreferences,
+        }
+      : undefined;
+  };
 
-  // LLM config for llm_judge + research proposals
-  const apiKey = config.openrouterApiKey ?? config.anthropicApiKey ?? config.openaiApiKey;
-  const llmConfig: LLMCallerConfig | undefined = apiKey
-    ? {
-        apiKey,
-        defaultModel: config.defaultLlmModel,
-        defaultTimeoutMs: 30_000,
-        providerPreferences: config.openrouterProviderPreferences,
-      }
-    : undefined;
+  // Per-scenario context factory: reloads config from the (override-mutated)
+  // process.env each call, so scenario config_overrides such as
+  // AGENT_COMMAND_TEMPLATE / DEFAULT_LLM_MODEL actually reach the agent + judges.
+  // Evals run in-process and sequentially, so only local/docker backends are
+  // registered — no kubernetes.
+  //
+  // Cost note: this constructs a fresh engine, runtime backends, and RunManager
+  // for every scenario. That is the price of per-scenario config reload (correct,
+  // but adds startup overhead across the 10-scenario suite — see docs/benchmark.md).
+  const buildContext = async () => {
+    const scenarioConfig = loadConfig();
+    const runStore = new RunStore(db);
+    const pipelineEngine = new PE(scenarioConfig);
+    const runtimeRegistry: import("../src/runtime/backend.js").RuntimeRegistry = {
+      local: new LocalExecutionBackend(pipelineEngine),
+      docker: new DockerExecutionBackend(pipelineEngine),
+      kubernetes: undefined,
+    };
+    const runManager = new RunManager(scenarioConfig, runStore, runtimeRegistry, undefined);
+    return {
+      runManager,
+      llmConfig: buildLlmConfig(scenarioConfig),
+      workRoot: scenarioConfig.workRoot,
+    };
+  };
 
-  const runner = new EvalRunner(runManager, evalStore, llmConfig, config.workRoot);
+  // LLM config for research proposals (uses base env, not per-scenario overrides).
+  const llmConfig = buildLlmConfig(config);
+
+  const runner = new EvalRunner(evalStore, buildContext);
 
   // ── Research mode ──
   if (flags.has("research")) {
@@ -213,6 +285,7 @@ async function main() {
   // ── Standard eval mode ──
   const results = await runner.runAll(scenarios, args.label);
   printResults(results);
+  printCategorySummary(results);
 
   const allPass = results.every((r) => r.overallPass);
   process.exit(allPass ? 0 : 1);

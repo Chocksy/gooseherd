@@ -1,0 +1,52 @@
+# Category: exploration — add something with an established repo convention.
+# Ground truth (pxls@master): RSpec helper specs live in spec/helpers/ and follow
+# a fixed shape.
+#   spec/helpers/application_helper_spec.rb:1-3
+#     require 'rails_helper'
+#     RSpec.describe ApplicationHelper, type: :helper do
+#       describe '#pseo_footer_links' do ...
+# The helper under test is defined here:
+#   app/helpers/application_helper.rb:141-143
+#     def total_members_count
+#       Rails.cache.fetch('total_members_count', expires_in: 30.minutes) { User.count.to_s.rjust(7, '0') }
+#     end
+# There is currently no spec covering total_members_count (verified: the only
+# describe blocks in application_helper_spec.rb are logo_small and pseo_footer_links).
+name: bench-convention
+description: "Add an RSpec helper spec following the repo's existing spec conventions"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  Add an RSpec test for the `total_members_count` helper method. Place and structure
+  the test the same way the existing helper specs in this project are written.
+
+judges:
+  - type: status
+    expect: completed
+
+  - type: files_changed
+    expect_any:
+      - "spec/helpers/application_helper_spec.rb"
+
+  - type: llm_judge
+    prompt: |
+      The task was to add an RSpec test for the `total_members_count` helper,
+      matching the project's existing conventions. The existing example is
+      spec/helpers/application_helper_spec.rb, which starts with
+      `require 'rails_helper'`, uses `RSpec.describe ApplicationHelper, type: :helper`,
+      and groups examples under `describe '#method_name'` blocks.
+      Score adherence to those neighboring conventions:
+        - the spec was added to spec/helpers/application_helper_spec.rb (or a
+          correctly-named spec/helpers/*_spec.rb file), NOT some ad-hoc location;
+        - it requires 'rails_helper' and uses RSpec.describe ApplicationHelper,
+          type: :helper;
+        - it adds a describe/it block that actually exercises total_members_count
+          (e.g. asserting on the helper's return).
+      Penalize wrong placement, wrong describe target, missing rails_helper, or a
+      test that does not reference total_members_count.
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, exploration, rails]

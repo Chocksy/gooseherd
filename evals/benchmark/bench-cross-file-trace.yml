@@ -1,0 +1,50 @@
+# Category: exploration — trace a rendered value back through the codebase.
+# Ground truth (pxls@master): the footer renders a downloads counter.
+#   app/views/layouts/_footer.slim:34   .downloads-counter= total_download_count
+# The value comes from a helper two files away:
+#   app/helpers/application_helper.rb:135-139
+#     def total_download_count
+#       Rails.cache.fetch('total_download_count', expires_in: 30.minutes) do
+#         Item.sum(:downloads).to_s.rjust(7, '0')   <-- padding width lives here
+#       end
+#     end
+# The footer template contains no "7" and no rjust; the agent must follow
+# total_download_count from the view into the helper to make the change.
+name: bench-cross-file-trace
+description: "Change the footer downloads counter padding — value is defined in a helper, not the footer"
+
+repo: epiccoders/pxls
+base_branch: master
+task: |
+  The downloads counter shown in the website footer is zero-padded to 7 digits.
+  Change it so the number is zero-padded to 8 digits instead. Edit it wherever the
+  value is actually produced.
+
+judges:
+  - type: status
+    expect: completed
+
+  # The padding is set in the helper, not in the footer template.
+  - type: files_changed
+    expect_any:
+      - "app/helpers/application_helper.rb"
+
+  - type: diff_contains
+    patterns:
+      - "rjust(8"
+
+  - type: llm_judge
+    prompt: |
+      The footer template (_footer.slim) renders `= total_download_count` and does
+      NOT itself contain the padding width. The width is set by
+      `Item.sum(:downloads).to_s.rjust(7, '0')` inside `total_download_count` in
+      app/helpers/application_helper.rb.
+      PASS (high) if the agent changed the padding to 8 (e.g. rjust(8, '0')) in the
+      helper method total_download_count. Penalize if it tried to reformat the value
+      in the view/footer instead of tracing it to the helper, or changed the wrong
+      counter (total_members_count).
+
+config_overrides:
+  DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+
+tags: [bench, exploration, rails]

@@ -22,6 +22,19 @@ invented a feature, edited a decoy, or refactored out of scope.
 - Postgres for eval results: `postgres://gooseherd:gooseherd@localhost:55432/gooseherd`
 - `DRY_RUN=true` (no real PRs are pushed; scenarios judge the local diff + status).
 - An API key for the judge LLM (`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
+- **Scope scenarios need BOTH `OPENROUTER_API_KEY` and scope judging enabled.** The
+  scope scenarios (`bench-scope-trap`, and the root `evals/homepage-title.yml`) assert a
+  `gate_verdict` on `scope_judge`. For that to mean anything the node must actually run
+  and judge: it needs `enable_nodes: [scope_judge]` (so the engine doesn't skip it),
+  `SCOPE_JUDGE_ENABLED: "true"` in the scenario's `config_overrides` (so the handler
+  doesn't self-skip — this is baked into those scenarios), and `OPENROUTER_API_KEY` (so
+  it has an LLM). If the key is missing, `scope-judge-node.ts` self-skips with **no gate
+  report entry**, the reconstructed report leaves `scope_judge` **absent**, and the
+  `gate_verdict` assertion **fails** — the scope signal is lost, not silently green.
+  (True fail-open-to-`pass` only happens on an LLM error *after* the judge starts, never
+  from a missing key.) To make this loud rather than a buried failed verdict, the eval
+  runner treats a `gate_verdict:scope_judge` scenario missing any of these prerequisites
+  as a **hard failure** and refuses to run it.
 
 ## Running the suite
 
@@ -106,17 +119,25 @@ ORDER BY scenario_name, label;
 Per-category win rates across labels:
 
 ```sql
-SELECT config_label AS label,
-       unnest(tags)  AS category,
+-- unnest the tags in a subquery so the category is a plain column we can filter
+-- and group by. (Postgres rejects unnest() in HAVING, and disallows SELECT
+-- aliases there too, so the filter has to happen before the aggregation.)
+SELECT label, category,
        count(*) FILTER (WHERE overall_pass) AS passed,
        count(*)                             AS scenarios,
        round(avg(overall_score))            AS avg_score
-FROM eval_results
-WHERE config_label IN ('baseline-gpt41mini', 'sonnet46')
-  AND tags @> ARRAY['bench']
-GROUP BY config_label, category
-HAVING unnest(tags) IN ('delivery', 'exploration', 'clarification', 'scope')
-ORDER BY category, config_label;
+FROM (
+  SELECT config_label AS label,
+         unnest(tags) AS category,
+         overall_pass,
+         overall_score
+  FROM eval_results
+  WHERE config_label IN ('baseline-gpt41mini', 'sonnet46')
+    AND tags @> ARRAY['bench']
+) t
+WHERE category IN ('delivery', 'exploration', 'clarification', 'scope')
+GROUP BY label, category
+ORDER BY category, label;
 ```
 
 > Note: `eval_results.config_label` holds the `--label` value; the per-scenario diff
@@ -133,3 +154,9 @@ ORDER BY category, config_label;
 - `bench-ambiguous` is the benchmark copy of the root `evals/confusing-instruction.yml`
   (kept in place as the original standalone eval), re-tagged for the suite.
 - Base branch for all scenarios is `master` (pxls' default branch).
+- Each scenario builds a **fresh** engine, runtime backends, and `RunManager`
+  (`buildContext` in `scripts/run-eval.ts`). This is deliberate: a scenario's
+  `config_overrides` are applied to `process.env` and the config is reloaded per
+  scenario, so the agent command template / judge model actually take effect. The
+  cost is a per-scenario construction overhead that adds up across the 10-scenario
+  suite — acceptable for a benchmark, but don't mistake it for a cheap inner loop.

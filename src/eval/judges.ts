@@ -171,16 +171,45 @@ async function judgeLlm(config: LlmJudgeConfig, ctx: JudgeContext): Promise<Judg
 
 /**
  * LLM judges sometimes wrap their verdict in ```json fences despite jsonMode.
- * Strip fences and isolate the outermost {...} so JSON.parse gets clean input.
+ * Strip fences and isolate the first balanced {...} so JSON.parse gets clean input.
+ *
+ * Brace-balancing (rather than a naive first-`{` … last-`}` slice) so that a `}`
+ * inside a string value (e.g. a "reason" that mentions "}") and any trailing prose
+ * after the object don't corrupt the slice.
  */
 export function extractJsonObject(content: string): string {
   const unfenced = content.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
   const start = unfenced.indexOf("{");
-  const end = unfenced.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    return unfenced.slice(start, end + 1);
+  if (start < 0) return unfenced;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < unfenced.length; i += 1) {
+    const ch = unfenced[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return unfenced.slice(start, i + 1);
+      }
+    }
   }
-  return unfenced;
+  // Unbalanced — fall back to the remainder from the first brace.
+  return unfenced.slice(start);
 }
 
 /**
@@ -195,11 +224,18 @@ const OUTCOME_PATTERNS: Record<string, RegExp> = {
 
 function judgeExpectedOutcome(config: ExpectedOutcomeJudgeConfig, ctx: JudgeContext): JudgeVerdict {
   const haystack = `${ctx.run.status} ${ctx.run.error ?? ""}`;
+  const diffEmpty = ctx.diff.trim() === "";
   const matched = config.expect.find((token) => {
     const pattern = OUTCOME_PATTERNS[token];
-    if (pattern) return pattern.test(haystack);
-    // Unknown token: fall back to a literal status match or substring in status/error.
-    return ctx.run.status === token || haystack.toLowerCase().includes(token.toLowerCase());
+    if (pattern) {
+      // "Did nothing" outcomes (no_changes, context_conflict) must not have produced
+      // a diff — a matching status/error string alongside a non-empty diff means the
+      // agent DID change files, so the outcome does not actually hold.
+      return pattern.test(haystack) && diffEmpty;
+    }
+    // Unknown token: require an exact run-status match (no fuzzy substring matching,
+    // which would let an unrelated error string satisfy the expectation).
+    return ctx.run.status === token;
   });
 
   if (matched) {
@@ -274,8 +310,9 @@ export async function runAllJudges(judges: EvalJudgeConfig[], ctx: JudgeContext)
  * ref (e.g. `main`) usually does not exist locally. Resolve robustly:
  *   1. `git diff origin/<baseBranch>...HEAD` (the tracking ref is normally present).
  *   2. If that ref is missing, `git fetch origin <baseBranch>` then retry.
- *   3. Fall back to the patch for HEAD — the single commit the agent made on
- *      top of the base — logging a warning so the fallback is visible.
+ *   3. Fall back to the patch for HEAD, but ONLY when HEAD is exactly one commit
+ *      ahead of the base (the single commit the agent made); otherwise return ""
+ *      rather than emit the base tip's unrelated patch. A warning marks either path.
  */
 export async function readDiff(workRoot: string, runId: string, baseBranch: string): Promise<string> {
   const repoDir = path.resolve(workRoot, runId, "repo");
@@ -296,25 +333,47 @@ export async function readDiff(workRoot: string, runId: string, baseBranch: stri
       await runGit(["fetch", "origin", baseBranch]);
       return await runGit(["diff", `${originRef}...HEAD`]);
     } catch {
-      // Last resort: the patch for the agent's commit (HEAD).
-      logWarn("Eval: diff base ref unavailable, falling back to `git show HEAD`", {
-        runId,
-        baseBranch,
-      });
+      // Last resort: the patch for the agent's commit (HEAD). This is only valid when
+      // the agent made exactly one commit on top of the base — then HEAD's patch IS
+      // that change. If HEAD is the untouched base tip (zero commits) `git show HEAD`
+      // would return an unrelated base commit's patch, so gate on the commit count and
+      // otherwise return empty rather than fabricate a diff.
       try {
-        return await runGit(["show", "--format=", "HEAD"]);
+        const ahead = (await runGit(["rev-list", "--count", `${originRef}..HEAD`])).trim();
+        if (ahead === "1") {
+          logWarn("Eval: diff base ref unavailable, falling back to `git show HEAD` (single commit ahead of base)", {
+            runId,
+            baseBranch,
+          });
+          return await runGit(["show", "--format=", "HEAD"]);
+        }
+        logWarn("Eval: diff base ref unavailable and HEAD is not exactly one commit ahead of base — cannot resolve diff", {
+          runId,
+          baseBranch,
+          commitsAhead: ahead,
+        });
+        return "";
       } catch {
+        logWarn("Eval: diff base ref unavailable and commit count unresolvable — cannot resolve diff", {
+          runId,
+          baseBranch,
+        });
         return "";
       }
     }
   }
 }
 
-/** Gate nodes whose pipeline outcome maps 1:1 to a gate-report verdict. */
+/** Gate nodes that append a gate-report verdict when they actually run. */
 const GATE_NODE_IDS = new Set(["scope_judge", "diff_gate", "forbidden_files", "security_scan", "browser_verify"]);
 
-/** Map a pipeline node outcome to the verdict vocabulary used by gate reports. */
-function outcomeToVerdict(outcome: string): string {
+/**
+ * Map a pipeline node's terminal outcome to the verdict vocabulary used by gate
+ * reports. Only outcomes for gates that actually ran are mapped — `skipped`
+ * outcomes never reach here because the reconstruction below drops them (a skipped
+ * gate appends no verdict in production, so it must stay absent from the report).
+ */
+export function outcomeToVerdict(outcome: string): string {
   switch (outcome) {
     case "success":
       return "pass";
@@ -322,8 +381,6 @@ function outcomeToVerdict(outcome: string): string {
       return "hard_fail";
     case "soft_fail":
       return "soft_fail";
-    case "skipped":
-      return "skipped";
     default:
       return outcome;
   }
@@ -334,9 +391,16 @@ function outcomeToVerdict(outcome: string): string {
  *
  * The canonical gate report lives only in the in-memory pipeline context and is
  * never persisted to `checkpoints/checkpoint.json` on the local runtime path used
- * by evals. The `node_end` events, however, record each gate node's outcome, which
- * maps 1:1 to its recorded verdict. This lets `gate_verdict` judges work without
- * wiring the production checkpoint store into the eval path.
+ * by evals. The `node_end` events, however, record each gate node's terminal
+ * outcome, which we translate back into a verdict. This lets `gate_verdict` judges
+ * work without wiring the production checkpoint store into the eval path.
+ *
+ * The mapping is NOT 1:1 with production's gate report: a gate that self-skips
+ * (e.g. scope_judge with no OPENROUTER_API_KEY) emits `node_end outcome: "skipped"`
+ * but appends NO gate-report entry, so we drop skipped outcomes and leave the gate
+ * absent — `gate_verdict` then correctly reports "not found" rather than inventing a
+ * `skipped` verdict production never recorded. (The LLM-error fail-open path is the
+ * opposite: it appends `pass` and ends `success`, which we do map.)
  */
 async function readGateReportFromEvents(
   workRoot: string,
@@ -361,6 +425,8 @@ async function readGateReportFromEvents(
       continue;
     }
     if (event.type === "node_end" && event.nodeId && event.outcome && GATE_NODE_IDS.has(event.nodeId)) {
+      // A skipped gate appends no verdict in production; keep it absent here too.
+      if (event.outcome === "skipped") continue;
       verdicts.set(event.nodeId, outcomeToVerdict(event.outcome));
     }
   }
@@ -386,7 +452,10 @@ export async function readCheckpoint(workRoot: string, runId: string): Promise<R
     data = {};
   }
 
-  if (!data.gateReport) {
+  // Fall back to the events-derived gate report when the checkpoint has no gate
+  // report OR persisted an empty one ([]) — an empty array is "missing", not "no
+  // gates ran", so treat it the same as absent.
+  if (!data.gateReport || (Array.isArray(data.gateReport) && data.gateReport.length === 0)) {
     const gateReport = await readGateReportFromEvents(workRoot, runId);
     if (gateReport.length > 0) {
       data = { ...data, gateReport };

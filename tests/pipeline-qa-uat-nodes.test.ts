@@ -5,17 +5,30 @@ import path from "node:path";
 import test from "node:test";
 import { ContextBag } from "../src/pipeline/context-bag.js";
 import { normalizeQaUatComment } from "../src/pipeline/nodes/generate-qa-uat.js";
-import { postQaUatCommentNode } from "../src/pipeline/nodes/post-qa-uat-comment.js";
+import { buildStickyQaUatBody, postQaUatCommentNode } from "../src/pipeline/nodes/post-qa-uat-comment.js";
+import { buildQaUatMarker, parseQaUatMarkerSha } from "../src/work-items/qa-preparation-actions.js";
 import type { NodeDeps } from "../src/pipeline/types.js";
+
+const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
+const APP_SLUG = "gooseherd-test";
+const BOT_LOGIN = `${APP_SLUG}[bot]`;
+
+interface CommentRecord {
+  id: string;
+  body: string;
+  authorLogin?: string;
+}
 
 function makeDeps(input: {
   prBody: string;
-  comments?: Array<{ body: string }>;
-  onComment?: (body: string) => void;
+  headSha?: string;
+  comments?: CommentRecord[];
+  created?: string[];
+  updated?: Array<{ commentId: string; body: string }>;
 }): NodeDeps {
   const tmpLog = path.join(os.tmpdir(), `gooseherd-qa-uat-node-${String(Date.now())}.log`);
   return {
-    config: { appName: "gooseherd-test" },
+    config: { appName: "gooseherd-test", appSlug: APP_SLUG },
     run: {
       id: "run-1",
       repoSlug: "hubstaff/gooseherd",
@@ -29,27 +42,29 @@ function makeDeps(input: {
         title: "Add export",
         body: input.prBody,
         state: "open",
+        headSha: input.headSha ?? HEAD_SHA,
       }),
       createPullRequestConversationComment: async ({ body }) => {
-        input.onComment?.(body);
+        input.created?.push(body);
+      },
+      updatePullRequestConversationComment: async ({ commentId, body }) => {
+        input.updated?.push({ commentId, body });
       },
       listPullRequestDiscussionComments: async () => input.comments ?? [],
     },
     logFile: tmpLog,
     workRoot: os.tmpdir(),
     onPhase: async () => {},
-  } as NodeDeps;
+  } as unknown as NodeDeps;
 }
 
-test("postQaUatCommentNode posts generated QA UAT as a PR discussion comment", async () => {
+test("postQaUatCommentNode creates a sticky QA UAT comment with a marker and footer", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gooseherd-qa-uat-node-"));
   const logFile = path.join(tmpDir, "run.log");
-  const posted: string[] = [];
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
   const deps = {
-    ...makeDeps({
-      prBody: "## Summary\n\nAdds export.",
-      onComment: (body) => posted.push(body),
-    }),
+    ...makeDeps({ prBody: "## Summary\n\nAdds export.", created, updated }),
     logFile,
   };
   const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
@@ -57,37 +72,103 @@ test("postQaUatCommentNode posts generated QA UAT as a PR discussion comment", a
   const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
 
   assert.equal(result.outcome, "success");
-  assert.deepEqual(posted, ["## QA UAT\n\n- Verify export."]);
+  assert.equal(created.length, 1);
+  assert.equal(updated.length, 0);
+  assert.match(created[0], /<!-- hubble:qa-uat sha:0123456789abcdef0123456789abcdef01234567 -->/);
+  assert.match(created[0], /## QA UAT/);
+  assert.match(created[0], /_QA\/UAT updated for `0123456`_/);
   assert.match(await readFile(logFile, "utf8"), /posted QA UAT PR comment/);
 });
 
-test("postQaUatCommentNode skips when PR description already has QA UAT", async () => {
-  const posted: string[] = [];
-  const deps = makeDeps({
-    prBody: "## QA UAT\n\n- Existing checks.",
-    onComment: (body) => posted.push(body),
-  });
-  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
+test("postQaUatCommentNode updates the existing sticky comment in place (same id)", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const comments: CommentRecord[] = [
+    { id: "555", body: `${buildQaUatMarker("0ad5aa0")}\n\n## QA UAT\n\n- Old checks.\n\n_QA/UAT updated for \`0ad5aa0\`_` },
+  ];
+  const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
+  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Fresh checks." });
 
   const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
 
-  assert.equal(result.outcome, "skipped");
-  assert.deepEqual(posted, []);
+  assert.equal(result.outcome, "success");
+  assert.equal(result.outputs?.qaUatCommentId, "555");
+  assert.equal(created.length, 0);
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].commentId, "555");
+  assert.equal(parseQaUatMarkerSha(updated[0].body), HEAD_SHA);
+  assert.match(updated[0].body, /- Fresh checks\./);
 });
 
-test("postQaUatCommentNode skips when a previous PR comment already has QA UAT", async () => {
-  const posted: string[] = [];
-  const deps = makeDeps({
-    prBody: "## Summary\n\nAdds export.",
-    comments: [{ body: "## QA UAT\n\n- Existing checks." }],
-    onComment: (body) => posted.push(body),
-  });
+test("postQaUatCommentNode adopts a legacy marker-less QA UAT comment authored by our bot", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const comments: CommentRecord[] = [
+    { id: "777", body: "## QA UAT\n\n- Legacy checks from before the marker existed.", authorLogin: BOT_LOGIN },
+  ];
+  const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
+  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
+
+  const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(created.length, 0);
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].commentId, "777");
+  assert.equal(parseQaUatMarkerSha(updated[0].body), HEAD_SHA);
+});
+
+test("postQaUatCommentNode does NOT overwrite a human-authored QA UAT comment", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const comments: CommentRecord[] = [
+    { id: "888", body: "## QA UAT\n\n- Human wrote these steps by hand.", authorLogin: "some-maintainer" },
+  ];
+  const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
+  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
+
+  const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(updated.length, 0);
+  assert.equal(created.length, 1);
+  assert.equal(parseQaUatMarkerSha(created[0]), HEAD_SHA);
+});
+
+test("postQaUatCommentNode creates a fresh sticky when a marker-less QA UAT comment has no attributable author", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const comments: CommentRecord[] = [
+    { id: "999", body: "## QA UAT\n\n- Unattributed checks." },
+  ];
+  const deps = makeDeps({ prBody: "## Summary\n\nAdds export.", comments, created, updated });
+  const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
+
+  const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
+
+  assert.equal(result.outcome, "success");
+  assert.equal(updated.length, 0);
+  assert.equal(created.length, 1);
+  assert.equal(parseQaUatMarkerSha(created[0]), HEAD_SHA);
+});
+
+test("postQaUatCommentNode skips when PR description already has QA UAT", async () => {
+  const created: string[] = [];
+  const updated: Array<{ commentId: string; body: string }> = [];
+  const deps = makeDeps({ prBody: "## QA UAT\n\n- Existing checks.", created, updated });
   const ctx = new ContextBag({ qaUatComment: "## QA UAT\n\n- Verify export." });
 
   const result = await postQaUatCommentNode({ id: "post", type: "deterministic", action: "post_qa_uat_comment" }, ctx, deps);
 
   assert.equal(result.outcome, "skipped");
-  assert.deepEqual(posted, []);
+  assert.equal(created.length, 0);
+  assert.equal(updated.length, 0);
+});
+
+test("buildStickyQaUatBody embeds the marker and footer", () => {
+  const body = buildStickyQaUatBody("## QA UAT\n\n- Verify export.", HEAD_SHA);
+  assert.equal(parseQaUatMarkerSha(body), HEAD_SHA);
+  assert.match(body, /_QA\/UAT updated for `0123456`_/);
 });
 
 test("normalizeQaUatComment does not duplicate non-level-two QA UAT headers", () => {

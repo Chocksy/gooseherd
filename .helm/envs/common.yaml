@@ -42,6 +42,7 @@ configs:
       OBSERVER_ENABLED: "true"
       SCOPE_JUDGE_ENABLED: "true"
       CI_WAIT_ENABLED: "true"
+      CI_IGNORE_CHECKS: "pr checker,block autosquash"
       AUTO_REVIEW_BRANCH_SYNC_ENABLED: "true"
       AUTO_REVIEW_BRANCH_SYNC_MAX_BEHIND_COMMITS: "4"
       AUTO_REVIEW_BRANCH_SYNC_INTERVAL_MS: "900000"
@@ -49,6 +50,8 @@ configs:
       KUBERNETES_NAMESPACE: '{{ .Release.Namespace }}'
       KUBERNETES_RUNNER_IMAGE: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest'
       KUBERNETES_RUNNER_IMAGE_SERVER: '435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server:latest'
+      # Re-pull the :latest runner images so rebuilt tags reach new runner pods.
+      KUBERNETES_RUNNER_IMAGE_PULL_POLICY: "Always"
       KUBERNETES_RUNNER_CPU_SERVER: "2"
       KUBERNETES_RUNNER_MEMORY_SERVER: "3Gi"
       KUBERNETES_RUNNER_NODE_HEAP_MB_SERVER: "1536"

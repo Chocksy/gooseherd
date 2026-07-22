@@ -541,3 +541,67 @@ test("kubernetes backend does NOT set RUN_LOG_MIRROR_STDOUT for first-attempt ru
   const manifest = await readFile(path.resolve(tmpRoot, "run-k8s-first-1", "kubernetes-job.yaml"), "utf8");
   assert.doesNotMatch(manifest, /RUN_LOG_MIRROR_STDOUT/);
 });
+
+test("kubernetes backend loudly logs an attributed error when a run is dispatched in dry-run mode", async (t) => {
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "gooseherd-k8s-backend-dryrun-"));
+  t.after(async () => { await rm(tmpRoot, { recursive: true, force: true }); });
+
+  const happyResourceClient: Pick<KubernetesResourceClientType, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret"> = {
+    applySecret: async () => undefined,
+    applyJob: async () => undefined,
+    readJob: async () => ({ status: { conditions: [{ type: "Complete", status: "True" }] } }),
+    listPodsForJob: async () => [],
+    readJobLogs: async () => "runner completed\n",
+    deleteJob: async () => undefined,
+    deletePodsForJob: async () => undefined,
+    deleteSecret: async () => undefined,
+  };
+  const makeBackend = (dryRun: boolean, id: string) => new KubernetesExecutionBackend({
+    controlPlaneStore: {
+      createRunEnvelope: async () => undefined,
+      issueRunToken: async () => ({ token: "issued-token" }),
+      getLatestCompletion: async () => makeCompletion({ runId: id } as never),
+      revokeRunToken: async () => undefined,
+      listEventsAfterSequence: async () => [],
+    },
+    artifactStore: { allocateTargets: async () => ({ targets: {} }) },
+    runStore: { getRun: async () => undefined },
+    workRoot: tmpRoot,
+    runnerImage: "gooseherd/k8s-runner:dev",
+    internalBaseUrl: "http://host.minikube.internal:8787",
+    dryRun,
+    dryRunSource: "local-trigger launch (test)",
+    resourceClient: happyResourceClient,
+    pollIntervalMs: 1,
+    waitTimeoutMs: 5_000,
+    completionWaitMs: 100,
+  });
+
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")); };
+  try {
+    // Explicit dry-run → loud, attributed error line + DRY_RUN=true in the manifest.
+    await makeBackend(true, "run-k8s-dryrun-true").execute(makeRun({ id: "run-k8s-dryrun-true" }), {
+      onPhase: async () => undefined,
+      pipelineFile: "pipelines/kubernetes-smoke.yml",
+    });
+    // A false (production-pinned) dispatch must NOT log the dry-run error.
+    await makeBackend(false, "run-k8s-dryrun-false").execute(makeRun({ id: "run-k8s-dryrun-false" }), {
+      onPhase: async () => undefined,
+      pipelineFile: "pipelines/kubernetes-smoke.yml",
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  const dryRunErrors = errors.filter((line) => /DRY_RUN mode/.test(line));
+  assert.equal(dryRunErrors.length, 1);
+  assert.match(dryRunErrors[0]!, /local-trigger launch \(test\)/);
+  assert.match(dryRunErrors[0]!, /run-k8s-dryrun-true/);
+
+  const dryRunManifest = await readFile(path.resolve(tmpRoot, "run-k8s-dryrun-true", "kubernetes-job.yaml"), "utf8");
+  assert.match(dryRunManifest, /name: DRY_RUN[\s\S]*value: "true"/);
+  const cleanManifest = await readFile(path.resolve(tmpRoot, "run-k8s-dryrun-false", "kubernetes-job.yaml"), "utf8");
+  assert.match(cleanManifest, /name: DRY_RUN[\s\S]*value: "false"/);
+});

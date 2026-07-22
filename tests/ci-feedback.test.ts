@@ -9,6 +9,7 @@ import {
   buildCIFixPrompt,
   shouldAbortFixLoop
 } from "../src/pipeline/ci/ci-monitor.js";
+import { mergeIgnoreChecks } from "../src/github.js";
 import type { CICheckRun, CICheckAnnotation } from "../src/github.js";
 
 // ── aggregateConclusions ──
@@ -117,6 +118,28 @@ test("excludeCheckRuns: ignores matching runs by name (case-insensitive contains
   ];
   const filtered = excludeCheckRuns(runs, ["pr checker"]);
   assert.deepEqual(filtered.map(r => r.name), ["build-and-test", "commitlint"]);
+});
+
+// ── mergeIgnoreChecks (org-level env + repo-level .gooseherd.yml) ──
+
+test("mergeIgnoreChecks: unions org and repo lists, trimming and de-duping case-insensitively", () => {
+  const merged = mergeIgnoreChecks(["PR Checker", " block autosquash "], ["pr checker", "PR Checker", ""]);
+  assert.deepEqual(merged, ["PR Checker", "block autosquash"]);
+});
+
+test("mergeIgnoreChecks: empty inputs produce an empty list", () => {
+  assert.deepEqual(mergeIgnoreChecks([], []), []);
+});
+
+test("mergeIgnoreChecks: org-only entry excludes a red gating check via substring match", () => {
+  const runs: CICheckRun[] = [
+    { id: 1, name: "build-and-test", status: "completed", conclusion: "success" },
+    { id: 2, name: "PR Checker Gate", status: "completed", conclusion: "failure" }
+  ];
+  // Env supplies "pr checker gate"; repo config is empty. Substring + case-insensitive.
+  const ignore = mergeIgnoreChecks(["pr checker gate"], []);
+  const filtered = excludeCheckRuns(runs, ignore);
+  assert.deepEqual(filtered.map(r => r.name), ["build-and-test"]);
 });
 
 // ── mapAnnotations ──

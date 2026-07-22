@@ -6,6 +6,12 @@ on:
     branches:
       - master
     paths:
+      - src/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - pipelines/**
+      - scripts/**
       - .docker/Dockerfile
       - .github/workflows/build-runner-generic-image.yml
 

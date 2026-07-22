@@ -80,6 +80,12 @@ interface Args {
   repo: string;
   pr?: number;
   mode: "synthetic" | "real";
+  /** Scaffold an always-failing "PR Checker Gate" check on the scratch base. */
+  redGate: boolean;
+  /** Prove the gate deadlocks: expect NO advancement past auto_review, then exit. */
+  expectStall: boolean;
+  /** After the QA/UAT comment exists, push a new commit and prove it upserts in place. */
+  sticky: boolean;
   cleanup: boolean;
   cleanupOnFailure: boolean;
 }
@@ -88,12 +94,18 @@ function parseArgs(argv: string[]): Args {
   let repo = "";
   let pr: number | undefined;
   let mode: "synthetic" | "real" = "real";
+  let redGate = false;
+  let expectStall = false;
+  let sticky = false;
   let cleanup = false;
   let cleanupOnFailure = true;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--repo") { repo = argv[++i] ?? ""; }
     else if (arg === "--pr") { pr = Number.parseInt(argv[++i] ?? "", 10); }
+    else if (arg === "--red-gate") { redGate = true; }
+    else if (arg === "--expect-stall") { expectStall = true; }
+    else if (arg === "--sticky") { sticky = true; }
     else if (arg === "--cleanup") { cleanup = true; }
     else if (arg === "--no-cleanup-on-failure") { cleanupOnFailure = false; }
     else if (arg === "--mode") {
@@ -104,8 +116,13 @@ function parseArgs(argv: string[]): Args {
   }
   if (!repo) throw new Error("--repo <owner/name> is required");
   if (pr !== undefined && !Number.isInteger(pr)) throw new Error("--pr must be an integer");
-  return { repo, pr, mode, cleanup, cleanupOnFailure };
+  if (expectStall && !redGate) throw new Error("--expect-stall requires --red-gate (nothing to deadlock on otherwise)");
+  return { repo, pr, mode, redGate, expectStall, sticky, cleanup, cleanupOnFailure };
 }
+
+// Name of the always-failing gating check the app must learn to ignore. Substring
+// "pr checker gate" (case-insensitive) is what CI_IGNORE_CHECKS is set to in the proof.
+const GATE_CHECK_NAME = "PR Checker Gate";
 
 const WEBHOOK_URL = process.env.GOOSEHERD_WEBHOOK_URL ?? "http://127.0.0.1:8787/webhooks/github";
 const WEBHOOK_SECRET = process.env.OBSERVER_GITHUB_WEBHOOK_SECRET ?? "";
@@ -208,7 +225,19 @@ interface GhPull {
 }
 
 function fetchPull(repo: string, prNumber: number): GhPull {
-  return ghJson<GhPull>(["api", `repos/${repo}/pulls/${String(prNumber)}`]);
+  // GitHub's pulls endpoint occasionally returns a transient 422
+  // ("too many files changed") or 5xx right after a push/force-push. Retry a few
+  // times before giving up so a flaky read doesn't abort the walk.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return ghJson<GhPull>(["api", `repos/${repo}/pulls/${String(prNumber)}`]);
+    } catch (error) {
+      lastErr = error;
+      execFileSync("sleep", ["2"]);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 function labeledPayload(repo: string, pull: GhPull, labelName: string): Record<string, unknown> {
@@ -229,6 +258,25 @@ function labeledPayload(repo: string, pull: GhPull, labelName: string): Record<s
       base: { ref: pull.base.ref },
       head: { ref: pull.head.ref, sha: pull.head.sha },
       labels: [...labelNames].map((name) => ({ name })),
+    },
+  };
+}
+
+function synchronizePayload(repo: string, pull: GhPull): Record<string, unknown> {
+  return {
+    action: "synchronize",
+    number: pull.number,
+    repository: { full_name: repo },
+    pull_request: {
+      number: pull.number,
+      title: pull.title,
+      body: pull.body ?? "",
+      html_url: pull.html_url,
+      state: pull.state,
+      user: { login: pull.user.login },
+      base: { ref: pull.base.ref },
+      head: { ref: pull.head.ref, sha: pull.head.sha },
+      labels: pull.labels.map((l) => ({ name: l.name })),
     },
   };
 }
@@ -305,6 +353,23 @@ jobs:
       - run: echo "hubble e2e green check"
 `;
 
+// Always-RED gating check. The job name becomes the GitHub check-run name, so the
+// resulting check run is literally "PR Checker Gate" — a perpetually-failing policy
+// gate the app must exclude via CI_IGNORE_CHECKS to advance.
+const GATE_WORKFLOW = `name: pr-checker-gate
+on:
+  pull_request:
+  push:
+jobs:
+  gate:
+    name: ${GATE_CHECK_NAME}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "This gate stays red until QA/review labels exist (simulated)."
+          exit 1
+`;
+
 const GOOSEHERD_YML = `# Scratch-branch scaffolding for the Hubble E2E label walk. Never on master.
 qualityGates:
   ci:
@@ -338,7 +403,7 @@ function putFile(repo: string, branch: string, path: string, content: string, me
   return resp.content.sha;
 }
 
-function createScratchPr(repo: string): ScratchPr {
+function createScratchPr(repo: string, opts: { redGate: boolean }): ScratchPr {
   const ts = Date.now();
   const baseBranch = `hubble-e2e-base-${ts}`;
   const headBranch = `hubble-e2e-head-${ts}`;
@@ -369,6 +434,13 @@ function createScratchPr(repo: string): ScratchPr {
   log("adding always-green workflow + .gooseherd.yml on scratch base");
   putFile(repo, baseBranch, ".github/workflows/hubble-e2e.yml", ECHO_WORKFLOW, "ci(hubble-e2e): always-green check");
   putFile(repo, baseBranch, ".gooseherd.yml", GOOSEHERD_YML, "chore(hubble-e2e): ignore_checks scaffolding");
+  if (opts.redGate) {
+    // Scaffolded on the base BEFORE the head branch forks, so the PR head inherits
+    // it and the "PR Checker Gate" check runs (and fails) on the PR. Deliberately
+    // NOT in .gooseherd.yml ignore_checks — only CI_IGNORE_CHECKS (env) can exclude it.
+    log(`adding always-red gating workflow ("${GATE_CHECK_NAME}") on scratch base`);
+    putFile(repo, baseBranch, ".github/workflows/pr-checker-gate.yml", GATE_WORKFLOW, "ci(hubble-e2e): always-red gating check");
+  }
 
   // Head branch off the (now scaffolded) base tip.
   const baseTip = ghJson<{ object: { sha: string } }>(["api", `repos/${repo}/git/ref/heads/${baseBranch}`]).object.sha;
@@ -418,10 +490,15 @@ function checkRunsFor(repo: string, sha: string): CheckRun[] {
   return resp.check_runs;
 }
 
+// Checks the DRIVER ignores when deciding "is the green build ready?". This mirrors
+// the app's ignore lists PLUS the intentionally-red gating check — the driver waits
+// on the echo check only; the gate's redness is the app's concern, not the driver's.
+const DRIVER_IGNORED_CHECK_RE = /EpicPxls|Autosquash|message-check|rspec|coverage|brakeman|eslint|cypress|PR Checker Gate/i;
+
 async function waitForGreenSnapshot(repo: string, sha: string): Promise<void> {
   await poll(`green CI check on ${sha.slice(0, 8)}`, 8 * 60_000, 5_000, async () => {
     const runs = checkRunsFor(repo, sha);
-    const relevant = runs.filter((r) => !/EpicPxls|Autosquash|message-check|rspec|coverage|brakeman|eslint|cypress/i.test(r.name));
+    const relevant = runs.filter((r) => !DRIVER_IGNORED_CHECK_RE.test(r.name));
     if (relevant.length === 0) return undefined;
     if (relevant.some((r) => r.status !== "completed")) return undefined;
     if (relevant.some((r) => r.conclusion !== null && !["success", "neutral", "skipped"].includes(r.conclusion))) {
@@ -429,6 +506,22 @@ async function waitForGreenSnapshot(repo: string, sha: string): Promise<void> {
     }
     if (!relevant.some((r) => r.conclusion === "success")) return undefined;
     return true;
+  });
+}
+
+/**
+ * Wait until the always-red "PR Checker Gate" check run has COMPLETED (as a failure)
+ * for the given head SHA, so the app's live CI snapshot at check_suite-injection time
+ * genuinely observes a red gate (rather than a still-pending one).
+ */
+async function waitForGateRed(repo: string, sha: string): Promise<CheckRun> {
+  return poll(`red "${GATE_CHECK_NAME}" on ${sha.slice(0, 8)}`, 8 * 60_000, 5_000, async () => {
+    const gate = checkRunsFor(repo, sha).find((r) => /pr checker gate/i.test(r.name));
+    if (!gate || gate.status !== "completed") return undefined;
+    if (gate.conclusion === "success") {
+      throw new Error(`"${GATE_CHECK_NAME}" unexpectedly passed: ${JSON.stringify(gate)}`);
+    }
+    return gate;
   });
 }
 
@@ -466,6 +559,22 @@ function cleanupScratch(repo: string, scratch: ScratchPr): void {
   }
 }
 
+// Matches the sticky marker the app embeds: <!-- hubble:qa-uat sha:<headSha> -->
+const QA_UAT_MARKER_RE = /<!--\s*hubble:qa-uat\s+sha:([0-9a-fA-F]+)\s*-->/;
+
+interface IssueComment { id: number; body: string; html_url: string; }
+
+function listQaUatComments(repo: string, prNumber: number): IssueComment[] {
+  const comments = ghJson<IssueComment[]>([
+    "api", `repos/${repo}/issues/${String(prNumber)}/comments`, "--paginate",
+  ]);
+  return comments.filter((c) => QA_UAT_MARKER_RE.test(c.body ?? "") || QA_UAT_HEADER_RE.test(c.body ?? ""));
+}
+
+function parseMarkerSha(body: string): string | undefined {
+  return QA_UAT_MARKER_RE.exec(body ?? "")?.[1];
+}
+
 // ───────────────────────────── the walk ─────────────────────────────
 
 interface StepResult { step: string; pass: boolean; evidence: string; }
@@ -485,7 +594,7 @@ async function main(): Promise<void> {
   let workItemId = "";
   let commitsBefore = 0;
   let commitsAfter = 0;
-  let scratch: ScratchPr | undefined;
+  let scratchPr: ScratchPr | undefined;
   let walkSucceeded = false;
 
   try {
@@ -493,9 +602,9 @@ async function main(): Promise<void> {
 
     // ── Setup ──
     if (args.pr === undefined) {
-      scratch = createScratchPr(args.repo);
-      prNumber = scratch.prNumber;
-      htmlUrl = scratch.htmlUrl;
+      scratchPr = createScratchPr(args.repo, { redGate: args.redGate });
+      prNumber = scratchPr.prNumber;
+      htmlUrl = scratchPr.htmlUrl;
     } else {
       const pull = fetchPull(args.repo, prNumber);
       htmlUrl = pull.html_url;
@@ -525,6 +634,49 @@ async function main(): Promise<void> {
     });
     log(`  adopted: ${results[0]!.evidence}`);
 
+    // ── Inverse proof: red gate deadlocks WITHOUT CI_IGNORE_CHECKS ──
+    // Apply engineering-review, drive the echo check green, let the "PR Checker Gate"
+    // go red, inject a synthetic check_suite=success, then assert the work item does
+    // NOT advance past auto_review — proving the gate is a real gate before we show
+    // the env unblocks it. Launch THIS run WITHOUT CI_IGNORE_CHECKS.
+    if (args.expectStall) {
+      log(`STALL PROOF: apply '${ENGINEERING_REVIEW_LABEL}', drive green + red gate, expect NO advancement`);
+      if (args.mode === "real") addLabelReal(args.repo, prNumber, ENGINEERING_REVIEW_LABEL);
+      await postWebhook("pull_request", labeledPayload(args.repo, fetchPull(args.repo, prNumber), ENGINEERING_REVIEW_LABEL));
+      const stallPull = fetchPull(args.repo, prNumber);
+      await waitForGreenSnapshot(args.repo, stallPull.head.sha);
+      const redGate = await waitForGateRed(args.repo, stallPull.head.sha);
+      log(`  echo check green, "${GATE_CHECK_NAME}" red (${String(redGate.conclusion)}); injecting synthetic check_suite=success`);
+      await postWebhook("check_suite", checkSuiteSuccessPayload(args.repo, stallPull));
+
+      // Give the app ~75s of settle time; it must stay in auto_review the whole time.
+      const stallDeadline = Date.now() + 75_000;
+      let advancedState: string | undefined;
+      let lastRow = await queryWorkItem(sql, args.repo, prNumber);
+      while (Date.now() < stallDeadline) {
+        lastRow = await queryWorkItem(sql, args.repo, prNumber);
+        if (lastRow && lastRow.state !== "auto_review") { advancedState = lastRow.state; break; }
+        await sleep(5_000);
+      }
+      results.push({
+        step: "STALL. red gate blocks advancement without CI_IGNORE_CHECKS",
+        pass: advancedState === undefined,
+        evidence: advancedState === undefined
+          ? `work item stayed in auto_review for 75s (substate=${String(lastRow?.substate)} flags=[${lastRow?.flags.join(",") ?? ""}]) despite check_suite=success — gate held`
+          : `work item advanced to '${advancedState}' — gate did NOT hold (unexpected)`,
+      });
+      log(`  stall result: ${results[results.length - 1]!.evidence}`);
+      // The stall proof intentionally runs exactly these 2 steps (adopt + stall).
+      printReport(args, prNumber, htmlUrl, undefined, results, results.length);
+      if (workItemId) {
+        console.log("\nWork item event history:");
+        console.log(await workItemStateHistory(sql, workItemId));
+      }
+      console.log(`\nPR left open for inspection: ${htmlUrl}`);
+      if (!results.every((r) => r.pass)) process.exitCode = 1;
+      return;
+    }
+
     // ── Step 2: code review passed → CI green → qa_preparation → QA/UAT comment ──
     log(`STEP 2: apply '${ENGINEERING_REVIEW_LABEL}', drive CI green, expect QA/UAT comment`);
     if (args.mode === "real") addLabelReal(args.repo, prNumber, ENGINEERING_REVIEW_LABEL);
@@ -533,6 +685,10 @@ async function main(): Promise<void> {
     const pullForCi = fetchPull(args.repo, prNumber);
     log(`  waiting for a green check on head ${pullForCi.head.sha.slice(0, 8)} …`);
     await waitForGreenSnapshot(args.repo, pullForCi.head.sha);
+    if (args.redGate) {
+      const g = await waitForGateRed(args.repo, pullForCi.head.sha);
+      log(`  "${GATE_CHECK_NAME}" is red (${String(g.conclusion)}); CI_IGNORE_CHECKS must let the walk proceed anyway`);
+    }
     log("  CI is green; injecting synthetic check_suite=success");
     await postWebhook("check_suite", checkSuiteSuccessPayload(args.repo, pullForCi));
 
@@ -554,6 +710,56 @@ async function main(): Promise<void> {
     });
     log(`  QA/UAT comment: ${qaCommentUrl}`);
 
+    // ── Sticky proof: push a new commit, re-enter qa_preparation, expect in-place upsert ──
+    if (args.sticky) {
+      log("STICKY PROOF: push a new commit, re-trigger qa_preparation, expect the SAME comment id updated");
+      const before = listQaUatComments(args.repo, prNumber);
+      if (before.length !== 1) throw new Error(`expected exactly 1 QA/UAT comment before sticky push, got ${String(before.length)}`);
+      const stickyId = before[0]!.id;
+      const beforeSha = parseMarkerSha(before[0]!.body);
+      const preHead = fetchPull(args.repo, prNumber);
+      const oldHeadSha = preHead.head.sha;
+      const headBranch = scratchPr?.headBranch ?? preHead.head.ref;
+      log(`  sticky comment id=${String(stickyId)} marker-sha=${String(beforeSha)}; pushing a new commit to ${headBranch}`);
+
+      // New commit on the PR head → new head SHA (a fresh file needs no blob sha).
+      putFile(
+        args.repo, headBranch, `docs/hubble-e2e-sticky-${Date.now()}.md`,
+        `# Sticky recheck\n\nForces a new head SHA so the QA/UAT comment must refresh.\n`,
+        "docs(hubble-e2e): force new head sha for sticky QA/UAT proof",
+      );
+      // GitHub's pulls API is eventually consistent after a contents push — poll until
+      // the PR head SHA actually advances so downstream webhooks carry the real new SHA.
+      const pushed = await poll("PR head sha to advance after sticky push", 60_000, 3_000, async () => {
+        const p = fetchPull(args.repo, prNumber);
+        return p.head.sha !== oldHeadSha ? p : undefined;
+      });
+      log(`  new head sha ${pushed.head.sha.slice(0, 8)} (was ${oldHeadSha.slice(0, 8)}); sending pull_request=synchronize (resets to auto_review)`);
+      await postWebhook("pull_request", synchronizePayload(args.repo, pushed));
+
+      await waitForGreenSnapshot(args.repo, pushed.head.sha);
+      if (args.redGate) await waitForGateRed(args.repo, pushed.head.sha);
+      log("  CI green on new sha; injecting synthetic check_suite=success to re-enter qa_preparation");
+      await postWebhook("check_suite", checkSuiteSuccessPayload(args.repo, pushed));
+
+      // The upsert stamps the new head sha into the SAME comment's marker.
+      const refreshed = await poll("sticky QA/UAT comment refreshed to new head sha", 12 * 60_000, 6_000, async () => {
+        const current = listQaUatComments(args.repo, prNumber);
+        const same = current.find((c) => c.id === stickyId);
+        if (!same) return undefined;
+        const sha = parseMarkerSha(same.body);
+        return sha === pushed.head.sha ? { count: current.length, sha } : undefined;
+      });
+
+      const afterAll = listQaUatComments(args.repo, prNumber);
+      results.push({
+        step: "STICKY. QA/UAT comment upserted in place after new commit",
+        pass: afterAll.length === 1 && afterAll[0]!.id === stickyId && refreshed.sha === pushed.head.sha && beforeSha !== pushed.head.sha,
+        evidence: `comment id=${String(stickyId)} (unchanged); marker sha ${String(beforeSha)} → ${String(refreshed.sha)}; QA/UAT comment count=${String(afterAll.length)}`,
+      });
+      log(`  sticky result: ${results[results.length - 1]!.evidence}`);
+    }
+
     // ── Step 3: qa passed → CI green → ready_for_merge → squash → automerge ──
     log(`STEP 3: apply '${QA_PASSED_LABEL}', drive CI green, expect squash + '${AUTOMERGE_LABEL}'`);
     if (args.mode === "real") addLabelReal(args.repo, prNumber, QA_PASSED_LABEL);
@@ -561,6 +767,9 @@ async function main(): Promise<void> {
 
     const pullForCi2 = fetchPull(args.repo, prNumber);
     await waitForGreenSnapshot(args.repo, pullForCi2.head.sha);
+    if (args.redGate) {
+      await waitForGateRed(args.repo, pullForCi2.head.sha);
+    }
     log("  CI is green; injecting synthetic check_suite=success to enter ready_for_merge");
     await postWebhook("check_suite", checkSuiteSuccessPayload(args.repo, pullForCi2));
 
@@ -609,17 +818,17 @@ async function main(): Promise<void> {
   } finally {
     // Tear down scratch resources we created when asked (--cleanup) or, on a failed
     // run, by default (unless --no-cleanup-on-failure). Never touches an operator's
-    // --pr, since `scratch` is only set when this run opened the PR itself.
-    if (scratch) {
+    // --pr, since `scratchPr` is only set when this run opened the PR itself.
+    if (scratchPr) {
       const cleanupNow = args.cleanup || (!walkSucceeded && args.cleanupOnFailure);
       if (cleanupNow) {
         try {
-          cleanupScratch(args.repo, scratch);
+          cleanupScratch(args.repo, scratchPr);
         } catch (cleanupError) {
           console.error(`[label-walk] cleanup error (ignored): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
         }
       } else {
-        console.log(`\nScratch PR left open for inspection: ${scratch.htmlUrl}`);
+        console.log(`\nScratch PR left open for inspection: ${scratchPr.htmlUrl}`);
       }
     } else if (htmlUrl) {
       console.log(`\nPR left open for inspection: ${htmlUrl}`);
@@ -634,6 +843,7 @@ function printReport(
   htmlUrl: string,
   qaCommentUrl: string | undefined,
   results: StepResult[],
+  expectedSteps = 3,
 ): void {
   console.log("\n══════════════════════════ LABEL WALK REPORT ══════════════════════════");
   console.log(`repo=${args.repo}  mode=${args.mode}  PR #${String(prNumber)}  ${htmlUrl}`);
@@ -643,7 +853,7 @@ function printReport(
     console.log(`  [${r.pass ? "PASS" : "FAIL"}] ${r.step}`);
     console.log(`         ${r.evidence}`);
   }
-  const missing = 3 - results.length;
+  const missing = expectedSteps - results.length;
   if (missing > 0) console.log(`  [FAIL] ${String(missing)} step(s) did not run (aborted early)`);
   console.log("════════════════════════════════════════════════════════════════════════");
 }

@@ -1,5 +1,8 @@
 import { RUNNER_PROTOCOL_VERSION } from "../protocol-version.js";
 
+/** Pull policy for the runner pod image. `Always` re-pulls rebuilt `:latest` tags. */
+export type KubernetesImagePullPolicy = "IfNotPresent" | "Always";
+
 export interface KubernetesRunnerSecretInput {
   runId: string;
   namespace: string;
@@ -37,6 +40,8 @@ export interface KubernetesRunnerJobInput {
    * test runners) sharing the container memory budget.
    */
   nodeHeapMb?: string;
+  /** Runner container image pull policy. Defaults to `IfNotPresent`. */
+  imagePullPolicy?: KubernetesImagePullPolicy;
 }
 
 export interface SecretManifest {
@@ -74,7 +79,7 @@ export interface JobManifest {
         containers: Array<{
           name: "runner";
           image: string;
-          imagePullPolicy: "IfNotPresent";
+          imagePullPolicy: KubernetesImagePullPolicy;
           volumeMounts: Array<{ name: "work"; mountPath: "/work" }>;
           envFrom?: Array<
             | { secretRef: { name: string } }
@@ -203,7 +208,7 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
             {
               name: "runner",
               image: input.image,
-              imagePullPolicy: "IfNotPresent",
+              imagePullPolicy: input.imagePullPolicy ?? "IfNotPresent",
               volumeMounts: [{ name: "work", mountPath: "/work" }],
               ...(envFrom.length > 0 ? { envFrom } : {}),
               securityContext: {
@@ -231,6 +236,13 @@ export function buildRunJobSpec(input: KubernetesRunnerJobInput): JobManifest {
                 { name: "WORK_ROOT", value: "/work" },
                 { name: "PIPELINE_FILE", value: input.pipelineFile },
                 { name: "GOOSEHERD_RUNNER_PROTOCOL_VERSION", value: RUNNER_PROTOCOL_VERSION },
+                // DRY_RUN is pinned here as an explicit container `env` entry, which
+                // Kubernetes resolves with higher precedence than any `envFrom`
+                // secret/configmap. A stray DRY_RUN=true in the runner-env configmap
+                // therefore CANNOT silently put a production run into dry-run mode —
+                // the value is whatever the server decided (see kubernetes-backend.ts,
+                // which pins false for the production server and only honors an
+                // explicitly requested dry-run from local-trigger/eval launches).
                 { name: "DRY_RUN", value: String(input.dryRun) },
                 { name: "DASHBOARD_ENABLED", value: "false" },
                 { name: "OBSERVER_ENABLED", value: "false" },

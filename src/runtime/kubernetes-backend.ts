@@ -12,9 +12,11 @@ import {
   buildRunTokenSecretManifest,
   defaultJobName,
   defaultSecretName,
+  type KubernetesImagePullPolicy,
 } from "./kubernetes/job-spec.js";
 import { KubernetesResourceClient } from "./kubernetes/resource-client.js";
 import type { TerminalFact } from "./terminal-fact.js";
+import { DEFAULT_COMPLETION_WAIT_MS } from "./completion-window.js";
 import { sleep } from "../utils/sleep.js";
 import { normalizeBaseUrl } from "./url.js";
 import { redactSecretToken, renderManifestYaml } from "./kubernetes/manifest-yaml.js";
@@ -32,6 +34,7 @@ import { resolveRunnerDbUrls } from "./runner-db-env.js";
 import type { RunnerDbSlotManager } from "./runner-db-slot-manager.js";
 import { isRecord } from "../utils/type-guards.js";
 import { isRunCheckpointType, normalizeRunCheckpointEmittedAt } from "../runs/run-checkpoints.js";
+import { logError } from "../logger.js";
 
 interface KubernetesExecutionBackendDeps {
   controlPlaneStore: Pick<ControlPlaneStore, "createRunEnvelope" | "issueRunToken" | "getLatestCompletion" | "revokeRunToken" | "listEventsAfterSequence">;
@@ -40,9 +43,19 @@ interface KubernetesExecutionBackendDeps {
   workRoot: string;
   runnerImage: string;
   internalBaseUrl: string;
+  /**
+   * Whether runs dispatched by this backend should execute in dry-run mode (no
+   * push/PR). The PRODUCTION server pins this to false so an ambient DRY_RUN on
+   * the server pod can never silently reach runner pods; only explicit
+   * local-trigger/eval launches pass a requested dry-run through.
+   */
   dryRun: boolean;
+  /** Human-readable origin of `dryRun`, surfaced in the loud dry-run log line. */
+  dryRunSource?: string;
   runnerEnvSecretName?: string;
   runnerEnvConfigMapName?: string;
+  /** Pull policy for the runner pod image. Defaults to `IfNotPresent`. */
+  imagePullPolicy?: KubernetesImagePullPolicy;
   namespace?: string;
   runnerConfigSource?: Pick<AppConfig, "agentCommandTemplate" | "agentFollowUpTemplate" | "activeAgentProfile" | "agentProfileCatalog" | "agentProfilePolicies">;
   resourceClient?: Pick<KubernetesResourceClient, "applySecret" | "applyJob" | "readJob" | "listPodsForJob" | "readJobLogs" | "deleteJob" | "deletePodsForJob" | "deleteSecret">;
@@ -64,13 +77,24 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
     this.namespace = deps.namespace ?? "default";
     this.pollIntervalMs = Math.max(250, deps.pollIntervalMs ?? 2_000);
     this.waitTimeoutMs = Math.max(5_000, deps.waitTimeoutMs ?? 10 * 60 * 1_000);
-    this.completionWaitMs = Math.max(this.pollIntervalMs, deps.completionWaitMs ?? 30_000);
+    this.completionWaitMs = Math.max(this.pollIntervalMs, deps.completionWaitMs ?? DEFAULT_COMPLETION_WAIT_MS);
     this.resourceClientInstance = deps.resourceClient;
   }
 
   async execute(run: RunRecord & { runtime: "kubernetes" }, ctx: RunExecutionContext): Promise<ExecutionResult> {
     await ctx.onPhase("agent");
     await ctx.onDetail?.("Launching Kubernetes job.");
+
+    // A kubernetes run should only ever be in dry-run mode when a launcher
+    // explicitly asked for it (local-trigger/eval). The production server pins
+    // this false, so if we see true here it must be attributed — never silent.
+    if (this.deps.dryRun) {
+      logError("Kubernetes run dispatched in DRY_RUN mode — no changes will be pushed", {
+        runId: run.id,
+        repoSlug: run.repoSlug,
+        dryRunSource: this.deps.dryRunSource ?? "unspecified",
+      });
+    }
 
     const runDir = path.resolve(this.deps.workRoot, run.id);
     await mkdir(runDir, { recursive: true });
@@ -122,6 +146,7 @@ export class KubernetesExecutionBackend implements RunExecutionBackend<"kubernet
       dryRun: this.deps.dryRun,
       runnerEnvSecretName: this.deps.runnerEnvSecretName,
       runnerEnvConfigMapName: this.deps.runnerEnvConfigMapName,
+      imagePullPolicy: this.deps.imagePullPolicy,
       jobName,
       extraEnv,
       resources: resolveRunnerResources(run.repoSlug),

@@ -192,15 +192,46 @@ export function buildAuthenticatedGitUrl(repoSlug: string, token: string): strin
   return `https://x-access-token:${encodedToken}@github.com/${repoSlug}.git`;
 }
 
+/**
+ * Union the org-level (env) and repo-level (`.gooseherd.yml`) CI ignore-check
+ * lists, trimming blanks and de-duplicating case-insensitively (first spelling
+ * wins). Matching itself is substring + case-insensitive (see excludeCheckRuns).
+ */
+export function mergeIgnoreChecks(orgLevel: string[], repoLevel: string[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...orgLevel, ...repoLevel]) {
+    const value = raw.trim();
+    if (!value) {
+      continue;
+    }
+    const key = value.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(value);
+  }
+  return merged;
+}
+
 export class GitHubService {
   private readonly octokit: Octokit;
   private readonly authMode: "pat" | "app";
   private readonly patToken?: string;
+  /** Org-level CI check-name substrings to exclude from the merge gate (env-driven). */
+  private readonly ciIgnoreChecks: string[];
 
-  private constructor(octokit: Octokit, authMode: "pat" | "app", patToken?: string) {
+  private constructor(
+    octokit: Octokit,
+    authMode: "pat" | "app",
+    patToken?: string,
+    ciIgnoreChecks: string[] = [],
+  ) {
     this.octokit = octokit;
     this.authMode = authMode;
     this.patToken = patToken;
+    this.ciIgnoreChecks = ciIgnoreChecks;
   }
 
   /**
@@ -217,12 +248,12 @@ export class GitHubService {
           installationId: config.githubAppInstallationId
         }
       });
-      return new GitHubService(octokit, "app");
+      return new GitHubService(octokit, "app", undefined, config.ciIgnoreChecks);
     }
 
     if (config.githubToken) {
       const octokit = new Octokit({ auth: config.githubToken });
-      return new GitHubService(octokit, "pat", config.githubToken);
+      return new GitHubService(octokit, "pat", config.githubToken, config.ciIgnoreChecks);
     }
 
     return undefined;
@@ -724,17 +755,17 @@ export class GitHubService {
     signal?: AbortSignal,
   ): Promise<string[]> {
     const repoConfigRef = options?.repoConfigRef ?? await this.resolveRepoConfigRef(repoSlug, options?.prNumber, signal);
-    if (!repoConfigRef) {
-      return [];
+    let repoIgnoreChecks: string[] = [];
+    if (repoConfigRef) {
+      try {
+        const content = await this.readFile(repoSlug, ".gooseherd.yml", repoConfigRef);
+        const repoConfig = parseRepoConfigYaml(content);
+        repoIgnoreChecks = repoConfig?.qualityGates?.ci?.ignore_checks ?? [];
+      } catch {
+        repoIgnoreChecks = [];
+      }
     }
-
-    try {
-      const content = await this.readFile(repoSlug, ".gooseherd.yml", repoConfigRef);
-      const repoConfig = parseRepoConfigYaml(content);
-      return repoConfig?.qualityGates?.ci?.ignore_checks ?? [];
-    } catch {
-      return [];
-    }
+    return mergeIgnoreChecks(this.ciIgnoreChecks ?? [], repoIgnoreChecks);
   }
 
   private async resolveRepoConfigRef(
@@ -984,6 +1015,28 @@ export class GitHubService {
       owner,
       repo,
       issue_number: params.prNumber,
+      body: params.body,
+    });
+  }
+
+  /**
+   * Update the body of an existing PR conversation (issue) comment in place.
+   * `commentId` is the string id surfaced by listPullRequestDiscussionComments.
+   */
+  async updatePullRequestConversationComment(params: {
+    repoSlug: string;
+    commentId: string;
+    body: string;
+  }): Promise<void> {
+    const { owner, repo } = parseRepoSlug(params.repoSlug);
+    const commentId = Number.parseInt(params.commentId, 10);
+    if (!Number.isInteger(commentId)) {
+      throw new Error(`Invalid comment id: ${params.commentId}`);
+    }
+    await this.octokit.issues.updateComment({
+      owner,
+      repo,
+      comment_id: commentId,
       body: params.body,
     });
   }

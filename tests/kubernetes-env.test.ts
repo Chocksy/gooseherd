@@ -10,6 +10,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunnerImagePullPolicy,
   resolveKubernetesRunWaitTimeoutMs,
 } from "../src/runtime/kubernetes-env.js";
 
@@ -124,6 +125,64 @@ test("resolveKubernetesRunWaitTimeoutMs: rejects non-positive, non-numeric, and 
         resolveKubernetesRunWaitTimeoutMs(),
         600_000,
         `value=${JSON.stringify(bad)} should fall back to default`,
+      );
+    });
+  }
+});
+
+function withPullPolicyEnv<T>(value: string | undefined, fn: () => T): T {
+  const original = process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY;
+  try {
+    if (value === undefined) {
+      delete process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY;
+    } else {
+      process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY = value;
+    }
+    return fn();
+  } finally {
+    if (original === undefined) {
+      delete process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY;
+    } else {
+      process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY = original;
+    }
+  }
+}
+
+test("resolveKubernetesRunnerImagePullPolicy: defaults to IfNotPresent when unset or blank", () => {
+  for (const value of [undefined, "", "  "]) {
+    withPullPolicyEnv(value, () => {
+      assert.equal(resolveKubernetesRunnerImagePullPolicy(), "IfNotPresent");
+    });
+  }
+});
+
+test("resolveKubernetesRunnerImagePullPolicy: accepts Always case-insensitively", () => {
+  for (const value of ["Always", "always", "ALWAYS", " Always "]) {
+    withPullPolicyEnv(value, () => {
+      assert.equal(
+        resolveKubernetesRunnerImagePullPolicy(),
+        "Always",
+        `value=${JSON.stringify(value)} should resolve to Always`,
+      );
+    });
+  }
+});
+
+test("resolveKubernetesRunnerImagePullPolicy: accepts IfNotPresent case-insensitively", () => {
+  for (const value of ["IfNotPresent", "ifnotpresent", "IFNOTPRESENT"]) {
+    withPullPolicyEnv(value, () => {
+      assert.equal(resolveKubernetesRunnerImagePullPolicy(), "IfNotPresent");
+    });
+  }
+});
+
+test("resolveKubernetesRunnerImagePullPolicy: falls back to IfNotPresent on unrecognized values", () => {
+  for (const value of ["Never", "Alwayss", "true", "1"]) {
+    withPullPolicyEnv(value, () => {
+      assert.equal(
+        resolveKubernetesRunnerImagePullPolicy(),
+        "IfNotPresent",
+        `value=${JSON.stringify(value)} should fall back to default`,
       );
     });
   }

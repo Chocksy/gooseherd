@@ -1717,6 +1717,27 @@ test("classifyError matches no-changes errors", () => {
   assert.equal(result2.category, "no_changes");
 });
 
+test("classifyError matches context conflict as a non-retryable category", () => {
+  const result = classifyError("Agent reported context conflict: no dark-mode toggle exists in the codebase");
+  assert.equal(result.category, "context_conflict");
+  assert.ok(/premise|correct the task|doesn't exist|contradicts/i.test(result.suggestion));
+});
+
+test("classifyError matches runner completion-missing (both reconciler and backend phrasings)", () => {
+  const reconciler = classifyError(
+    "completion missing after terminal runtime state (job failed): runner pod terminated before reporting completion — possible OOMKill, eviction, node loss, or hard crash."
+  );
+  assert.equal(reconciler.category, "runner_completion_missing");
+
+  const backend = classifyError("completion missing after terminal runtime state: Runner failed { error: 'boom' }");
+  assert.equal(backend.category, "runner_completion_missing");
+
+  const lostCallback = classifyError(
+    "completion missing after terminal runtime state (job succeeded): runner reported a success completion attempt but the control plane never recorded it — likely a lost completion callback."
+  );
+  assert.equal(lostCallback.category, "runner_completion_missing");
+});
+
 test("classifyError matches validation failures", () => {
   const result = classifyError("validation failed after 3 retry rounds");
   assert.equal(result.category, "validation");

@@ -201,6 +201,10 @@ async function main() {
   // AGENT_COMMAND_TEMPLATE / DEFAULT_LLM_MODEL actually reach the agent + judges.
   // Evals run in-process and sequentially, so only local/docker backends are
   // registered — no kubernetes.
+  //
+  // Cost note: this constructs a fresh engine, runtime backends, and RunManager
+  // for every scenario. That is the price of per-scenario config reload (correct,
+  // but adds startup overhead across the 10-scenario suite — see docs/benchmark.md).
   const buildContext = async () => {
     const scenarioConfig = loadConfig();
     const runStore = new RunStore(db);

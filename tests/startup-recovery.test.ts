@@ -26,7 +26,7 @@ test("startup recovery requeues local runs and reconciles kubernetes runs instea
   const recoveredLocalTrigger = makeRun({ id: "run-local-2", runtime: "local", channelId: "local" });
   const inProgressKubernetes = makeRun({ id: "run-k8s-1", runtime: "kubernetes" });
   const requeued: string[] = [];
-  const reconciled: string[] = [];
+  const reconciled: Array<{ runId: string; options?: { completionGraceMs?: number } }> = [];
 
   const result = await recoverRunsAfterRestart(
     {
@@ -39,15 +39,17 @@ test("startup recovery requeues local runs and reconciles kubernetes runs instea
       },
     },
     {
-      reconcileRun: async (runId: string) => {
-        reconciled.push(runId);
+      reconcileRun: async (runId: string, options?: { completionGraceMs?: number }) => {
+        reconciled.push({ runId, options });
       },
     },
     "Recovered after process restart. Auto-requeued.",
   );
 
   assert.deepEqual(requeued, ["run-local-1"]);
-  assert.deepEqual(reconciled, ["run-k8s-1"]);
+  // Startup recovery must not wait the completion grace window: the HTTP listener
+  // is not up yet, so a late callback cannot arrive — waiting only delays /healthz.
+  assert.deepEqual(reconciled, [{ runId: "run-k8s-1", options: { completionGraceMs: 0 } }]);
   assert.deepEqual(result, {
     recoveredRuns: [recoveredLocal, recoveredLocalTrigger],
     kubernetesRuns: [inProgressKubernetes],

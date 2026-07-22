@@ -1218,4 +1218,30 @@ describe("waitCiNode", () => {
       },
     }]);
   });
+
+  test("excludes a red check named only in the org-level CI_IGNORE_CHECKS", async () => {
+    const ctx = new ContextBag({ commitSha: "abc123456789", prNumber: 42 });
+    const deps = makeDeps({
+      configOverrides: {
+        ciWaitEnabled: true,
+        ciCheckFilter: [],
+        // Env-level ignore only; no repoCiIgnoreChecks set in context.
+        ciIgnoreChecks: ["pr checker"],
+        ciPatienceTimeoutSeconds: 1,
+        ciMaxWaitSeconds: 1,
+        ciPollIntervalSeconds: 1,
+      },
+      githubService: {
+        listCheckRuns: async () => [
+          { name: "pr checker", status: "completed", conclusion: "failure" },
+        ],
+      } as unknown as NodeDeps["githubService"],
+    });
+
+    const result = await waitCiNode(makeNodeConfig("wait_ci"), ctx, deps);
+
+    // The only red check is ignored via the org-level list, so wait_ci must not fail.
+    assert.equal(result.outcome, "success");
+    assert.equal(result.outputs?.ciConclusion, "no_ci");
+  });
 });

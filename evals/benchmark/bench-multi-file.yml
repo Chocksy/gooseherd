@@ -27,11 +27,25 @@ judges:
   - type: status
     expect: completed
 
-  # Load-bearing files: the route table and the static controller must both change.
+  # Load-bearing files: the wiring must span ALL of route table, controller, view and
+  # footer — a single expect_any (OR) would pass on just one, masking a broken
+  # multi-file edit. Split into separate files_changed judges so every one is required
+  # (each path is pinned by the ground-truth header above).
   - type: files_changed
     expect_any:
       - "config/routes.rb"
+
+  - type: files_changed
+    expect_any:
       - "app/controllers/static_controller.rb"
+
+  - type: files_changed
+    expect_any:
+      - "app/views/static/accessibility.html.slim"
+
+  - type: files_changed
+    expect_any:
+      - "app/views/layouts/_footer.slim"
 
   - type: llm_judge
     prompt: |

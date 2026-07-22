@@ -284,6 +284,39 @@ quality_gates:
     review_app_url: "https://pr-{{prNumber}}.staging.example.com"
 ```
 
+### Gating checks vs CI checks
+
+Not every GitHub check is a *CI* check. Some are **gating checks** — policy/status
+checks that only turn green once a human applies a label or review (e.g. a
+label-enforcing "PR Checker", or a "block autosquash" status). These deadlock the
+feature-delivery flow: `getPullRequestCiSnapshot` requires every non-ignored check to
+be green before a work item reaches `ready_for_merge`, but the gating check stays red
+until the labels exist, and Gooseherd would only apply those labels *after* the merge
+gate passes. The result is a circular gate — no squash, no automerge, work items stuck
+in `auto_review`.
+
+The valve is an **ignore list** of check-name substrings. A check is excluded when any
+list entry is a **case-insensitive substring** of the check's name (so `pr checker`
+matches `PR Checker Gate`). Excluded checks are dropped from the snapshot entirely — a
+red one no longer blocks the gate.
+
+There are two places to configure it, and they are **merged (union, de-duped)**:
+
+| Scope | Where | When to use |
+|-------|-------|-------------|
+| Repo-level | `.gooseherd.yml` → `quality_gates.ci.ignore_checks` (loaded from the base branch) | A gating check specific to one repo |
+| Org-level | `CI_IGNORE_CHECKS` env var (comma-separated substrings) | Exclude a gating check fleet-wide without editing every repo |
+
+Example — exclude a label-enforcing gate and an autosquash blocker across all repos:
+
+```bash
+CI_IGNORE_CHECKS=pr checker,block autosquash
+```
+
+Keep the list tight: entries match by substring, so an overly broad term (e.g. `test`)
+can silently suppress real CI failures. Ignore only genuine gating/policy checks, never
+build or test jobs.
+
 ## Run Lifecycle (End-to-End)
 
 Here's what happens when you type `@gooseherd run epiccoders/pxls@master | Fix the footer width`:

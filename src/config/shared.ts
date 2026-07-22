@@ -128,6 +128,7 @@ export const envSchema = z.object({
   CI_PATIENCE_TIMEOUT_SECONDS: z.string().optional(),
   CI_MAX_WAIT_SECONDS: z.string().optional(),
   CI_CHECK_FILTER: z.string().optional(),
+  CI_IGNORE_CHECKS: z.string().optional(),
   CI_MAX_FIX_ROUNDS: z.string().optional(),
   CI_FIX_AGENT_BAIL_ENABLED: z.string().optional(),
   WORK_ITEMS_ENABLED: z.string().optional(),
@@ -172,6 +173,7 @@ export const envSchema = z.object({
   KUBERNETES_NAMESPACE: z.string().optional(),
   KUBERNETES_RUNNER_ENV_SECRET: z.string().optional(),
   KUBERNETES_RUNNER_ENV_CONFIGMAP: z.string().optional(),
+  KUBERNETES_RUNNER_IMAGE_PULL_POLICY: z.string().optional(),
 
   KUBERNETES_RUNNER_POOL_SIZE: z.string().optional(),
   RUNNER_DB_PG_URL: z.string().optional(),

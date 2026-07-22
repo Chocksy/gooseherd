@@ -2,21 +2,25 @@ name: homepage-title
 description: "Change the homepage title text — simple UI change with clear expected outcome"
 
 repo: epiccoders/pxls
-base_branch: main
+base_branch: master
 task: |
   Change the homepage h1 title from "Ship amazing designs faster." to "Welcome to Epic Pixels"
 
+# enable_nodes only stops the engine from skipping scope_judge; the handler still
+# self-skips unless scopeJudgeEnabled is set, so SCOPE_JUDGE_ENABLED is forced on in
+# config_overrides below.
 enable_nodes: [scope_judge]
 
 judges:
   - type: status
     expect: completed
 
+  # Ground truth (pxls@master, verified in evals/benchmark/bench-decoy.yml): the
+  # headline lives ONLY in the seo_helper masthead helper, not in any view. The
+  # previously listed ERB views do not exist in pxls.
   - type: files_changed
     expect_any:
       - "app/helpers/seo_helper.rb"
-      - "app/views/landing/index.html.erb"
-      - "app/views/pages/home.html.erb"
 
   - type: diff_contains
     patterns:
@@ -28,6 +32,7 @@ judges:
 
 config_overrides:
   DEFAULT_LLM_MODEL: "anthropic/claude-sonnet-4-6"
+  SCOPE_JUDGE_ENABLED: "true"
   AGENT_COMMAND_TEMPLATE: "cd {{repo_dir}} && pi -p @{{prompt_file}} --model openrouter/anthropic/claude-sonnet-4.6 --no-session --mode json --tools read,write,edit,bash,grep,find,ls"
 
 tags: [ui, simple, rails]

@@ -8,16 +8,27 @@ on:
     paths:
       - .docker/Dockerfile.server
       - .github/workflows/build-runner-server-image.yml
+  workflow_run:
+    workflows: ["Build Runner Generic Image"]
+    types:
+      - completed
+    branches:
+      - master
+
+concurrency:
+  group: build-runner-server-image
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
   ECR_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/server
-  BASE_RUNNER_IMAGE: "435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic:latest"
+  GENERIC_IMAGE: 435747240845.dkr.ecr.us-east-1.amazonaws.com/services/gooseherd/runners/generic
 
 jobs:
   build-and-push:
     runs-on: [self-hosted, linux, x64, medium]
     timeout-minutes: 60
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
 
@@ -27,6 +38,15 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Resolve base runner image
+        id: base_image
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "ref=${{ env.GENERIC_IMAGE }}:${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ env.GENERIC_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve hubstaff-server Gemfile.lock SHA
         id: gemfile_lock
@@ -46,8 +66,9 @@ jobs:
           file: .docker/Dockerfile.server
           platforms: linux/amd64
           push: true
+          pull: true
           build-args: |
-            BASE_RUNNER_IMAGE=${{ env.BASE_RUNNER_IMAGE }}
+            BASE_RUNNER_IMAGE=${{ steps.base_image.outputs.ref }}
             BUNDLE_RUBYGEMS__PKG__GITHUB__COM=${{ secrets.BUNDLE_RUBYGEMS__PKG__GITHUB__COM }}
             GEMFILE_LOCK_SHA=${{ steps.gemfile_lock.outputs.sha }}
           tags: |

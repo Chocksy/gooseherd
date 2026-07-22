@@ -103,6 +103,7 @@ export async function hydrateContextNode(
   const executionMode = ctx.get<string>("executionMode") ?? "standard";
   const externalContextInstructions = getExternalContextInstructions(prefetchContext);
   const autoReviewSummaryInstructions = getAutoReviewSummaryInstructions(run);
+  const taskVerificationInstructions = getTaskVerificationInstructions(run);
 
   sections.push(
     "## Instructions",
@@ -117,6 +118,8 @@ export async function hydrateContextNode(
     ...(externalContextInstructions.length > 0 ? [""] : []),
     ...autoReviewSummaryInstructions,
     ...(autoReviewSummaryInstructions.length > 0 ? [""] : []),
+    ...taskVerificationInstructions,
+    ...(taskVerificationInstructions.length > 0 ? [""] : []),
     "Task:",
     parentContext?.feedbackNote ?? run.task,
     "",
@@ -775,6 +778,30 @@ function getExternalContextInstructions(prefetchContext: RunPrefetchContext | un
     "- Only act on a comment if the current diff and branch state show the problem still exists.",
     "- Ignore comments that would require expanding scope beyond the current PR or changing unrelated code.",
     "- If the hints cannot be reconciled with the current diff without guessing intent or expanding scope, make no code changes and print `GOOSEHERD_CONTEXT_CONFLICT: <reason>` before exiting.",
+  ];
+}
+
+/**
+ * Task-verification guardrails for plain implement / CI-fix runs.
+ *
+ * Without this, an implement run told to "fix" a feature, file, or value that
+ * does not actually exist will fabricate the whole thing (see the
+ * `bench-impossible` benchmark). Auto-review and review-feedback runs are
+ * excluded — they already carry their own reconciliation wording
+ * (`getExternalContextInstructions` / `getAutoReviewSummaryInstructions`) that
+ * points at the same `GOOSEHERD_CONTEXT_CONFLICT` sentinel.
+ */
+function getTaskVerificationInstructions(run: RunRecord): string[] {
+  if (isFeatureDeliveryAutoReviewRun(run)) {
+    return [];
+  }
+
+  return [
+    "Task verification (before you implement):",
+    "- First confirm that what the task references actually exists in this codebase — the feature, file, symbol, or the current value it claims. Grep/read before you change anything.",
+    "- If the task contradicts the code's reality, or references something that does not exist, and there is no reasonable interpretation: make NO code changes and print `GOOSEHERD_CONTEXT_CONFLICT: <reason>` on its own line before exiting. Do not fabricate the missing feature.",
+    "- If a reasonable interpretation DOES exist (ambiguous phrasing, or the task names a wrong-but-obvious current value), proceed with the sensible change and clearly state the assumption or discrepancy in your final summary. Do not bail on merely vague tasks.",
+    "- Just edit the files. Do not run git commit, git add, or git push — the harness stages and commits your changes for you.",
   ];
 }
 

@@ -164,6 +164,13 @@ export interface AppConfig {
   ciPatienceTimeoutSeconds: number;
   ciMaxWaitSeconds: number;
   ciCheckFilter: string[];
+  /**
+   * Org-level CI check names (substrings, case-insensitive) to exclude from the
+   * ready-for-merge gate, merged with each repo's `.gooseherd.yml`
+   * quality_gates.ci.ignore_checks. Lets an operator drop perpetually-red gating
+   * checks (e.g. a label-enforcing "PR Checker") fleet-wide. See CI_IGNORE_CHECKS.
+   */
+  ciIgnoreChecks: string[];
   ciMaxFixRounds: number;
   ciFixAgentBailEnabled: boolean;
   featureDeliveryResetEngineeringReviewOnNewCommits: boolean;

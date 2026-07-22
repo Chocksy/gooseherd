@@ -51,6 +51,7 @@ import {
   resolveKubernetesRunnerEnvConfigMapName,
   resolveKubernetesRunnerEnvSecretName,
   resolveKubernetesRunnerImage,
+  resolveKubernetesRunnerImagePullPolicy,
   resolveKubernetesRunWaitTimeoutMs,
 } from "./runtime/kubernetes-env.js";
 import type { WorkItemActor } from "./work-items/actor.js";
@@ -766,9 +767,17 @@ async function createServices(config: AppConfig, db: Database): Promise<Services
         workRoot: config.workRoot,
         runnerImage: resolveKubernetesRunnerImage(),
         internalBaseUrl: resolveKubernetesInternalBaseUrl(config),
-        dryRun: config.dryRun,
+        // Production hardening: the long-running server NEVER propagates dry-run to
+        // kubernetes runner pods. An ambient DRY_RUN=true on the server pod (e.g. a
+        // stale env secret/configmap) once produced a silent "Completed in DRY_RUN
+        // mode" production run; pinning false here makes that structurally
+        // impossible regardless of config.dryRun. Legitimate dry-runs go through
+        // local-trigger/eval (local runtime), which still honor config.dryRun.
+        dryRun: false,
+        dryRunSource: "production-server (pinned false; ambient DRY_RUN ignored)",
         runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
+        imagePullPolicy: resolveKubernetesRunnerImagePullPolicy(),
         namespace: resolveKubernetesNamespace(),
         waitTimeoutMs: resolveKubernetesRunWaitTimeoutMs(),
         runnerConfigSource: config,

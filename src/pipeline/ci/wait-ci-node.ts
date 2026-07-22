@@ -1,6 +1,6 @@
 import type { NodeConfig, NodeResult, NodeDeps } from "../types.js";
 import type { ContextBag } from "../context-bag.js";
-import { parseRepoSlug, type CICheckRun } from "../../github.js";
+import { mergeIgnoreChecks, parseRepoSlug, type CICheckRun } from "../../github.js";
 import { appendLog, sleep } from "../shell.js";
 import { appendGateReport } from "../quality-gates/gate-report.js";
 import {
@@ -46,6 +46,9 @@ export async function waitCiNode(
   const logFile = deps.logFile;
   const checkFilter = config.ciCheckFilter;
   const repoCiIgnoreChecks = ctx.get<string[]>("repoCiIgnoreChecks") ?? [];
+  // Merge org-level (env CI_IGNORE_CHECKS) with repo-level (.gooseherd.yml) ignores;
+  // otherwise a check named only in the org list would still fail the wait.
+  const ignoreChecks = mergeIgnoreChecks(config.ciIgnoreChecks ?? [], repoCiIgnoreChecks);
 
   await deps.onPhase("awaiting_ci");
   await deps.emitRunCheckpoint?.({
@@ -66,7 +69,7 @@ export async function waitCiNode(
 
   while (Date.now() < patienceEnd) {
     const checkRuns = await deps.githubService.listCheckRuns(owner, repo, commitSha);
-    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), repoCiIgnoreChecks);
+    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), ignoreChecks);
 
     if (filtered.length > 0) {
       await appendLog(logFile, `\n[ci:wait] ${String(filtered.length)} check run(s) found\n`);
@@ -84,7 +87,7 @@ export async function waitCiNode(
 
   while (Date.now() < maxWaitEnd) {
     const checkRuns = await deps.githubService.listCheckRuns(owner, repo, commitSha);
-    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), repoCiIgnoreChecks);
+    const filtered = excludeCheckRuns(filterCheckRuns(checkRuns, checkFilter), ignoreChecks);
 
     if (filtered.length === 0) {
       // No CI checks at all — treat as no_ci

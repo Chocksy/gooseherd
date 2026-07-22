@@ -115,7 +115,11 @@ async function main(): Promise<void> {
         workRoot: config.workRoot,
         runnerImage: resolveKubernetesRunnerImage(),
         internalBaseUrl: resolveKubernetesInternalBaseUrl(config),
+        // local-trigger is an explicit, operator-launched CLI entry point, so an
+        // intentional DRY_RUN here (from .env or the launch env) is honored — this
+        // is the sanctioned way to dry-run a kubernetes run for dev/eval.
         dryRun: config.dryRun,
+        dryRunSource: "local-trigger launch (DRY_RUN env/.env)",
         runnerEnvSecretName: resolveKubernetesRunnerEnvSecretName(),
         runnerEnvConfigMapName: resolveKubernetesRunnerEnvConfigMapName(),
         namespace: resolveKubernetesNamespace(),

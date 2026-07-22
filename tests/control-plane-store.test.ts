@@ -225,13 +225,17 @@ test("reconciler finalizes failed when job is terminal and no completion arrives
     getTerminalFact: async () => "failed" as const,
   };
 
-  const reconciler = new RuntimeReconciler(controlPlaneStore, fakeRuntimeFacts, runStore);
+  const reconciler = new RuntimeReconciler(controlPlaneStore, fakeRuntimeFacts, runStore, undefined, undefined, {
+    completionGraceMs: 20,
+    completionPollMs: 5,
+  });
   await reconciler.reconcileRun(run.id);
   const updated = await runStore.getRun(run.id);
 
   assert.equal(updated?.status, "failed");
   assert.equal(updated?.phase, "failed");
-  assert.equal(updated?.error, "completion missing after terminal runtime state");
+  assert.match(updated?.error ?? "", /^completion missing after terminal runtime state \(job failed\)/);
+  assert.match(updated?.error ?? "", /terminated before reporting completion/);
   await cleanup();
 });
 

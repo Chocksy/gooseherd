@@ -10,7 +10,7 @@ interface StartupRecoveryRunManager {
 }
 
 interface StartupRecoveryReconciler {
-  reconcileRun(runId: string): Promise<void>;
+  reconcileRun(runId: string, options?: { completionGraceMs?: number }): Promise<void>;
 }
 
 export async function recoverRunsAfterRestart(
@@ -40,7 +40,10 @@ export async function recoverRunsAfterRestart(
 
   const kubernetesRuns = (await store.getInProgressRuns())
     .filter((run) => run.runtime === "kubernetes");
-  await Promise.all(kubernetesRuns.map(async (run) => runtimeReconciler.reconcileRun(run.id)));
+  // No completion grace here: this runs before the HTTP listener is up, so a late
+  // completion callback cannot arrive during the wait — it would only delay boot
+  // (and /healthz) by the full grace window per Promise.all.
+  await Promise.all(kubernetesRuns.map(async (run) => runtimeReconciler.reconcileRun(run.id, { completionGraceMs: 0 })));
 
   return {
     recoveredRuns,

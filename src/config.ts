@@ -167,7 +167,7 @@ export interface AppConfig {
   /**
    * Org-level CI check names (substrings, case-insensitive) to exclude from the
    * ready-for-merge gate, merged with each repo's `.gooseherd.yml`
-   * qualityGates.ci.ignore_checks. Lets an operator drop perpetually-red gating
+   * quality_gates.ci.ignore_checks. Lets an operator drop perpetually-red gating
    * checks (e.g. a label-enforcing "PR Checker") fleet-wide. See CI_IGNORE_CHECKS.
    */
   ciIgnoreChecks: string[];

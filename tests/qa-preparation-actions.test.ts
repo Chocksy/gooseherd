@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   hasQaUatInPullRequestBody,
-  hasQaUatInPullRequestConversationComments,
   QaPreparationActions,
 } from "../src/work-items/qa-preparation-actions.js";
 import type { WorkItemRecord } from "../src/work-items/types.js";
@@ -197,15 +196,4 @@ test("QaPreparationActions re-queues to adopt a legacy marker-less QA UAT commen
   await actions.handleEntry(makeDeliveryWorkItem());
 
   assert.equal(calls.length, 1);
-});
-
-test("hasQaUatInPullRequestConversationComments detects existing QA UAT comments", () => {
-  assert.equal(
-    hasQaUatInPullRequestConversationComments([
-      { body: "## Summary\n\nNo QA section" },
-      { body: "### QA UAT\n\n- Existing checks" },
-    ]),
-    true,
-  );
-  assert.equal(hasQaUatInPullRequestConversationComments([{ body: "## Summary\n\nNo QA section" }]), false);
 });

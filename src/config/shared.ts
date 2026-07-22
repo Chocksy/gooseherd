@@ -173,6 +173,7 @@ export const envSchema = z.object({
   KUBERNETES_NAMESPACE: z.string().optional(),
   KUBERNETES_RUNNER_ENV_SECRET: z.string().optional(),
   KUBERNETES_RUNNER_ENV_CONFIGMAP: z.string().optional(),
+  KUBERNETES_RUNNER_IMAGE_PULL_POLICY: z.string().optional(),
 
   KUBERNETES_RUNNER_POOL_SIZE: z.string().optional(),
   RUNNER_DB_PG_URL: z.string().optional(),

@@ -51,9 +51,17 @@
  *
  * Usage:
  *   npm run label-walk -- --repo epiccoders/pxls [--pr <n>] [--mode synthetic|real]
+ *                          [--red-gate] [--expect-stall] [--sticky]
  *                          [--cleanup] [--no-cleanup-on-failure]
  *     --mode synthetic  webhook-only labels; still needs real GitHub CI, gh CLI,
  *                       Postgres, and a running gooseherd instance (see above).
+ *     --red-gate        scaffold an always-failing "PR Checker Gate" check on the
+ *                       scratch base, to exercise CI_IGNORE_CHECKS gating exclusion.
+ *     --expect-stall    prove the gate deadlocks: expect NO advancement past
+ *                       auto_review, then exit. Requires --red-gate (nothing to
+ *                       deadlock on otherwise).
+ *     --sticky          after the QA/UAT comment exists, push a new commit and
+ *                       prove the comment upserts in place.
  *     --cleanup         after the walk, close the scratch PR and delete its
  *                       hubble-e2e-base-*/hubble-e2e-head-* refs (only when this run
  *                       CREATED the scratch PR — never touches an operator's --pr).
@@ -371,7 +379,7 @@ jobs:
 `;
 
 const GOOSEHERD_YML = `# Scratch-branch scaffolding for the Hubble E2E label walk. Never on master.
-qualityGates:
+quality_gates:
   ci:
     ignore_checks:
       - "EpicPxls"

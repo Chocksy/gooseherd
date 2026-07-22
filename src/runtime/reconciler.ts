@@ -56,7 +56,7 @@ export class RuntimeReconciler {
     this.completionPollMs = Math.max(1, options?.completionPollMs ?? DEFAULT_COMPLETION_POLL_MS);
   }
 
-  async reconcileRun(runId: string): Promise<void> {
+  async reconcileRun(runId: string, options?: { completionGraceMs?: number }): Promise<void> {
     await this.drainCheckpointEvents(runId);
     let completion = await this.controlPlaneStore.getLatestCompletion(runId);
     const run = await this.runStore.getRun(runId);
@@ -90,7 +90,7 @@ export class RuntimeReconciler {
     // declaring it missing. This never delays the happy path (completion already
     // present) or a still-running job.
     if (!completion && isTerminalFact(fact)) {
-      completion = await this.waitForLateCompletion(runId);
+      completion = await this.waitForLateCompletion(runId, options?.completionGraceMs);
     }
 
     if (completion && (await this.applyCompletion(runId, run, completion, fact))) {
@@ -160,8 +160,8 @@ export class RuntimeReconciler {
     return false;
   }
 
-  private async waitForLateCompletion(runId: string): Promise<RunCompletionRecord | null> {
-    const deadline = Date.now() + this.completionGraceMs;
+  private async waitForLateCompletion(runId: string, graceMs?: number): Promise<RunCompletionRecord | null> {
+    const deadline = Date.now() + Math.max(0, graceMs ?? this.completionGraceMs);
     while (Date.now() < deadline) {
       await sleep(Math.min(this.completionPollMs, Math.max(1, deadline - Date.now())));
       const completion = await this.controlPlaneStore.getLatestCompletion(runId);

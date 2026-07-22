@@ -94,10 +94,6 @@ export function hasQaUatInPullRequestBody(body: string | undefined): boolean {
   return hasQaUatHeader(body);
 }
 
-export function hasQaUatInPullRequestConversationComments(comments: Array<{ body?: string }>): boolean {
-  return comments.some((comment) => hasQaUatHeader(comment.body));
-}
-
 export function hasQaUatHeader(value: string | undefined): boolean {
   return QA_UAT_HEADER_RE.test(value ?? "");
 }

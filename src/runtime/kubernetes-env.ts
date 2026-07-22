@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config.js";
 import type { KubernetesImagePullPolicy } from "./kubernetes/job-spec.js";
+import { logWarn } from "../logger.js";
 
 export const DEFAULT_KUBERNETES_RUNNER_IMAGE = "gooseherd/k8s-runner:dev";
 export const DEFAULT_KUBERNETES_NAMESPACE = "default";
@@ -40,9 +41,22 @@ export function resolveKubernetesInternalBaseUrl(
 }
 
 export function resolveKubernetesRunnerImagePullPolicy(): KubernetesImagePullPolicy {
-  return process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY?.trim() === "Always"
-    ? "Always"
-    : DEFAULT_KUBERNETES_RUNNER_IMAGE_PULL_POLICY;
+  const raw = process.env.KUBERNETES_RUNNER_IMAGE_PULL_POLICY?.trim();
+  if (!raw) {
+    return DEFAULT_KUBERNETES_RUNNER_IMAGE_PULL_POLICY;
+  }
+  const normalized = raw.toLowerCase();
+  if (normalized === "always") {
+    return "Always";
+  }
+  if (normalized === "ifnotpresent") {
+    return "IfNotPresent";
+  }
+  logWarn("Unrecognized KUBERNETES_RUNNER_IMAGE_PULL_POLICY value — falling back to default", {
+    value: raw,
+    fallback: DEFAULT_KUBERNETES_RUNNER_IMAGE_PULL_POLICY,
+  });
+  return DEFAULT_KUBERNETES_RUNNER_IMAGE_PULL_POLICY;
 }
 
 export function resolveKubernetesRunWaitTimeoutMs(): number {
